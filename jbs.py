@@ -22,6 +22,9 @@ Directives disponibles en JBS 1.0 :
     define COMPILE_DLL
     define PI 3.14
     compile game { ... }
+    compile_static MyLib { ... }
+    compile_shared MyLib { ... }
+    link game { MyLib libOther.a -lSDL2 }
 
 `c89` demande à jcc de générer du C89 strict. `include` ajoute un répertoire
 de recherche pour les `using`, en plus du dossier du fichier `.jbs`.
@@ -58,6 +61,8 @@ class JBSError(Exception):
 class BuildTarget:
     name: str
     files: list[str]
+    kind: str = "compile"  # compile, compile_static, compile_shared
+    links: list[str] | None = None
 
 
 @dataclass
@@ -72,7 +77,10 @@ class JBSConfig:
 
 
 VERSION_RE = re.compile(r"^\s*version\s+([0-9]+(?:\.[0-9]+)+)\s*$")
-COMPILE_RE = re.compile(r"\bcompile\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{")
+TARGET_RE = re.compile(
+    r"\b(compile_static|compile_shared|compile)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{"
+)
+LINK_RE = re.compile(r"\blink\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{")
 USING_RE = re.compile(r"^\s*using\s+([A-Za-z_][A-Za-z0-9_]*)\s*;\s*(?://.*)?$")
 
 
@@ -115,48 +123,75 @@ def parse_jbs(text: str) -> JBSConfig:
         raise JBSError("directive 'include' définie plusieurs fois pour le même chemin")
 
     targets: list[BuildTarget] = []
-    pos = 0
-    while True:
-        match = COMPILE_RE.search(clean, pos)
-        if not match:
-            break
 
-        name = match.group(1)
-        brace_start = clean.find("{", match.start(), match.end())
-        depth = 1
-        i = brace_start + 1
-        while i < len(clean) and depth:
-            if clean[i] == "{":
-                depth += 1
-            elif clean[i] == "}":
-                depth -= 1
-            i += 1
-        if depth != 0:
-            raise JBSError(f"bloc compile '{name}' non fermé")
+    def parse_blocks(regex, block_kind):
+        blocks = []
+        pos = 0
+        while True:
+            match = regex.search(clean, pos)
+            if not match:
+                break
 
-        body = clean[brace_start + 1:i - 1]
+            if block_kind == "target":
+                kind = match.group(1)
+                name = match.group(2)
+            else:
+                kind = "link"
+                name = match.group(1)
+
+            brace_start = clean.find("{", match.start(), match.end())
+            depth = 1
+            i = brace_start + 1
+            while i < len(clean) and depth:
+                if clean[i] == "{":
+                    depth += 1
+                elif clean[i] == "}":
+                    depth -= 1
+                i += 1
+            if depth != 0:
+                raise JBSError(f"bloc {kind} '{name}' non fermé")
+
+            body = clean[brace_start + 1:i - 1]
+            entries = []
+            for raw_line in body.splitlines():
+                line = raw_line.strip()
+                if line:
+                    entries.append(line)
+
+            blocks.append((name, kind, entries))
+            pos = i
+        return blocks
+
+    target_blocks = parse_blocks(TARGET_RE, "target")
+    link_blocks = parse_blocks(LINK_RE, "link")
+
+    if not target_blocks:
+        raise JBSError(
+            "aucun bloc 'compile <nom> { ... }', "
+            "'compile_static <nom> { ... }' ou "
+            "'compile_shared <nom> { ... }' trouvé"
+        )
+
+    link_map: dict[str, list[str]] = {}
+    for name, _, entries in link_blocks:
+        if name in link_map:
+            raise JBSError(f"bloc link '{name}' défini plusieurs fois")
+        link_map[name] = entries
+
+    for name, kind, entries in target_blocks:
         files: list[str] = []
-        for line_no, raw_line in enumerate(body.splitlines(), 1):
-            line = raw_line.strip()
-            if not line:
-                continue
+        for line in entries:
             if not line.endswith(".ja"):
                 raise JBSError(
-                    f"entrée invalide dans compile {name}: '{line}' "
+                    f"entrée invalide dans {kind} {name}: '{line}' "
                     f"(attendu: un fichier .ja)"
                 )
-            # Un fichier doit être un chemin simple ou relatif. On laisse les
-            # sous-répertoires relatifs fonctionner.
             files.append(line)
 
         if not files:
-            raise JBSError(f"le bloc compile '{name}' ne contient aucun fichier .ja")
+            raise JBSError(f"le bloc {kind} '{name}' ne contient aucun fichier .ja")
 
-        targets.append(BuildTarget(name, files))
-        pos = i
-
-    if not targets:
-        raise JBSError("aucun bloc 'compile <nom> { ... }' trouvé")
+        targets.append(BuildTarget(name, files, kind, link_map.get(name, [])))
 
     return JBSConfig(version, output_dir, c89, keep_c, include_dirs, defines, targets)
 
@@ -213,7 +248,16 @@ def expand_using(source_path: Path, source_text: str, loaded: set[Path], stack: 
     return "".join(output)
 
 
-def build_target(jbs_path: Path, target: BuildTarget, output_dir: str | None, jcc_path: Path, c89: bool = False, keep_c: bool = False, include_dirs: list[Path] | None = None, defines: list[str] | None = None) -> int:
+def build_target(
+    jbs_path: Path,
+    target: BuildTarget,
+    output_dir: str | None,
+    jcc_path: Path,
+    c89: bool = False,
+    keep_c: bool = False,
+    include_dirs: list[Path] | None = None,
+    defines: list[str] | None = None,
+) -> int:
     base_dir = jbs_path.parent.resolve()
 
     loaded: set[Path] = set()
@@ -241,10 +285,11 @@ def build_target(jbs_path: Path, target: BuildTarget, output_dir: str | None, jc
     combined_source = "".join(combined_parts)
     output_base = (base_dir / output_dir).resolve() if output_dir else base_dir
     output_base.mkdir(parents=True, exist_ok=True)
-    output_path = output_base / target.name
 
-    # jcc.py accepte un fichier source. On lui donne un fichier temporaire
-    # dans le dossier du projet afin que les diagnostics restent faciles à lire.
+    # JCC output stem is always target.name.
+    output_path = output_base / target.name
+    c_path = output_path.with_suffix(".c")
+
     temp_path: Path | None = None
     try:
         fd, temp_name = tempfile.mkstemp(
@@ -257,32 +302,182 @@ def build_target(jbs_path: Path, target: BuildTarget, output_dir: str | None, jc
         temp_path = Path(temp_name)
         temp_path.write_text(combined_source, encoding="utf-8")
 
-        cmd = [sys.executable, str(jcc_path), str(temp_path), "-o", str(output_path)]
-        if c89:
-            cmd.insert(-2, "--c89")
-        print(f"JBS: compilation de '{target.name}'")
-        print("JBS: -> " + " ".join(cmd))
-        result = subprocess.run(cmd, cwd=str(base_dir), check=False)
+        # First stage: Jaguar -> C.
+        # For executable targets, jcc can compile directly. For library
+        # targets, jcc must ONLY emit C because there is no main/WinMain.
+        print(f"JBS: compilation de '{target.name}' ({target.kind})")
+        print("JBS: Jaguar -> C")
 
-        # JCC génère <sortie>.c avant de compiler l'exécutable. Par défaut,
-        # JBS supprime ce fichier une fois la compilation terminée.
+        # JCC ne fait ici que Jaguar -> C. Le lien final est toujours fait
+        # par GCC afin que les directives `link` fonctionnent aussi pour les
+        # exécutables.
+        jcc_cmd = [sys.executable, str(jcc_path), str(temp_path)]
+        if c89:
+            jcc_cmd.append("--c89")
+        with open(c_path, "w", encoding="utf-8", newline="") as c_file:
+            result = subprocess.run(
+                jcc_cmd,
+                cwd=str(base_dir),
+                stdout=c_file,
+                check=False,
+            )
+        if result.returncode != 0:
+            return result.returncode
+
+        if not c_path.is_file():
+            raise JBSError(f"jcc n'a pas généré le fichier C attendu: {c_path}")
+
+        # Second stage: C -> requested artifact.
+        include_flags = []
+        for inc in include_dirs or []:
+            include_flags.extend(["-I", str(inc)])
+
+        if target.kind == "compile":
+            gcc_cmd = ["gcc", *include_flags, str(c_path), "-o", str(output_path)]
+            for lib in target.links or []:
+                gcc_cmd.append(resolve_link_arg(lib, output_base, base_dir, include_dirs))
+
+        elif target.kind == "compile_static":
+            obj_path = output_base / f"{target.name}.o"
+            archive_path = output_base / f"lib{target.name}.a"
+
+            gcc_cmd = ["gcc", *include_flags, "-c", str(c_path), "-o", str(obj_path)]
+            if c89:
+                gcc_cmd.insert(1, "-std=c89")
+
+            print("JBS: C -> objet")
+            result = subprocess.run(gcc_cmd, cwd=str(base_dir), check=False)
+            if result.returncode != 0:
+                return result.returncode
+
+            ar_cmd = ["ar", "rcs", str(archive_path), str(obj_path)]
+            print("JBS: objet -> bibliothèque statique")
+            result = subprocess.run(ar_cmd, cwd=str(base_dir), check=False)
+
+            try:
+                obj_path.unlink()
+            except OSError:
+                pass
+
+            if result.returncode != 0:
+                return result.returncode
+
+            if not keep_c:
+                try:
+                    c_path.unlink()
+                except OSError:
+                    pass
+
+            print(f"JBS: bibliothèque statique -> '{archive_path}'")
+            return 0
+
+        elif target.kind == "compile_shared":
+            if os.name == "nt":
+                dll_path = output_base / f"{target.name}.dll"
+                import_lib = output_base / f"{target.name}.dll.a"
+                gcc_cmd = [
+                    "gcc",
+                    *include_flags,
+                    "-shared",
+                    str(c_path),
+                    "-o",
+                    str(dll_path),
+                    f"-Wl,--out-implib,{import_lib}",
+                ]
+            else:
+                shared_path = output_base / f"lib{target.name}.so"
+                gcc_cmd = ["gcc", *include_flags, "-shared", "-fPIC", str(c_path), "-o", str(shared_path)]
+
+            for lib in target.links or []:
+                gcc_cmd.append(resolve_link_arg(lib, output_base, base_dir, include_dirs))
+
+        else:
+            raise JBSError(f"type de target inconnu: {target.kind}")
+
+        print("JBS: C -> sortie finale")
+        result = subprocess.run(gcc_cmd, cwd=str(base_dir), check=False)
+
+        if result.returncode == 0:
+            print(f"JBS: sortie -> '{output_path}'")
+
         if not keep_c and result.returncode == 0:
-            c_path = output_path.with_suffix(".c")
             try:
                 c_path.unlink()
                 print(f"JBS: suppression de '{c_path.name}'")
             except FileNotFoundError:
                 pass
             except OSError as e:
-                print(f"JBS: impossible de supprimer '{c_path.name}': {e}", file=sys.stderr)
+                print(
+                    f"JBS: impossible de supprimer '{c_path.name}': {e}",
+                    file=sys.stderr,
+                )
 
         return result.returncode
+
     finally:
         if temp_path is not None:
             try:
                 temp_path.unlink()
             except OSError:
                 pass
+
+
+def resolve_link_arg(value: str, output_base: Path, base_dir: Path, include_dirs=None) -> str:
+    """Transforme une entrée JBS link en argument GCC.
+
+    Exemples:
+      MyLib       -> -lMyLib
+      libMyLib.a -> chemin vers libMyLib.a si présent dans out/
+      MyLib.lib  -> chemin vers MyLib.lib si présent dans out/
+      -lSDL2      -> -lSDL2
+      -Llibs      -> -Llibs
+      chemin/... -> chemin tel quel
+    """
+    value = value.strip()
+    if not value:
+        return value
+
+    if value.startswith("-"):
+        return value
+
+    candidates = [
+        output_base / value,
+        base_dir / value,
+    ]
+    for inc in include_dirs or []:
+        candidates.append(Path(inc) / value)
+
+    # Alias pratiques :
+    #   MyLib.a -> libMyLib.a
+    #   MyLib   -> libMyLib.a / MyLib.lib / ...
+    value_path = Path(value)
+    if value_path.suffix == ".a":
+        stem = value_path.stem
+        candidates.append(output_base / f"lib{stem}.a")
+    elif value_path.suffix == ".so":
+        stem = value_path.stem
+        candidates.append(output_base / f"lib{stem}.so")
+    elif value_path.suffix == ".lib":
+        stem = value_path.stem
+        candidates.append(output_base / f"lib{stem}.lib")
+
+    candidates.extend([
+        output_base / f"lib{value}.a",
+        output_base / f"{value}.lib",
+        output_base / f"lib{value}.lib",
+        output_base / f"lib{value}.so",
+        output_base / f"{value}.dll.a",
+    ])
+
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+
+    # Une bibliothèque sans extension est traitée comme un nom GCC.
+    if not Path(value).suffix and "/" not in value and "\\" not in value:
+        return f"-l{value}"
+
+    return value
 
 
 def main(argv: list[str]) -> int:
@@ -338,24 +533,36 @@ def main(argv: list[str]) -> int:
             output = config.output_dir
         include_dirs = [(jbs_path.parent / d).resolve() for d in config.include_dirs]
         targets = config.targets
-        if target_name is None:
-            if len(targets) != 1:
-                names = ", ".join(t.name for t in targets)
-                raise JBSError(
-                    f"plusieurs targets disponibles ({names}); utilisez --target <nom>"
-                )
-            target = targets[0]
-        else:
+
+        if target_name is not None:
             matches = [t for t in targets if t.name == target_name]
             if not matches:
                 raise JBSError(f"target introuvable: {target_name}")
-            target = matches[0]
+            targets_to_build = [matches[0]]
+        else:
+            # Sans --target, on construit tous les targets dans l'ordre du
+            # fichier JBS. Cela permet notamment de construire une bibliothèque
+            # puis l'exécutable qui la référence.
+            targets_to_build = targets
 
         jcc_path = Path(__file__).resolve().with_name("jcc.py")
         if not jcc_path.is_file():
             raise JBSError(f"jcc.py introuvable à côté de jbs.py: {jcc_path}")
 
-        return build_target(jbs_path, target, output, jcc_path, c89=config.c89, keep_c=config.keep_c, include_dirs=include_dirs, defines=config.defines)
+        for target in targets_to_build:
+            result = build_target(
+                jbs_path,
+                target,
+                output,
+                jcc_path,
+                c89=config.c89,
+                keep_c=config.keep_c,
+                include_dirs=include_dirs,
+                defines=config.defines,
+            )
+            if result != 0:
+                return result
+        return 0
     except (OSError, JBSError) as e:
         print(f"Erreur JBS: {e}", file=sys.stderr)
         return 1

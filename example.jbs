@@ -10,8 +10,11 @@ keep_c
 
 define PI 3.14
 
-compile out {
+
+compile Main {
 	main.ja
-	add.ja
-	sub.ja
+}
+
+link Main {
+	add.a
 }

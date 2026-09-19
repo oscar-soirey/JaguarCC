@@ -1,0 +1,40 @@
+// ============================================================================
+// Jaguar binding généré par jbg.py — glad.h
+// ============================================================================
+// Les fonctions @extern gardent exactement leur nom C.
+
+// typedef C: u32 GLenum
+// typedef C: u8 GLboolean
+// typedef C: u32 GLbitfield
+// typedef C: i32 GLint
+// typedef C: u32 GLuint
+// typedef C: i32 GLsizei
+// typedef C: f64 GLdouble
+// typedef C: f64 GLclampd
+// typedef C: i8 GLchar
+// typedef C: i8 GLcharARB
+// typedef C: u32 GLhandleARB
+// typedef C: u16 GLhalfNV
+
+#define GL_FALSE 0
+#define GL_TRUE 1
+#define GL_ZERO 0
+#define GL_ONE 1
+#define GL_NONE 0
+#define GL_NO_ERROR 0
+#define GL_VERSION_1_0 1
+#define GL_VERSION_1_1 1
+#define GL_VERSION_1_2 1
+#define GL_VERSION_1_3 1
+#define GL_VERSION_1_4 1
+#define GL_VERSION_1_5 1
+#define GL_VERSION_2_0 1
+#define GL_VERSION_2_1 1
+#define GL_VERSION_3_0 1
+#define GL_VERSION_3_1 1
+#define GL_VERSION_3_2 1
+#define GL_VERSION_3_3 1
+
+namespace gl {
+
+}

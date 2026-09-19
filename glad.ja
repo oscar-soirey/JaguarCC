@@ -1,0 +1,7 @@
+// Jaguar binding généré par jbg.py
+// Source: glad.h
+
+#include "glad_jbg.h"
+
+@extern
+i32 gladLoadGL();
