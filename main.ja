@@ -1,0 +1,6 @@
+using sub;
+
+void main(string param)
+{
+	sys:print(add(1,2));
+}

@@ -150,20 +150,20 @@ def c_type(jaguar_type: str) -> str:
     return C_TYPE_NAMES.get(jaguar_type, jaguar_type)
 
 
-TYPE_KEYWORDS = NATIVE_TYPE_KEYWORDS | set(BUILTIN_TYPEDEFS.keys()) | set(TYPE_ALIASES.keys())
+TYPE_KEYWORDS = NATIVE_TYPE_KEYWORDS | set(BUILTIN_TYPEDEFS.keys()) | set(TYPE_ALIASES.keys()) | {"dynamic_list", "list", "map", "container", "pair"}
 INTEGER_TYPES = {"int", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64"}
 FLOAT_TYPES = {"float", "f32", "f64"}
 
 KEYWORDS = TYPE_KEYWORDS | {
     "struct", "namespace", "class", "virtual", "override", "constr", "destr", "return", "true", "false", "const",
-    "if", "else", "while", "break", "continue", "for_loop", "this", "auto",
+    "if", "else", "while", "break", "continue", "for_loop", "this", "auto", "signal", "new",
 }
 
 # tokens à deux caractères (testés AVANT les tokens à un caractère)
-TWO_CHAR_TOKENS = {"==", "!=", "<=", ">=", "&&", "||"}
+TWO_CHAR_TOKENS = {"==", "!=", "<=", ">=", "&&", "||", "=>", "->"}
 
 # tokens à un seul caractère
-SINGLE_CHAR_TOKENS = set("{}();,:.$+-*/%@=<>!")
+SINGLE_CHAR_TOKENS = set("{}[]();,:.$+-*/%@=<>!")
 
 
 class LexError(Exception):
@@ -385,6 +385,23 @@ class BinOp:
 
 
 @dataclass
+class IndexAccess:
+    obj: object
+    index: object
+
+
+@dataclass
+class NewExpr:
+    type: str
+    args: list
+
+
+@dataclass
+class ListLiteral:
+    items: list
+
+
+@dataclass
 class MemberAccess:
     obj: object
     name: str
@@ -432,6 +449,12 @@ class AssignStmt:
 
 
 @dataclass
+class VariableChangeHandler:
+    name: str
+    body: object
+
+
+@dataclass
 class MemberAssignStmt:
     target: MemberAccess
     expr: object
@@ -465,6 +488,14 @@ class ForLoopStmt:
     var_name: str
     start: object
     end: object
+    body: Block
+
+
+@dataclass
+class CollectionLoopStmt:
+    kind: str
+    var_name: str
+    collection: object
     body: Block
 
 
@@ -526,7 +557,9 @@ def _iter_stmts(stmts):
                 yield from _iter_stmts([s.else_branch])
             elif isinstance(s.else_branch, Block):
                 yield from _iter_stmts(s.else_branch.statements)
-        elif isinstance(s, (WhileStmt, ForLoopStmt)):
+        elif isinstance(s, (WhileStmt, ForLoopStmt, CollectionLoopStmt)):
+            yield from _iter_stmts(s.body.statements)
+        elif isinstance(s, VariableChangeHandler):
             yield from _iter_stmts(s.body.statements)
 
 
@@ -771,7 +804,21 @@ class Parser:
         tok = self.peek()
         if tok.kind in TYPE_KEYWORDS or tok.kind == "IDENT":
             self.advance()
-            return canonical_type(tok.value)
+            base = canonical_type(tok.value)
+            if self.peek().kind == "<":
+                self.advance()
+                first = self.parse_type()
+                if self.peek().kind == ",":
+                    self.advance()
+                    second = self.parse_type()
+                    self.expect(">")
+                    if base not in ("map", "pair"): raise ParseError(f"le type générique '{base}' n'accepte qu'un paramètre")
+                    return f"{base}<{first},{second}>"
+                self.expect(">")
+                if base not in ("list", "container"):
+                    raise ParseError(f"le type générique '{base}' attend deux paramètres" if base in ("map", "pair") else f"type générique inconnu '{base}' (ligne {tok.line})")
+                return f"{base}<{first}>"
+            return base
         raise ParseError(f"type attendu, trouvé '{tok.kind}' ligne {tok.line}")
 
     def parse_param(self) -> Param:
@@ -825,6 +872,8 @@ class Parser:
             return True
         if tok.kind in TYPE_KEYWORDS:
             return True
+        if tok.kind == "IDENT" and self.peek(1).kind == "<":
+            return True
         return tok.kind == "IDENT" and self.peek(1).kind == "IDENT"
 
     def parse_var_decl(self) -> VarDecl:
@@ -842,6 +891,8 @@ class Parser:
         name = self.expect("IDENT").value
         init = None
         if self.peek().kind == "=":
+            self.advance(); init = self.parse_expr()
+        elif self.peek().kind == "=>":
             self.advance(); init = self.parse_expr()
         self.expect(";")
         if (is_auto or is_const) and init is None:
@@ -914,6 +965,12 @@ class Parser:
 
     def parse_statement(self):
         tok = self.peek()
+        if tok.kind == "signal":
+            self.advance()
+            self.expect(":")
+            name = self.expect("IDENT").value
+            body = self.parse_block()
+            return VariableChangeHandler(name, body)
         if tok.kind == "return":
             self.advance()
             if self.peek().kind == ";":
@@ -937,6 +994,20 @@ class Parser:
         if self._is_for_loop_ahead():
             return self.parse_for_loop()
 
+        if tok.kind == "auto" and self.peek(1).kind == "IDENT" and self.peek(2).kind == "=" and self.peek(3).kind == "IDENT" and self.peek(3).value in ("loop_list", "loop_map"):
+            self.advance()
+            name = self.expect("IDENT").value
+            self.expect("=")
+            kind = self.advance().value
+            self.expect("(")
+            collection = self.parse_expr()
+            self.expect(")")
+            body = self.parse_block()
+            return CollectionLoopStmt(kind, name, collection, body)
+
+        if tok.kind == "IDENT" and self.peek(1).kind == "<":
+            return self.parse_var_decl()
+
         if tok.kind == "IDENT" and self.peek(1).kind == "=":
             return self.parse_assignment()
 
@@ -944,7 +1015,7 @@ class Parser:
             save=self.pos
             lhs=self.parse_expr()
             if self.peek().kind == "=":
-                if isinstance(lhs, MemberAccess):
+                if isinstance(lhs, (MemberAccess, IndexAccess)):
                     self.advance(); rhs=self.parse_expr(); self.expect(";"); return MemberAssignStmt(lhs,rhs)
                 if isinstance(lhs, Call) and isinstance(lhs.callee, MemberAccess) and lhs.callee.name == "GetMember":
                     self.advance(); rhs=self.parse_expr(); self.expect(";")
@@ -1022,6 +1093,26 @@ class Parser:
         if tok.kind in ("true", "false"): self.advance(); return BoolLit(tok.kind == "true")
         if tok.kind == "(":
             self.advance(); e=self.parse_expr(); self.expect(")"); return e
+        if tok.kind == "{":
+            self.advance()
+            items=[]
+            if self.peek().kind != "}":
+                items.append(self.parse_expr())
+                while self.peek().kind == ",":
+                    self.advance(); items.append(self.parse_expr())
+            self.expect("}")
+            return ListLiteral(items)
+        if tok.kind == "new":
+            self.advance()
+            t = self.parse_type()
+            self.expect("(")
+            args=[]
+            if self.peek().kind != ")":
+                args.append(self.parse_call_arg())
+                while self.peek().kind == ",":
+                    self.advance(); args.append(self.parse_call_arg())
+            self.expect(")")
+            return NewExpr(t,args)
         if tok.kind not in ("IDENT", "this"):
             if tok.kind == "for_loop":
                 raise ParseError("for_loop s'utilise uniquement sous la forme `int i = for_loop(début, fin) { ... }`")
@@ -1038,6 +1129,10 @@ class Parser:
         while True:
             if self.peek().kind == ".":
                 self.advance(); expr=MemberAccess(expr, self.expect("IDENT").value); continue
+            if self.peek().kind == "->":
+                self.advance(); expr=MemberAccess(expr, self.expect("IDENT").value); continue
+            if self.peek().kind == "[":
+                self.advance(); idx=self.parse_expr(); self.expect("]"); expr=IndexAccess(expr, idx); continue
             if self.peek().kind == "(":
                 self.advance(); args=[]
                 if self.peek().kind != ")":
@@ -1356,6 +1451,24 @@ def _system_runtime(used, used_string=False):
             "static void _j_sys_print_bool(_jBool v) {",
             "    printf(\"%s\\n\", v ? \"true\" : \"false\");",
             "}",
+            "",
+            "static void _j_sys_print_dynamic(void *data, const char *type) {",
+            "    if (!data || !type) { printf(\"<null>\\n\"); return; }",
+            "    if (!strcmp(type, \"string\")) { string *v=(string*)data; printf(\"%s\\n\", (v && v->data) ? v->data : \"\"); return; }",
+            "    if (!strcmp(type, \"bool\")) { printf(\"%s\\n\", *((_jBool*)data) ? \"true\" : \"false\"); return; }",
+            "    if (!strcmp(type, \"f32\") || !strcmp(type, \"float\")) { printf(\"%g\\n\", (double)*((float*)data)); return; }",
+            "    if (!strcmp(type, \"f64\")) { printf(\"%g\\n\", *((double*)data)); return; }",
+            "    if (!strcmp(type, \"i8\")) { printf(\"%d\\n\", (int)*((signed char*)data)); return; }",
+            "    if (!strcmp(type, \"u8\")) { printf(\"%u\\n\", (unsigned int)*((unsigned char*)data)); return; }",
+            "    if (!strcmp(type, \"i16\")) { printf(\"%d\\n\", (int)*((short*)data)); return; }",
+            "    if (!strcmp(type, \"u16\")) { printf(\"%u\\n\", (unsigned int)*((unsigned short*)data)); return; }",
+            "    if (!strcmp(type, \"i32\") || !strcmp(type, \"int\")) { printf(\"%d\\n\", *((int*)data)); return; }",
+            "    if (!strcmp(type, \"u32\")) { printf(\"%u\\n\", *((unsigned int*)data)); return; }",
+            "    if (!strcmp(type, \"i64\")) { printf(\"%lld\\n\", *((long long*)data)); return; }",
+            "    if (!strcmp(type, \"u64\")) { printf(\"%llu\\n\", *((unsigned long long*)data)); return; }",
+            "    fprintf(stderr, \"Jaguar runtime error: impossible d\'imprimer une valeur dynamic_list de type \'%s\'\\n\", type);",
+            "    abort();",
+            "}",
         ]
 
     if ("sys:console", "set_color") in used:
@@ -1548,6 +1661,8 @@ class CodeGen:
         self._scope_owned = []
         self._loop_scope_bases = []
         self._tmp_id = 0                 # noms uniques des temporaires de for_loop
+        self._change_handlers: Dict[str, object] = {}
+        self._in_change_handler = False
 
         # variables globales : nom -> type Jaguar (pour l'inférence de
         # types dans la résolution de surcharge, et la validation)
@@ -1573,6 +1688,9 @@ class CodeGen:
     def gen(self) -> str:
         used_types = self._used_builtin_types()
         used_system = self._used_system_builtins()
+        if self._uses_collections():
+            # Le runtime polymorphe des collections partage les helpers string/bool.
+            used_types.update({"string", "i32", "bool"})
         used_string = "string" in used_types or any(
             fn.ret_type == "string" or any(p.type == "string" for p in fn.params)
             for fns in self.groups.values() for fn in fns
@@ -1585,6 +1703,7 @@ class CodeGen:
         typedef_lines = [
             BUILTIN_TYPEDEFS[t] for t in ORDERED_BUILTIN_TYPES if t in used_types
         ]
+        pair_lines = self._pair_typedefs()
 
         parts = []
         if self.classes:
@@ -1593,9 +1712,14 @@ class CodeGen:
         # `string`, donc son helper C a besoin de ce type.
         if typedef_lines:
             parts.append("\n".join(typedef_lines))
+        if pair_lines:
+            parts.append("\n".join(pair_lines))
         runtime = _system_runtime(used_system, used_string)
         if runtime:
             parts.append(runtime)
+        collection_runtime = self._collection_runtime()
+        if collection_runtime:
+            parts.append(collection_runtime)
         reflection = self._native_reflection_runtime()
         if reflection:
             parts.append(self._native_reflection_prelude())
@@ -1653,10 +1777,15 @@ class CodeGen:
                 elif isinstance(stmt.else_branch, Block):
                     for x in stmt.else_branch.statements:
                         scan_stmt(x)
-            elif isinstance(stmt, (WhileStmt, ForLoopStmt)):
+            elif isinstance(stmt, (WhileStmt, ForLoopStmt, CollectionLoopStmt)):
                 if isinstance(stmt, ForLoopStmt):
                     scan_expr(stmt.start)
                     scan_expr(stmt.end)
+                elif isinstance(stmt, CollectionLoopStmt):
+                    scan_expr(stmt.collection)
+                for x in stmt.body.statements:
+                    scan_stmt(x)
+            elif isinstance(stmt, VariableChangeHandler):
                 for x in stmt.body.statements:
                     scan_stmt(x)
 
@@ -1695,6 +1824,7 @@ class CodeGen:
             if isinstance(s, MemberAssignStmt): return expr(s.target) or expr(s.expr)
             if isinstance(s, IfStmt): return expr(s.cond) or any(stmt(x) for x in s.then_block.statements) or (stmt(s.else_branch) if isinstance(s.else_branch, IfStmt) else any(stmt(x) for x in s.else_branch.statements) if isinstance(s.else_branch, Block) else False)
             if isinstance(s, (WhileStmt, ForLoopStmt)): return any(stmt(x) for x in s.body.statements)
+            if isinstance(s, VariableChangeHandler): return any(stmt(x) for x in s.body.statements)
             return False
         for item in self.program.items:
             if isinstance(item, FunctionDecl) and (item.ret_type == "string" or any(p.type == "string" for p in item.params)): return True
@@ -1711,6 +1841,9 @@ class CodeGen:
         def note(t):
             if t in BUILTIN_TYPEDEFS:
                 used.add(t)
+            gp=self._generic_parts(t)
+            if gp:
+                for part in self._split_generic_args(gp[1]): note(part)
 
         for item in self.program.items:
             if isinstance(item, FunctionDecl):
@@ -1742,6 +1875,216 @@ class CodeGen:
         return used
 
 
+    @staticmethod
+    def _generic_parts(t):
+        if not isinstance(t, str): return None
+        if t == "dynamic_list": return ("dynamic_list", "")
+        for k in ("list", "map", "container", "pair"):
+            p=k+"<"
+            if t.startswith(p) and t.endswith(">"):
+                return k,t[len(p):-1]
+        return None
+
+    def _split_generic_args(self, inner):
+        depth=0; start=0; out=[]
+        for i,ch in enumerate(inner):
+            if ch=='<': depth+=1
+            elif ch=='>': depth-=1
+            elif ch==',' and depth==0:
+                out.append(inner[start:i].strip()); start=i+1
+        out.append(inner[start:].strip())
+        return out
+
+    def _pair_c_type(self,t):
+        p=self._generic_parts(t)
+        if not p or p[0] != "pair": return c_type(t)
+        a,b=self._split_generic_args(p[1])
+        def clean(x): return canonical_type(x).replace("<","_").replace(">","_").replace(",","_").replace(":","_")
+        return f"_jPair_{clean(a)}_{clean(b)}"
+
+    def _pair_typedefs(self):
+        pairs=set()
+        def note(t):
+            p=self._generic_parts(t)
+            if p:
+                if p[0]=="pair": pairs.add(t)
+                for x in self._split_generic_args(p[1]): note(x)
+        def scan(stmts, env):
+            env=dict(env)
+            for st in stmts:
+                if isinstance(st, VarDecl):
+                    note(st.type); env[st.name]=st.type
+                elif isinstance(st, CollectionLoopStmt):
+                    ct=env.get(st.collection.name) if isinstance(st.collection, Ident) else None
+                    if ct:
+                        gp=self._generic_parts(ct)
+                        if gp and gp[0]=="map":
+                            a,b=self._split_generic_args(gp[1]); note(f"pair<{a},{b}>")
+                    scan(st.body.statements, env)
+                elif isinstance(st, IfStmt):
+                    scan(st.then_block.statements, env)
+                    if isinstance(st.else_branch, Block): scan(st.else_branch.statements, env)
+                    elif isinstance(st.else_branch, IfStmt): scan([st.else_branch], env)
+                elif isinstance(st, (WhileStmt, ForLoopStmt)):
+                    scan(st.body.statements, env)
+        for item in self.program.items:
+            if isinstance(item, FunctionDecl):
+                env={p.name:p.type for p in item.params}
+                scan(item.body.statements, env)
+            elif isinstance(item, ClassDecl):
+                for f in item.fields: note(f.type)
+                for m in item.methods:
+                    env={p.name:p.type for p in m.params}
+                    scan(m.body.statements, env)
+            elif isinstance(item, VarDecl): note(item.type)
+        out=[]
+        for t in sorted(pairs):
+            a,b=self._split_generic_args(self._generic_parts(t)[1]); cn=self._pair_c_type(t)
+            out.append(f"typedef struct {cn} {{ {c_type(a)} first; {c_type(b)} second; }} {cn};")
+        return out
+
+    def _collection_c_type(self,t):
+        p=self._generic_parts(t)
+        return {"list":"_jList","map":"_jMap","container":"_jContainer","pair":self._pair_c_type(t),"dynamic_list":"_jDynamicList"}[p[0]] if p else c_type(t)
+
+    def _collection_elem_size(self,t):
+        if t=="string": return "sizeof(string*)"
+        if t in self.classes: return "sizeof(void*)"
+        if self._generic_parts(t): return f"sizeof({self._collection_c_type(t)})"
+        return f"sizeof({c_type(t)})"
+
+    def _gen_collection_init(self,name,t,init,local_types):
+        kind,inner=self._generic_parts(t); out=[]
+        if kind=="dynamic_list":
+            out.append(f'_j_dynamic_list_init(&{name});')
+            if init is not None:
+                if not isinstance(init,ListLiteral): raise CodeGenError("initialiseur de dynamic_list invalide")
+                for x in init.items:
+                    out.extend(self._gen_dynamic_list_push(name, x, local_types))
+        elif kind=="list":
+            out.append(f'_j_list_init(&{name},{self._collection_elem_size(inner)},"{inner}");')
+            if init is not None:
+                if not isinstance(init,ListLiteral): raise CodeGenError(f"initialiseur de list<{inner}> invalide")
+                for x in init.items:
+                    ex=self.gen_expr(x,local_types); n=self._tmp_id; self._tmp_id+=1
+                    out.append(f'{self._collection_c_type(inner)} _jct{n} = {ex};')
+                    out.append(f'_j_list_push(&{name}, &_jct{n});')
+        elif kind=="pair":
+            parts=self._split_generic_args(inner)
+            if len(parts)!=2: raise CodeGenError("pair doit avoir deux types")
+            if init is not None:
+                if not isinstance(init,ListLiteral) or len(init.items)!=2: raise CodeGenError("initialiseur de pair invalide : utilise {first, second}")
+                a,b=parts; out.append(f"{name}.first = {self.gen_expr(init.items[0],local_types)};"); out.append(f"{name}.second = {self.gen_expr(init.items[1],local_types)};")
+        elif kind=="map":
+            parts=self._split_generic_args(inner)
+            if len(parts)!=2: raise CodeGenError("map doit avoir deux types: map<key,value>")
+            kt,vt=parts; out.append(f'_j_map_init(&{name},{self._collection_elem_size(kt)},{self._collection_elem_size(vt)},"{kt}","{vt}");')
+            if init is not None:
+                if not isinstance(init,ListLiteral) or len(init.items)%2: raise CodeGenError("initialiseur de map invalide : utilise {key, value, ...}")
+                for i in range(0,len(init.items),2):
+                    k=self.gen_expr(init.items[i],local_types); v=self.gen_expr(init.items[i+1],local_types)
+                    nk=self._tmp_id; self._tmp_id+=1; nv=self._tmp_id; self._tmp_id+=1
+                    out.append(f'{c_type(kt)} _jck{nk} = {k};')
+                    out.append(f'{c_type(vt)} _jcv{nv} = {v};')
+                    out.append(f'_j_map_emplace(&{name}, &_jck{nk}, &_jcv{nv});')
+        else:
+            if init is None: out.append(f'_j_container_init(&{name},0,"{inner}",0);')
+            elif isinstance(init,NewExpr):
+                if init.type!=inner: raise CodeGenError(f"new {init.type} incompatible avec container<{inner}>")
+                if inner in self.classes:
+                    cls=self.classes[inner]; ctor=next((m for m in cls.methods if m.is_constructor),None)
+                    ordered=self._ordered_call_args(init.args,ctor.params if ctor else [],f"constructeur '{inner}'") if ctor else []
+                    args=", ".join(self.gen_expr(a,local_types) for a in ordered)
+                    out.append(f'_j_container_init(&{name},(void*){inner}_ctor({args}),"{inner}",(void(*)(void*)){inner}_destr);')
+                else:
+                    if len(init.args)!=1: raise CodeGenError(f"new {inner}(...) attend une valeur")
+                    ex=self.gen_expr(init.args[0].expr if isinstance(init.args[0],NamedArg) else init.args[0],local_types)
+                    out.append(f'{{ {c_type(inner)} *_jtmp=( {c_type(inner)}*)malloc(sizeof({c_type(inner)})); if(!_jtmp)abort(); *_jtmp={ex}; _j_container_init(&{name},_jtmp,"{inner}",0); }}')
+            else:
+                ex=self.gen_expr(init,local_types); out.append(f'{{ {c_type(inner)} *_jtmp=({c_type(inner)}*)malloc(sizeof({c_type(inner)})); if(!_jtmp)abort(); *_jtmp={ex}; _j_container_init(&{name},_jtmp,"{inner}",0); }}')
+        return out
+
+    def _gen_dynamic_list_push(self, name, expr_node, local_types):
+        t=self.infer_type(expr_node, local_types)
+        temp_type = t
+        if isinstance(t, tuple):
+            temp_type = "int" if t[1] == "int" else "float"
+            t = "i32" if t[1] == "int" else "f32"
+        if t is None or t == "void":
+            raise CodeGenError("dynamic_list.push() ne peut pas déterminer le type de la valeur")
+        ex=self.gen_expr(expr_node, local_types)
+        n=self._tmp_id; self._tmp_id += 1
+        if t == "string":
+            return [f'_j_dynamic_list_push_owned(&{name}, (void*){ex}, "string", _j_destroy_string_value);']
+        if t in self.classes:
+            if isinstance(expr_node, NewExpr):
+                return [f'_j_dynamic_list_push_owned(&{name}, (void*){ex}, "{t}", (void(*)(void*)){t}_destr);']
+            return [f'_j_dynamic_list_push_borrowed(&{name}, (void*){ex}, "{t}");']
+        return [f'{{ {c_type(temp_type)} _jdlv{n} = {ex}; _j_dynamic_list_push_copy(&{name}, &_jdlv{n}, sizeof(_jdlv{n}), "{t}"); }}']
+
+    def _uses_collections(self):
+        def typ(t):
+            return isinstance(t, str) and (t == "dynamic_list" or t.startswith("list<") or t.startswith("map<") or t.startswith("container<"))
+        def expr(e):
+            if isinstance(e, (ListLiteral, NewExpr)): return True
+            if isinstance(e, Call): return expr(e.callee) or any(expr(a) for a in e.args)
+            if isinstance(e, MemberAccess): return expr(e.obj)
+            if isinstance(e, IndexAccess): return expr(e.obj) or expr(e.index)
+            if isinstance(e, CastExpr): return expr(e.operand)
+            if isinstance(e, UnaryOp): return expr(e.operand)
+            if isinstance(e, BinOp): return expr(e.left) or expr(e.right)
+            return False
+        def stmt(st):
+            if isinstance(st, VarDecl): return typ(st.type) or (expr(st.init) if st.init else False)
+            if isinstance(st, (AssignStmt, MemberAssignStmt)): return expr(st.expr) or (expr(st.target) if isinstance(st, MemberAssignStmt) else False)
+            if isinstance(st, ExprStmt): return expr(st.expr)
+            if isinstance(st, ReturnStmt): return expr(st.expr) if st.expr else False
+            if isinstance(st, IfStmt): return expr(st.cond) or any(stmt(x) for x in st.then_block.statements) or (any(stmt(x) for x in st.else_branch.statements) if isinstance(st.else_branch, Block) else stmt(st.else_branch) if isinstance(st.else_branch, IfStmt) else False)
+            if isinstance(st, (WhileStmt, ForLoopStmt)): return any(stmt(x) for x in st.body.statements)
+            return False
+        for item in self.program.items:
+            if isinstance(item, VarDecl) and typ(item.type): return True
+            if isinstance(item, FunctionDecl) and (typ(item.ret_type) or any(typ(p.type) for p in item.params) or any(stmt(x) for x in item.body.statements)): return True
+            if isinstance(item, ClassDecl) and (any(typ(f.type) for f in item.fields) or any(stmt(x) for m in item.methods for x in m.body.statements)): return True
+        return False
+
+    def _collection_runtime(self):
+        if not self._uses_collections(): return ""
+        return "\n".join([
+            "/* Jaguar containers: runtime polymorphic storage, no C templates. */",
+            "#include <string.h>",
+            "typedef struct _jDynamicItem { void *data; size_t size; const char *type; void (*destroy)(void*); } _jDynamicItem;",
+            "typedef struct _jDynamicList { _jDynamicItem *items; size_t size; size_t cap; } _jDynamicList;",
+            "typedef struct _jList { void **items; size_t size; size_t cap; size_t elem_size; const char *elem_type; } _jList;",
+            "typedef struct _jMapEntry { void *key; void *value; } _jMapEntry;",
+            "typedef struct _jMap { _jMapEntry *items; size_t size; size_t cap; size_t key_size; size_t value_size; const char *key_type; const char *value_type; } _jMap;",
+            "typedef struct _jContainer { void *data; const char *type; void (*destroy)(void*); } _jContainer;",
+            "static void *_j_memdup(const void *src,size_t n){void*p=malloc(n);if(p&&src)memcpy(p,src,n);return p;}",
+            "static void _j_destroy_string_value(void*p){if(p){string_destr((string*)p);free(p);}}",
+            "static void _j_dynamic_list_init(_jDynamicList*l){l->items=0;l->size=0;l->cap=0;}",
+            "static void _j_dynamic_list_grow(_jDynamicList*l){if(l->size==l->cap){size_t nc=l->cap?l->cap*2:4;_jDynamicItem*ni=(_jDynamicItem*)realloc(l->items,nc*sizeof(_jDynamicItem));if(!ni)abort();l->items=ni;l->cap=nc;}}",
+            "static void _j_dynamic_list_push_copy(_jDynamicList*l,const void*v,size_t n,const char*t){_j_dynamic_list_grow(l);l->items[l->size].data=_j_memdup(v,n);if(!l->items[l->size].data)abort();l->items[l->size].size=n;l->items[l->size].type=t;l->items[l->size].destroy=0;l->size++;}",
+            "static void _j_dynamic_list_push_owned(_jDynamicList*l,void*v,const char*t,void(*destroy)(void*)){_j_dynamic_list_grow(l);l->items[l->size].data=v;l->items[l->size].size=sizeof(void*);l->items[l->size].type=t;l->items[l->size].destroy=destroy;l->size++;}",
+            "static void _j_dynamic_list_push_borrowed(_jDynamicList*l,void*v,const char*t){_j_dynamic_list_push_owned(l,v,t,0);}",
+            "static void *_j_dynamic_list_get(_jDynamicList*l,size_t i){if(!l||i>=l->size){fprintf(stderr,\"Jaguar runtime error: dynamic_list index %lu out of range\\n\",(unsigned long)i);abort();}return l->items[i].data;}",
+            "static const char *_j_dynamic_list_type(_jDynamicList*l,size_t i){if(!l||i>=l->size){fprintf(stderr,\"Jaguar runtime error: dynamic_list index %lu out of range\\n\",(unsigned long)i);abort();}return l->items[i].type;}",
+            "static void _j_dynamic_list_destroy(_jDynamicList*l){size_t i;if(!l)return;for(i=0;i<l->size;i++)if(l->items[i].destroy)l->items[i].destroy(l->items[i].data);free(l->items);l->items=0;l->size=0;l->cap=0;}",
+            "static void _j_list_init(_jList*l,size_t es,const char*t){l->items=0;l->size=0;l->cap=0;l->elem_size=es;l->elem_type=t;}",
+            "static void _j_destroy_string_slot(void*p){string*s=p?*(string**)p:0;if(s){string_destr(s);free(s);}}",
+            "static void _j_list_push(_jList*l,const void*v){void*p;if(l->size==l->cap){size_t nc=l->cap?l->cap*2:4;void**ni=(void**)realloc(l->items,nc*sizeof(void*));if(!ni)abort();l->items=ni;l->cap=nc;}p=_j_memdup(v,l->elem_size);if(!p)abort();l->items[l->size++]=p;}",
+            "static void *_j_list_get(_jList*l,size_t i){if(!l||i>=l->size){fprintf(stderr,\"Jaguar runtime error: list index %lu out of range\\n\",(unsigned long)i);abort();}return l->items[i];}",
+            "static void _j_list_destroy(_jList*l,void(*destroy)(void*)){size_t i;if(!l)return;for(i=0;i<l->size;i++){if(destroy)destroy(l->items[i]);free(l->items[i]);}free(l->items);l->items=0;l->size=0;l->cap=0;}",
+            "static void _j_map_init(_jMap*m,size_t ks,size_t vs,const char*kt,const char*vt){m->items=0;m->size=0;m->cap=0;m->key_size=ks;m->value_size=vs;m->key_type=kt;m->value_type=vt;}",
+            "static int _j_map_keyeq(const void*a,const void*b,size_t n,const char*t){if(!strcmp(t,\"string\")){string*sa=*(string**)a;string*sb=*(string**)b;return sa&&sb&&sa->data&&sb->data&&!strcmp(sa->data,sb->data);}return memcmp(a,b,n)==0;}",
+            "static void *_j_map_get(_jMap*m,const void*k){size_t i;for(i=0;i<m->size;i++)if(_j_map_keyeq(m->items[i].key,k,m->key_size,m->key_type))return m->items[i].value;return 0;}",
+            "static void *_j_map_get_string(_jMap*m,string*k){size_t i;for(i=0;i<m->size;i++){string*sk=*(string**)m->items[i].key;if(sk&&k&&sk->data&&k->data&&!strcmp(sk->data,k->data))return m->items[i].value;}fprintf(stderr,\"Jaguar runtime error: map key not found\\n\");abort();return 0;}",
+            "static void _j_map_emplace(_jMap*m,const void*k,const void*v){size_t i;void*kp;void*vp;for(i=0;i<m->size;i++)if(_j_map_keyeq(m->items[i].key,k,m->key_size,m->key_type)){memcpy(m->items[i].value,v,m->value_size);return;}if(m->size==m->cap){size_t nc=m->cap?m->cap*2:4;_jMapEntry*ni=(_jMapEntry*)realloc(m->items,nc*sizeof(_jMapEntry));if(!ni)abort();m->items=ni;m->cap=nc;}kp=_j_memdup(k,m->key_size);vp=_j_memdup(v,m->value_size);if(!kp||!vp)abort();m->items[m->size].key=kp;m->items[m->size].value=vp;m->size++;}",
+            "static void _j_map_destroy(_jMap*m,void(*kd)(void*),void(*vd)(void*)){size_t i;if(!m)return;for(i=0;i<m->size;i++){if(kd)kd(m->items[i].key);if(vd)vd(m->items[i].value);free(m->items[i].key);free(m->items[i].value);}free(m->items);m->items=0;m->size=0;m->cap=0;}",
+            "static void _j_container_init(_jContainer*c,void*d,const char*t,void(*destroy)(void*)){c->data=d;c->type=t;c->destroy=destroy;}",
+            "static void *_j_container_get(_jContainer*c){if(!c||!c->data){fprintf(stderr,\"Jaguar runtime error: empty container access\\n\");abort();}return c->data;}",
+            "static void _j_container_destroy(_jContainer*c){if(!c)return;if(c->data){if(c->destroy)c->destroy(c->data);else free(c->data);}c->data=0;c->destroy=0;}",
+        ])
+
     def _native_reflection_prelude(self):
         return "\n".join([
             "typedef struct _jReflectEntry { const char *name; void *ptr; const char *type_name; } _jReflectEntry;",
@@ -1767,6 +2110,12 @@ class CodeGen:
         ])
 
     def _native_reflection_runtime(self):
+        # Le runtime réflexion/factory n'est émis que si le programme
+        # possède réellement des classes. Cela évite d'injecter des types
+        # (_jBool, string, etc.) et des helpers inutiles dans un programme
+        # Jaguar qui n'utilise pas la réflexion.
+        if not any(name != "string" for name in self.classes):
+            return ""
         registered=[c for c in self.classes.values() if c.name!="string" and c.is_registered]
         exposed_any=any(getattr(f,"is_exposed",False) for c in self.classes.values() for f in c.fields)
         # Le runtime factory doit exister même lorsqu'aucune classe n'est
@@ -1841,6 +2190,8 @@ class CodeGen:
         return False   # Call, NamespacedIdent, ...
 
     def gen_global_var(self, v: VarDecl) -> str:
+        if self._generic_parts(v.type):
+            raise CodeGenError("les list/map/container doivent actuellement être des variables locales")
         ctype = c_type(v.type)
         if v.init is None:
             return f"{ctype} {v.name};"
@@ -2038,6 +2389,7 @@ class CodeGen:
         if self._is_special_main(fn):
             return self._gen_main(fn)
 
+        self._change_handlers = {}
         params_str = ", ".join(("const " if p.is_const else "") + f"{c_type(p.type)} {p.name}" for p in fn.params)
         header = f"{c_type(fn.ret_type)} {fn.mangled_name}({params_str})"
         local_types = {p.name: p.type for p in fn.params}
@@ -2063,6 +2415,7 @@ class CodeGen:
         # doit rester en tête, avant les variables locales de l'utilisateur.
         # _in_main : tout `return;` (même dans un if / une boucle imbriquée)
         # devient `return 0;`
+        self._change_handlers = {}
         self._in_main = True
         body_lines = self._gen_body_lines(fn.body.statements, local_types)
         self._in_main = False
@@ -2110,12 +2463,28 @@ class CodeGen:
     def _scope_cleanup_lines(self, owned) -> List[str]:
         out = []
         for name, type_name in reversed(owned):
-            # Une instance de classe peut être NULL si sa construction
-            # dynamique (ex: factory:construct) a échoué. Dans ce cas,
-            # n'appelle surtout pas le destructeur : un destructeur Jaguar
-            # suppose que l'objet existe réellement.
-            out.append(f"if ({name}) {type_name}_destr({name});")
-            out.append(f"free({name});")
+            gp=self._generic_parts(type_name)
+            if gp:
+                kind,inner=gp
+                if kind=="dynamic_list":
+                    out.append(f"_j_dynamic_list_destroy(&{name});")
+                elif kind=="list":
+                    d="_j_destroy_string_slot" if inner=="string" else "0"
+                    out.append(f"_j_list_destroy(&{name},{d});")
+                elif kind=="map":
+                    parts=self._split_generic_args(inner)
+                    kd="_j_destroy_string_slot" if parts and parts[0]=="string" else "0"
+                    vd="_j_destroy_string_slot" if len(parts)>1 and parts[1]=="string" else "0"
+                    out.append(f"_j_map_destroy(&{name},{kd},{vd});")
+                elif kind=="pair":
+                    parts=self._split_generic_args(inner)
+                    if len(parts)==2:
+                        if parts[0]=="string": out.extend([f"if ({name}.first) {{ string_destr({name}.first); free({name}.first); }}"])
+                        if parts[1]=="string": out.extend([f"if ({name}.second) {{ string_destr({name}.second); free({name}.second); }}"])
+                else: out.append(f"_j_container_destroy(&{name});")
+            else:
+                out.append(f"if ({name}) {type_name}_destr({name});")
+                out.append(f"free({name});")
         return out
 
     def _all_active_cleanup_lines(self) -> List[str]:
@@ -2154,7 +2523,9 @@ class CodeGen:
                 # `auto` est résolu à partir de son expression d'initialisation.
                 if s.type == "auto":
                     s.type = self._resolve_auto_type(s.init, local_types)
-                if s.init is not None and s.type != "auto" and s.type in self.classes and isinstance(s.init, Call) and isinstance(s.init.callee, NamespacedIdent) and s.init.callee.namespace == "factory" and s.init.callee.name == "construct":
+                if self._generic_parts(s.type):
+                    init = None
+                elif s.init is not None and s.type != "auto" and s.type in self.classes and isinstance(s.init, Call) and isinstance(s.init.callee, NamespacedIdent) and s.init.callee.namespace == "factory" and s.init.callee.name == "construct":
                     if len(s.init.args) != 1:
                         raise CodeGenError("factory:construct() attend exactement un nom de classe")
                     init = f"({s.type}*)_j_factory_construct({self.gen_expr(s.init.args[0].expr if isinstance(s.init.args[0], NamedArg) else s.init.args[0], local_types)})"
@@ -2166,6 +2537,12 @@ class CodeGen:
                     init = self._gen_reflection_value(s.init, s.type, local_types)
                 else:
                     init = self.gen_expr(s.init, local_types) if s.init is not None else None
+                if self._generic_parts(s.type):
+                    local_types[s.name] = s.type
+                    stmt_lines.append(f"{self._collection_c_type(s.type)} {s.name};")
+                    stmt_lines.extend(self._gen_collection_init(s.name,s.type,s.init,local_types))
+                    owned.append((s.name,s.type))
+                    continue
                 local_types[s.name] = s.type
                 if self._is_owned_class_type(s.type):
                     owned.append((s.name, s.type))
@@ -2213,6 +2590,36 @@ class CodeGen:
     
         return "\n".join(lines)
 
+    def _collect_change_handlers(self, statements, local_types):
+        handlers = {}
+        for st in statements:
+            if isinstance(st, VariableChangeHandler):
+                if st.name not in local_types and st.name not in self.global_types:
+                    raise CodeGenError(f"signal : variable '{st.name}' non déclarée")
+                if st.name in handlers:
+                    raise CodeGenError(f"signal : plusieurs handlers pour la variable '{st.name}' dans la même fonction")
+                handlers[st.name] = st.body
+        return handlers
+
+    def _gen_change_trigger(self, name, local_types, old_tmp):
+        if self._in_change_handler or name not in self._change_handlers:
+            return []
+        body = self._change_handlers[name]
+        old_type = local_types.get(name, self.global_types.get(name))
+        if old_type == "string":
+            cond = f"(({old_tmp} == 0 && {name} != 0) || ({old_tmp} != 0 && {name} == 0) || ({old_tmp} != 0 && {name} != 0 && strcmp({old_tmp}->data, {name}->data) != 0))"
+        else:
+            cond = f"({old_tmp} != {name})"
+        self._in_change_handler = True
+        try:
+            body_lines = self._gen_body_lines(body.statements, local_types)
+        finally:
+            self._in_change_handler = False
+        lines = [f"if ({cond}) {{"]
+        lines.extend("    " + x for x in body_lines)
+        lines.append("}")
+        return lines
+
     def gen_stmt(self, s, local_types: dict) -> List[str]:
         """Lignes C d'une instruction. Une instruction simple donne une
         seule ligne ; if / while / for_loop en donnent plusieurs, dont les
@@ -2223,7 +2630,16 @@ class CodeGen:
                 return cleanup + ["return 0;" if self._in_main else "return;"]
             expr = self.gen_expr(s.expr, local_types)
             return cleanup + [f"return {expr};"]
+        if isinstance(s, VariableChangeHandler):
+            if s.name not in local_types and s.name not in self.global_types:
+                raise CodeGenError(f"signal : variable '{s.name}' non déclarée")
+            if s.name in self._change_handlers:
+                raise CodeGenError(f"signal : plusieurs handlers pour la variable '{s.name}' dans la même portée")
+            self._change_handlers[s.name] = s.body
+            return []
         if isinstance(s, MemberAssignStmt):
+            if isinstance(s.target, IndexAccess):
+                raise CodeGenError("l'opérateur [] est en lecture seule pour list/map : il ne peut ni créer ni modifier une entrée")
             if self._is_reflection_call(s.target):
                 self._validate_reflection_call(s.target, local_types)
                 obj=self.gen_expr(s.target.callee.obj,local_types); name=self.gen_expr(s.target.args[0],local_types)
@@ -2249,8 +2665,19 @@ class CodeGen:
                     f"affectation à '{s.name}' : variable non déclarée"
                 )
             if s.name in self._readonly_vars:
-                raise CodeGenError(f"la variable const '{s.name}' ne peut pas être modifiée")
-            return [f"{s.name} = {self.gen_expr(s.expr, local_types)};"]
+                raise CodeGenError(f"la variable const/lecture seule '{s.name}' ne peut pas être modifiée")
+            lines = []
+            if not self._in_change_handler and s.name in self._change_handlers:
+                old_type = local_types.get(s.name, self.global_types.get(s.name))
+                ctype = c_type(old_type)
+                old_tmp = f"__j_old_{self._tmp_id}"
+                self._tmp_id += 1
+                lines.append(f"{ctype} {old_tmp} = {s.name};")
+                lines.append(f"{s.name} = {self.gen_expr(s.expr, local_types)};")
+                lines.extend(self._gen_change_trigger(s.name, local_types, old_tmp))
+            else:
+                lines.append(f"{s.name} = {self.gen_expr(s.expr, local_types)};")
+            return lines
         if isinstance(s, ExprStmt):
             return [f"{self.gen_expr(s.expr, local_types)};"]
         if isinstance(s, IfStmt):
@@ -2259,6 +2686,8 @@ class CodeGen:
             return self._gen_while(s, local_types)
         if isinstance(s, ForLoopStmt):
             return self._gen_for_loop(s, local_types)
+        if isinstance(s, CollectionLoopStmt):
+            return self._gen_collection_loop(s, local_types)
         if isinstance(s, BreakStmt):
             self._check_in_loop("break")
             return self._loop_cleanup_lines() + ["break;"]
@@ -2365,6 +2794,30 @@ class CodeGen:
         lines += ["    " + line for line in body]
         lines += ["    }", "}"]
         return lines
+
+    def _gen_collection_loop(self, s: CollectionLoopStmt, local_types: dict) -> List[str]:
+        ct = self.infer_type(s.collection, local_types)
+        gp = self._generic_parts(ct)
+        if not gp or gp[0] != ("list" if s.kind == "loop_list" else "map"):
+            raise CodeGenError(f"{s.kind} attend respectivement une list<T> ou une map<K,V>")
+        obj = self.gen_expr(s.collection, local_types)
+        source_name = s.collection.name if isinstance(s.collection, Ident) else None
+        if source_name: self._readonly_vars.add(source_name)
+        inner = dict(local_types)
+        if s.kind == "loop_list":
+            elem = gp[1]
+            inner[s.var_name] = elem
+            n=self._tmp_id; self._tmp_id+=1
+            body=self._gen_scoped(s.body, inner)
+            if source_name: self._readonly_vars.discard(source_name)
+            return ["{", f"    size_t _jli{n};", f"    for (_jli{n}=0; _jli{n}<{obj}.size; ++_jli{n}) {{", f"        {self._collection_c_type(elem)} {s.var_name} = *(({self._collection_c_type(elem)}*)_j_list_get(&{obj}, _jli{n}));"] + ["    "+x for x in body] + ["    }", "}"]
+        kt,vt=self._split_generic_args(gp[1]); pair=f"pair<{kt},{vt}>"
+        inner[s.var_name]=pair
+        n=self._tmp_id; self._tmp_id+=1
+        body=self._gen_scoped(s.body, inner)
+        if source_name: self._readonly_vars.discard(source_name)
+        pcn=self._pair_c_type(pair)
+        return ["{", f"    size_t _jmi{n};", f"    {pcn} {s.var_name};", f"    for (_jmi{n}=0; _jmi{n}<{obj}.size; ++_jmi{n}) {{", f"        {s.var_name}.first = *({c_type(kt)}*){obj}.items[_jmi{n}].key;", f"        {s.var_name}.second = *({c_type(vt)}*){obj}.items[_jmi{n}].value;"] + ["    "+x for x in body] + ["    }", "}"]
 
     # -- primitives sys:* ------------------------------------------------
     @staticmethod
@@ -2527,8 +2980,30 @@ class CodeGen:
                     self._check_member_access(mowner, m, e.name)
                     return m.ret_type
             return local_types.get(e.name) or self.global_types.get(e.name) or (e.name if e.name in self.classes else None)
+        if isinstance(e, IndexAccess):
+            ot=self.infer_type(e.obj, local_types); gp=self._generic_parts(ot)
+            if not gp: raise CodeGenError(f"'[]' ne peut pas être utilisé sur '{ot}'")
+            if gp[0]=="list": return gp[1]
+            if gp[0]=="map": return self._split_generic_args(gp[1])[1]
+            if gp[0]=="dynamic_list": return "dynamic_value"
+            raise CodeGenError("un container ne peut pas être indexé")
         if isinstance(e, MemberAccess):
             ot=self.infer_type(e.obj, local_types)
+            gp=self._generic_parts(ot)
+            if gp:
+                kind,inner=gp
+                if kind=="list" and e.name=="push": return "void"
+                if kind=="map" and e.name=="emplace": return "void"
+                if kind=="container" and e.name=="get": return inner
+                if kind=="pair":
+                    a,b=self._split_generic_args(inner)
+                    if e.name=="first": return a
+                    if e.name=="second": return b
+                if kind=="container" and inner in self.classes:
+                    _, f=self._find_class_member(inner,e.name,"field")
+                    if f: return f.type
+                    _, m=self._find_class_member(inner,e.name,"method")
+                    if m: return m.ret_type
             _, f=self._find_class_member(ot,e.name,"field") if ot in self.classes else (None,None)
             if f: return f.type
             _, m=self._find_class_member(ot,e.name,"method") if ot in self.classes else (None,None)
@@ -2581,6 +3056,16 @@ class CodeGen:
                 return call
             if isinstance(e.callee, MemberAccess):
                 ot = self.infer_type(e.callee.obj, local_types)
+                gp=self._generic_parts(ot)
+                if gp:
+                    kind,inner=gp
+                    if kind=="dynamic_list" and e.callee.name=="push": return "void"
+                    if kind=="dynamic_list" and e.callee.name=="get": return "void_ptr"
+                    if kind=="dynamic_list" and e.callee.name=="type": return "string"
+                    if kind=="dynamic_list" and e.callee.name=="size": return "i32"
+                    if kind=="list" and e.callee.name=="push": return "void"
+                    if kind=="map" and e.callee.name=="emplace": return "void"
+                    if kind=="container" and e.callee.name=="get": return inner
                 owner, m = self._find_class_member(ot, e.callee.name, "method") if ot in self.classes else (None, None)
                 if m is not None:
                     self._check_member_access(owner, m, e.callee.name)
@@ -2656,7 +3141,15 @@ class CodeGen:
             )
 
     def gen_member_access(self, e, local_types):
-        ot=self.infer_type(e.obj, local_types)
+        ot=self.infer_type(e.obj, local_types); gp=self._generic_parts(ot)
+        if gp:
+            kind,inner=gp; obj=self.gen_expr(e.obj,local_types)
+            if kind=="pair":
+                if e.name not in ("first", "second"): raise CodeGenError(f"membre '{e.name}' indisponible sur {ot}")
+                return f"{obj}.{e.name}"
+            if kind=="container" and e.name=="get": return f"(*(({c_type(inner)}*)_j_container_get(&{obj})))"
+            if kind=="container" and inner in self.classes: return f"(({inner}*)_j_container_get(&{obj}))->%s" % e.name
+            raise CodeGenError(f"membre '{e.name}' indisponible sur {ot}")
         if ot not in self.classes:
             raise CodeGenError(f"'{ot}' n'est pas une classe")
         owner, member=self._find_class_member(ot,e.name,"field")
@@ -2734,6 +3227,28 @@ class CodeGen:
             return f"string_from_cstr({e.value})"
         if isinstance(e, BoolLit):
             return "1" if e.value else "0"     # pas de <stdbool.h> en C89
+        if isinstance(e, NewExpr):
+            if e.type in self.classes:
+                cls=self.classes[e.type]; ctor=next((m for m in cls.methods if m.is_constructor),None)
+                ordered=self._ordered_call_args(e.args,ctor.params if ctor else [],f"constructeur '{e.type}'") if ctor else []
+                return f"{e.type}_ctor(" + ", ".join(self.gen_expr(a,local_types) for a in ordered) + ")"
+            if len(e.args)!=1: raise CodeGenError(f"new {e.type}(...) attend une valeur")
+            return self.gen_expr(e.args[0].expr if isinstance(e.args[0],NamedArg) else e.args[0],local_types)
+        if isinstance(e, ListLiteral):
+            raise CodeGenError("un littéral {...} doit être utilisé comme initialiseur de list/map")
+        if isinstance(e, IndexAccess):
+            ot=self.infer_type(e.obj,local_types); gp=self._generic_parts(ot)
+            if not gp: raise CodeGenError(f"'[]' ne peut pas être utilisé sur '{ot}'")
+            obj=self.gen_expr(e.obj,local_types); idx=self.gen_expr(e.index,local_types)
+            if gp[0]=="dynamic_list": return f"_j_dynamic_list_get(&{obj},(size_t)({idx}))"
+            if gp[0]=="list": return f"(*({c_type(gp[1])}*)_j_list_get(&{obj},(size_t)({idx})))"
+            if gp[0]=="dynamic_list": return f"_j_dynamic_list_get(&{obj},(size_t)({idx}))"
+            if gp[0]=="map":
+                kt,vt=self._split_generic_args(gp[1])
+                if kt=="string": return f"(*({c_type(vt)}*)_j_map_get_string(&{obj},{idx}))"
+                n=self._tmp_id; self._tmp_id+=1
+                raise CodeGenError("l'indexation map avec une clé non-string nécessite une variable clé")
+            raise CodeGenError("un container ne peut pas être indexé")
         if isinstance(e, Ident):
             if e.name == "this":
                 if not self._current_class:
@@ -2760,6 +3275,28 @@ class CodeGen:
                     return f"{e.namespace}_{e.name}(self" + (", " if m.params else "") + ", ".join(p.name for p in m.params) + ")"
             return self.default_mangle(e.name, e.namespace)
         if isinstance(e, CastExpr):
+            # dynamic_list stocke les valeurs primitives par adresse et les objets
+            # comme pointeurs. Un cast vers une valeur primitive déréférence donc
+            # l'élément, tandis qu'un cast vers une classe conserve le pointeur.
+            if isinstance(e.operand, IndexAccess):
+                ot = self.infer_type(e.operand.obj, local_types)
+                gp = self._generic_parts(ot)
+                if gp and gp[0] == "dynamic_list":
+                    obj = self.gen_expr(e.operand.obj, local_types)
+                    idx = self.gen_expr(e.operand.index, local_types)
+                    ptr = f"_j_dynamic_list_get(&{obj},(size_t)({idx}))"
+                    target = canonical_type(e.target_type)
+                    if target in INTEGER_TYPES:
+                        return f"(({c_type(target)})*((({c_type(target)}*){ptr})))"
+                    if target in ("f32", "float", "f64", "double"):
+                        return f"(({c_type(target)})*((({c_type(target)}*){ptr})))"
+                    if target == "bool":
+                        return f"(({c_type(target)})*(((_jBool*){ptr})))"
+                    if target == "string":
+                        return f"(({ptr} && *(string**){ptr}) ? string_from_cstr((*(string**){ptr})->data) : string_from_cstr(""))"
+                    if target in self.classes:
+                        return f"({target}*){ptr}"
+                    return f"({c_type(target)}){ptr}"
             # GetMember() retourne volontairement un pointeur vers la vraie
             # valeur stockée dans l'objet. Un cast Jaguar vers un type valeur
             # doit donc déréférencer ce pointeur, au lieu de convertir
@@ -2844,6 +3381,38 @@ class CodeGen:
                 return call
             if isinstance(e.callee, MemberAccess):
                 ot = self.infer_type(e.callee.obj, local_types)
+                gp=self._generic_parts(ot)
+                if gp:
+                    kind,inner=gp; obj=self.gen_expr(e.callee.obj,local_types)
+                    if kind=="dynamic_list" and e.callee.name=="push":
+                        if len(e.args)!=1: raise CodeGenError("dynamic_list::push attend 1 argument")
+                        return "".join(self._gen_dynamic_list_push(obj, e.args[0], local_types))
+                    if kind=="dynamic_list" and e.callee.name=="get":
+                        if len(e.args)!=1: raise CodeGenError("dynamic_list::get attend 1 argument")
+                        idx=self.gen_expr(e.args[0],local_types)
+                        return f"_j_dynamic_list_get(&{obj},(size_t)({idx}))"
+                    if kind=="dynamic_list" and e.callee.name=="type":
+                        if len(e.args)!=1: raise CodeGenError("dynamic_list::type attend 1 argument")
+                        idx=self.gen_expr(e.args[0],local_types)
+                        return f"string_from_cstr(_j_dynamic_list_type(&{obj},(size_t)({idx})))"
+                    if kind=="dynamic_list" and e.callee.name=="size":
+                        if len(e.args)!=0: raise CodeGenError("dynamic_list::size attend 0 argument")
+                        return f"(i32){obj}.size"
+                    if kind=="list" and e.callee.name=="push":
+                        if isinstance(e.callee.obj, Ident) and e.callee.obj.name in self._readonly_vars:
+                            raise CodeGenError(f"la list '{e.callee.obj.name}' est en lecture seule pendant loop_list")
+                        if len(e.args)!=1: raise CodeGenError("list::push attend 1 argument")
+                        ex=self.gen_expr(e.args[0],local_types); n=self._tmp_id; self._tmp_id+=1
+                        return f"{{ {c_type(inner)} _jcp{n} = {ex}; _j_list_push(&{obj}, &_jcp{n}); }}"
+                    if kind=="map" and e.callee.name=="emplace":
+                        if isinstance(e.callee.obj, Ident) and e.callee.obj.name in self._readonly_vars:
+                            raise CodeGenError(f"la map '{e.callee.obj.name}' est en lecture seule pendant loop_map")
+                        if len(e.args)!=2: raise CodeGenError("map::emplace attend 2 arguments")
+                        kt,vt=self._split_generic_args(inner); k=self.gen_expr(e.args[0],local_types); v=self.gen_expr(e.args[1],local_types); n=self._tmp_id; self._tmp_id+=1
+                        return f"{{ {c_type(kt)} _jmk{n} = {k}; {c_type(vt)} _jmv{n} = {v}; _j_map_emplace(&{obj}, &_jmk{n}, &_jmv{n}); }}"
+                    if kind=="container" and e.callee.name=="get":
+                        if len(e.args)!=0: raise CodeGenError("container::get attend 0 argument")
+                        return f"(*(({c_type(inner)}*)_j_container_get(&{obj})))"
                 if ot == "string":
                     obj = self.gen_expr(e.callee.obj, local_types)
                     args = ", ".join(self.gen_expr(a, local_types) for a in self._ordered_call_args(e.args, [Param("string", "other")] if e.callee.name in ("equals","contains","starts_with","ends_with","concat") else [Param("i32","start"),Param("i32","length")] if e.callee.name=="substring" else [Param("i32","index")] if e.callee.name=="char_at" else [], f"string::{e.callee.name}"))
@@ -2897,6 +3466,13 @@ class CodeGen:
                         self._validate_reflection_call(e.args[0], local_types)
                         robj=self.gen_expr(e.args[0].callee.obj,local_types); rname=self.gen_expr(e.args[0].args[0],local_types)
                         return f"_j_reflect_print((void*){robj},{rname}->data)"
+                    if isinstance(e.args[0], IndexAccess):
+                        indexed_type = self.infer_type(e.args[0].obj, local_types)
+                        indexed_gp = self._generic_parts(indexed_type)
+                        if indexed_gp and indexed_gp[0] == "dynamic_list":
+                            obj = self.gen_expr(e.args[0].obj, local_types)
+                            idx = self.gen_expr(e.args[0].index, local_types)
+                            return f"_j_sys_print_dynamic(_j_dynamic_list_get(&{obj},(size_t)({idx})), _j_dynamic_list_type(&{obj},(size_t)({idx})))"
                     arg_type = self.infer_type(e.args[0], local_types)
                     callee_str = self._system_print_function(arg_type)
                     if callee_str is None:

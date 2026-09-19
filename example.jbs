@@ -1,0 +1,17 @@
+version 1.0
+
+out .
+
+include lib
+
+c89
+
+keep_c
+
+define PI 3.14
+
+compile out {
+	main.ja
+	add.ja
+	sub.ja
+}
