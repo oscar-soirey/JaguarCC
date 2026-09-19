@@ -1320,7 +1320,10 @@ SYSTEM_BUILTINS = {
     ("sys", "execute"): ("_j_sys_execute", 2, "int"),
     ("sys:fs", "read"): ("_j_sys_fs_read", 1, "string"),
     ("sys:fs", "write"): ("_j_sys_fs_write", 2, "void"),
-    # jcc = bibliothèque standard JaguarCC
+
+    # jcc = bibliothèque standard JaguarCC.
+    # Les fonctions volontairement exposées ici sont les fonctions libc
+    # courantes qui restent simples et sûres sans demander de pointeurs.
     ("jcc", "exit"): ("_j_lib_exit", 1, "void"),
     ("jcc", "abort"): ("_j_lib_abort", 0, "void"),
     ("jcc", "abs_i32"): ("_j_lib_abs_i32", 1, "i32"),
@@ -1330,6 +1333,63 @@ SYSTEM_BUILTINS = {
     ("jcc", "random_i32"): ("_j_lib_random_i32", 2, "i32"),
     ("jcc", "time_ms"): ("_j_lib_time_ms", 0, "i64"),
     ("jcc", "assert"): ("_j_lib_assert", 2, "void"),
+
+    # Math / stdlib.h + math.h
+    ("jcc", "sqrt"): ("_j_lib_sqrt", 1, "f64"),
+    ("jcc", "pow"): ("_j_lib_pow", 2, "f64"),
+    ("jcc", "sin"): ("_j_lib_sin", 1, "f64"),
+    ("jcc", "cos"): ("_j_lib_cos", 1, "f64"),
+    ("jcc", "tan"): ("_j_lib_tan", 1, "f64"),
+    ("jcc", "asin"): ("_j_lib_asin", 1, "f64"),
+    ("jcc", "acos"): ("_j_lib_acos", 1, "f64"),
+    ("jcc", "atan"): ("_j_lib_atan", 1, "f64"),
+    ("jcc", "atan2"): ("_j_lib_atan2", 2, "f64"),
+    ("jcc", "floor"): ("_j_lib_floor", 1, "f64"),
+    ("jcc", "ceil"): ("_j_lib_ceil", 1, "f64"),
+    ("jcc", "round"): ("_j_lib_round", 1, "f64"),
+    ("jcc", "log"): ("_j_lib_log", 1, "f64"),
+    ("jcc", "log10"): ("_j_lib_log10", 1, "f64"),
+    ("jcc", "exp"): ("_j_lib_exp", 1, "f64"),
+    ("jcc", "fmod"): ("_j_lib_fmod", 2, "f64"),
+
+    # Strings : wrappers simples autour de string.h, avec les conventions
+    # Jaguar (string au lieu de char*).
+    ("jcc", "string_length"): ("_j_lib_string_length", 1, "i32"),
+    ("jcc", "string_equals"): ("_j_lib_string_equals", 2, "bool"),
+    ("jcc", "string_compare"): ("_j_lib_string_compare", 2, "i32"),
+    ("jcc", "string_contains"): ("_j_lib_string_contains", 2, "bool"),
+    ("jcc", "string_starts_with"): ("_j_lib_string_starts_with", 2, "bool"),
+    ("jcc", "string_ends_with"): ("_j_lib_string_ends_with", 2, "bool"),
+    ("jcc", "string_concat"): ("_j_lib_string_concat", 2, "string"),
+    ("jcc", "string_substring"): ("_j_lib_string_substring", 3, "string"),
+    ("jcc", "string_char_at"): ("_j_lib_string_char_at", 2, "i32"),
+    ("jcc", "string_find"): ("_j_lib_string_find", 2, "i32"),
+    ("jcc", "string_to_upper"): ("_j_lib_string_to_upper", 1, "string"),
+    ("jcc", "string_to_lower"): ("_j_lib_string_to_lower", 1, "string"),
+
+    # Conversions utiles, sans exposer strtol/strtod et leurs pointeurs.
+    ("jcc", "string_to_i32"): ("_j_lib_string_to_i32", 1, "i32"),
+    ("jcc", "string_to_i64"): ("_j_lib_string_to_i64", 1, "i64"),
+    ("jcc", "string_to_f64"): ("_j_lib_string_to_f64", 1, "f64"),
+    ("jcc", "i32_to_string"): ("_j_lib_i32_to_string", 1, "string"),
+    ("jcc", "i64_to_string"): ("_j_lib_i64_to_string", 1, "string"),
+    ("jcc", "f64_to_string"): ("_j_lib_f64_to_string", 1, "string"),
+
+    # ctype.h
+    ("jcc", "is_digit"): ("_j_lib_is_digit", 1, "bool"),
+    ("jcc", "is_alpha"): ("_j_lib_is_alpha", 1, "bool"),
+    ("jcc", "is_alnum"): ("_j_lib_is_alnum", 1, "bool"),
+    ("jcc", "is_space"): ("_j_lib_is_space", 1, "bool"),
+    ("jcc", "is_upper"): ("_j_lib_is_upper", 1, "bool"),
+    ("jcc", "is_lower"): ("_j_lib_is_lower", 1, "bool"),
+    ("jcc", "to_upper_char"): ("_j_lib_to_upper_char", 1, "i32"),
+    ("jcc", "to_lower_char"): ("_j_lib_to_lower_char", 1, "i32"),
+
+    # Fichiers / environnement : API valeur-only, donc pas de FILE*/char*.
+    ("jcc", "file_exists"): ("_j_lib_file_exists", 1, "bool"),
+    ("jcc", "remove_file"): ("_j_lib_remove_file", 1, "bool"),
+    ("jcc", "rename_file"): ("_j_lib_rename_file", 2, "bool"),
+    ("jcc", "env_get"): ("_j_lib_env_get", 1, "string"),
 }
 
 
@@ -1612,30 +1672,65 @@ def _system_runtime(used, used_string=False):
         lines += [
             "",
             "#include <time.h>",
+            "#include <math.h>",
+            "#include <ctype.h>",
             "static void _j_lib_exit(i32 code) { exit((int)code); }",
             "static void _j_lib_abort(void) { abort(); }",
             "static i32 _j_lib_abs_i32(i32 v) { return v < 0 ? -v : v; }",
             "static i32 _j_lib_min_i32(i32 a, i32 b) { return a < b ? a : b; }",
             "static i32 _j_lib_max_i32(i32 a, i32 b) { return a > b ? a : b; }",
-            "static i32 _j_lib_clamp_i32(i32 v, i32 lo, i32 hi) {",
-            "    if (v < lo) return lo; if (v > hi) return hi; return v;",
-            "}",
-            "static i32 _j_lib_random_i32(i32 min, i32 max) {",
-            "    static int seeded = 0; long long range;",
-            "    if (!seeded) { srand((unsigned int)time(0)); seeded = 1; }",
-            "    if (max <= min) return min; range = (long long)max - (long long)min + 1;",
-            "    return min + (i32)(rand() % (int)range);",
-            "}",
-            "static i64 _j_lib_time_ms(void) {",
-            "    return (i64)time(0) * 1000LL;",
-            "}",
-            "static void _j_lib_assert(_jBool condition, string *message) {",
-            "    if (!condition) {",
-            "        fprintf(stderr, \"Jaguar assertion failed: %s\\n\", (message && message->data) ? message->data : \"\");",
-            "        abort();",
-            "    }",
-            "}",
+            "static i32 _j_lib_clamp_i32(i32 v, i32 lo, i32 hi) { if (v < lo) return lo; if (v > hi) return hi; return v; }",
+            "static i32 _j_lib_random_i32(i32 min, i32 max) { static int seeded=0; unsigned long range; if (!seeded) { srand((unsigned int)time(0)); seeded=1; } if (max <= min) return min; range=(unsigned long)((long)max-(long)min)+1UL; return min+(i32)(rand()%range); }",
+            "static i64 _j_lib_time_ms(void) { return (i64)time(0) * 1000LL; }",
+            "static void _j_lib_assert(_jBool condition, string *message) { if (!condition) { fprintf(stderr, \"Jaguar assertion failed: %s\\n\", (message && message->data) ? message->data : \"\"); abort(); } }",
+            "static f64 _j_lib_sqrt(f64 v) { return sqrt(v); }",
+            "static f64 _j_lib_pow(f64 a, f64 b) { return pow(a,b); }",
+            "static f64 _j_lib_sin(f64 v) { return sin(v); }",
+            "static f64 _j_lib_cos(f64 v) { return cos(v); }",
+            "static f64 _j_lib_tan(f64 v) { return tan(v); }",
+            "static f64 _j_lib_asin(f64 v) { return asin(v); }",
+            "static f64 _j_lib_acos(f64 v) { return acos(v); }",
+            "static f64 _j_lib_atan(f64 v) { return atan(v); }",
+            "static f64 _j_lib_atan2(f64 y, f64 x) { return atan2(y,x); }",
+            "static f64 _j_lib_floor(f64 v) { return floor(v); }",
+            "static f64 _j_lib_ceil(f64 v) { return ceil(v); }",
+            "static f64 _j_lib_round(f64 v) { return floor(v + 0.5); }",
+            "static f64 _j_lib_log(f64 v) { return log(v); }",
+            "static f64 _j_lib_log10(f64 v) { return log10(v); }",
+            "static f64 _j_lib_exp(f64 v) { return exp(v); }",
+            "static f64 _j_lib_fmod(f64 a, f64 b) { return fmod(a,b); }",
+            "static i32 _j_lib_string_length(string *s) { return s ? (i32)s->length : 0; }",
+            "static _jBool _j_lib_string_equals(string *a, string *b) { return (a && b && a->data && b->data) ? strcmp(a->data,b->data)==0 : ((!a || !a->data) && (!b || !b->data)); }",
+            "static i32 _j_lib_string_compare(string *a, string *b) { const char *x=(a&&a->data)?a->data:\"\"; const char *y=(b&&b->data)?b->data:\"\"; return (i32)strcmp(x,y); }",
+            "static _jBool _j_lib_string_contains(string *s, string *n) { const char *x=(s&&s->data)?s->data:\"\"; const char *y=(n&&n->data)?n->data:\"\"; return strstr(x,y)!=0; }",
+            "static _jBool _j_lib_string_starts_with(string *s, string *p) { const char *x=(s&&s->data)?s->data:\"\"; const char *y=(p&&p->data)?p->data:\"\"; size_t n=strlen(y); return strncmp(x,y,n)==0; }",
+            "static _jBool _j_lib_string_ends_with(string *s, string *p) { const char *x=(s&&s->data)?s->data:\"\"; const char *y=(p&&p->data)?p->data:\"\"; size_t n=strlen(x), m=strlen(y); return m<=n && strcmp(x+n-m,y)==0; }",
+            "static string *_j_lib_string_concat(string *a, string *b) { const char *x=(a&&a->data)?a->data:\"\"; const char *y=(b&&b->data)?b->data:\"\"; size_t n=strlen(x)+strlen(y); char *buf=(char*)malloc(n+1); string *r; if(!buf)return 0; strcpy(buf,x); strcat(buf,y); r=string_from_cstr(buf); free(buf); return r; }",
+            "static string *_j_lib_string_substring(string *s, i32 start, i32 len) { const char *x=(s&&s->data)?s->data:\"\"; size_t n=strlen(x); size_t st=start<0?0:(size_t)start; size_t ln=len<0?0:(size_t)len; char *buf; string *r; if(st>n)st=n; if(ln>n-st)ln=n-st; buf=(char*)malloc(ln+1); if(!buf)return 0; memcpy(buf,x+st,ln); buf[ln]=0; r=string_from_cstr(buf); free(buf); return r; }",
+            "static i32 _j_lib_string_char_at(string *s, i32 i) { if(!s || !s->data || i<0 || (size_t)i>=s->length) return -1; return (unsigned char)s->data[i]; }",
+            "static i32 _j_lib_string_find(string *s, string *n) { const char *x=(s&&s->data)?s->data:\"\"; const char *y=(n&&n->data)?n->data:\"\"; const char *p=strstr(x,y); return p ? (i32)(p-x) : -1; }",
+            "static string *_j_lib_string_to_upper(string *s) { const char *x=(s&&s->data)?s->data:\"\"; size_t n=strlen(x),i; char *b=(char*)malloc(n+1); string *r; if(!b)return 0; for(i=0;i<n;i++)b[i]=(char)toupper((unsigned char)x[i]); b[n]=0; r=string_from_cstr(b); free(b); return r; }",
+            "static string *_j_lib_string_to_lower(string *s) { const char *x=(s&&s->data)?s->data:\"\"; size_t n=strlen(x),i; char *b=(char*)malloc(n+1); string *r; if(!b)return 0; for(i=0;i<n;i++)b[i]=(char)tolower((unsigned char)x[i]); b[n]=0; r=string_from_cstr(b); free(b); return r; }",
+            "static i32 _j_lib_string_to_i32(string *s) { return (i32)strtol((s&&s->data)?s->data:\"0\",0,10); }",
+            "static i64 _j_lib_string_to_i64(string *s) { return (i64)strtoll((s&&s->data)?s->data:\"0\",0,10); }",
+            "static f64 _j_lib_string_to_f64(string *s) { return (f64)strtod((s&&s->data)?s->data:\"0\",0); }",
+            "static string *_j_lib_i32_to_string(i32 v) { char b[64]; sprintf(b,\"%d\",(int)v); return string_from_cstr(b); }",
+            "static string *_j_lib_i64_to_string(i64 v) { char b[64]; sprintf(b,\"%lld\",(long long)v); return string_from_cstr(b); }",
+            "static string *_j_lib_f64_to_string(f64 v) { char b[64]; sprintf(b,\"%.17g\",v); return string_from_cstr(b); }",
+            "static _jBool _j_lib_is_digit(i32 c) { return isdigit((unsigned char)c)!=0; }",
+            "static _jBool _j_lib_is_alpha(i32 c) { return isalpha((unsigned char)c)!=0; }",
+            "static _jBool _j_lib_is_alnum(i32 c) { return isalnum((unsigned char)c)!=0; }",
+            "static _jBool _j_lib_is_space(i32 c) { return isspace((unsigned char)c)!=0; }",
+            "static _jBool _j_lib_is_upper(i32 c) { return isupper((unsigned char)c)!=0; }",
+            "static _jBool _j_lib_is_lower(i32 c) { return islower((unsigned char)c)!=0; }",
+            "static i32 _j_lib_to_upper_char(i32 c) { return (i32)toupper((unsigned char)c); }",
+            "static i32 _j_lib_to_lower_char(i32 c) { return (i32)tolower((unsigned char)c); }",
+            "static _jBool _j_lib_file_exists(string *p) { FILE *f; if(!p||!p->data)return 0; f=fopen(p->data,\"rb\"); if(!f)return 0; fclose(f); return 1; }",
+            "static _jBool _j_lib_remove_file(string *p) { return p&&p->data ? remove(p->data)==0 : 0; }",
+            "static _jBool _j_lib_rename_file(string *a, string *b) { return a&&b&&a->data&&b->data ? rename(a->data,b->data)==0 : 0; }",
+            "static string *_j_lib_env_get(string *name) { const char *v; if(!name||!name->data)return 0; v=getenv(name->data); return v ? string_from_cstr(v) : 0; }",
         ]
+
 
     return "\n".join(lines)
 
@@ -3611,7 +3706,7 @@ def main(argv):
         print(f"Jaguar: compilation GCC -> {out_path}")
         try:
             result = subprocess.run(
-                ["gcc", c_path, "-o", out_path],
+                ["gcc", c_path, "-o", out_path, "-lm"],
                 check=False,
             )
         except OSError as e:
