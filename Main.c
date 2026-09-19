@@ -156,8 +156,6 @@ static void _j_sys_print_dynamic(void *data, const char *type) {
     abort();
 }
 
-#define PI 3.14
-
 i32 add(i32 a, i32 b);
 
 int main(int argc, char *argv[]) {

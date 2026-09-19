@@ -133,9 +133,6 @@ BUILTIN_TYPEDEFS: Dict[str, str] = {
     "f32":  "typedef float f32;",
     "f64":  "typedef double f64;",
     "string": "typedef struct _jString string;\nstruct _jString { char *data; size_t length; };",
-    "cptr": "typedef void *cptr;",
-    "cstr": "typedef char *cstr;",
-    "cfuncptr": "typedef void (*cfuncptr)(void);",
 }
 ORDERED_BUILTIN_TYPES = list(BUILTIN_TYPEDEFS.keys())
 
@@ -145,9 +142,6 @@ ORDERED_BUILTIN_TYPES = list(BUILTIN_TYPEDEFS.keys())
 C_TYPE_NAMES: Dict[str, str] = {
     "bool": "_jBool",
     "string": "string *",
-    "cptr": "cptr",
-    "cstr": "cstr",
-    "cfuncptr": "cfuncptr",
 }
 
 
@@ -169,7 +163,7 @@ KEYWORDS = TYPE_KEYWORDS | {
 TWO_CHAR_TOKENS = {"==", "!=", "<=", ">=", "&&", "||", "=>", "->"}
 
 # tokens à un seul caractère
-SINGLE_CHAR_TOKENS = set("{}[]();,:.$+-*/%@=<>!&|")
+SINGLE_CHAR_TOKENS = set("{}[]();,:.$+-*/%@=<>!")
 
 
 class LexError(Exception):
@@ -206,7 +200,18 @@ def tokenize(src: str) -> List[Token]:
             j = src.find("\n", i)
             if j == -1:
                 j = n
-            tokens.append(Token("PREPROC", src[i:j].rstrip(), line))
+            directive = src[i:j].rstrip()
+            m = re.match(r"#\s*([A-Za-z_][A-Za-z0-9_]*)", directive)
+            if m:
+                name = m.group(1)
+                # Jaguar possède son propre système `using` : les headers C
+                # ne doivent donc jamais être inclus avec #include.
+                if name == "include":
+                    raise LexError("#include n'est pas supporté par Jaguar ; utilisez `using` ou BindGen")
+                # Alias pratique côté Jaguar. GCC reçoit le vrai #elif.
+                if name == "elseif":
+                    directive = "#elif" + directive[m.end():]
+            tokens.append(Token("PREPROC", directive, line))
             i = j
             continue
 
@@ -1087,7 +1092,7 @@ class Parser:
         return self._parse_binary_level(("*", "/", "%"), self.parse_unary)
 
     def parse_unary(self):
-        if self.peek().kind in ("-", "!", "&", "*"):
+        if self.peek().kind in ("-", "!"):
             op = self.advance().value
             operand = self.parse_unary()
             return UnaryOp(op, operand)
@@ -3070,10 +3075,6 @@ class CodeGen:
             return 1
         if arg_type in floating and param_type in floating:
             return 2
-        if arg_type == "cptr" and param_type in ("cptr", "cstr", "cfuncptr"):
-            return 1
-        if arg_type in ("cstr", "cfuncptr") and param_type == "cptr":
-            return 1
         return 0
 
     def resolve_call_target(self, call: Call, local_types: dict) -> Optional[FunctionDecl]:
@@ -3176,13 +3177,6 @@ class CodeGen:
         if isinstance(e, UnaryOp):
             if e.op == "!":
                 return "bool"
-            if e.op == "&":
-                return "cptr"
-            if e.op == "*":
-                ot = self.infer_type(e.operand, local_types)
-                if ot == "cptr":
-                    return "cptr"
-                return ot
             return self.infer_type(e.operand, local_types)
         if isinstance(e, BinOp):
             if e.op in _BOOL_RESULT_OPS:
@@ -3489,12 +3483,11 @@ class CodeGen:
             # Casts ordinaires : forme C classique.
             return f"({c_type(e.target_type)}){self.gen_expr(e.operand, local_types)}"
         if isinstance(e, UnaryOp):
-            operand = self.gen_expr(e.operand, local_types)
-            if e.op == "&":
-                return f"(&({operand}))"
-            if e.op == "*":
-                return f"(*({operand}))"
-            return f"({e.op}{operand})"
+            inner = self.gen_expr(e.operand, local_types)
+            # -(-x) et non --x (qui serait un décrément en C) ; !(a && b)
+            if isinstance(e.operand, (BinOp, UnaryOp)):
+                inner = f"({inner})"
+            return f"{e.op}{inner}"
         if isinstance(e, BinOp):
             prec = _BINOP_PREC[e.op]
             left = self._gen_operand(e.left, prec, local_types, is_right=False)

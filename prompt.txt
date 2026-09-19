@@ -6,11 +6,4 @@
 
 -extension pour les IDE
 
--ajoute une directive bindgen au build system, il cherche jbg.py et genere un .jah
--ajoute des parametres aux directives
-
--différents modes de build (debug, release, etc...) elles sont juste utilisées par gcc, mais elles définissent une macro: JAGUAR_DEBUG, JAGUAR_RELEASE, etc...
-
--ajoute des diréctives que tu trouve nécéssaires/interessantes
-
-Salut, je developpe un langage de programmation avec cette syntaxe : #define M_PI 3.141 //types standards i32 add(i32 a, i32 b) { return a+b; } //surcharge : meme nom, types differents float add(float a, float b) { return a+b; } //surcharge : arite differente i32 add(i32 a, i32 b, i32 c) { return a+b+c; } //@extern desactive le name mangling @extern void jaguar_init() { //contenu } namespace physics { //surcharge dans un namespace f32 compute(f32 x) { return x*x; } f64 compute(f64 x) { return x*x; } } struct vector2_t { f32 x; f32 y; bool normalized; } //renvoie un type concret (f32), ce qui leve l'ambiguite au niveau de l'appel f32 make_speed(f32 v) { return v; } void main(string param) { add(1, 2); add(1.0, 2.0); add(1, 2, 3); jaguar_init(); physics:compute(make_speed(1.5)); } J'ai deja un compilateur en python tres primaire. Tu peux modifier mon compilateur et me renvoyer le fichier stp.
+-ajoute des trucs utiles, genre using namespace ...; using GL_FLOAT = float;

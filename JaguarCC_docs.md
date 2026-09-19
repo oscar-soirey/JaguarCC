@@ -41,7 +41,11 @@ Jaguar reprend volontairement plusieurs idées du C/C++ tout en simplifiant cert
 - gestion automatique de certains objets ;
 - réflexion limitée ;
 - bibliothèque standard `jcc` ;
-- génération de C compatible avec un mode C89.
+- génération de C compatible avec un mode C89 ;
+- interopérabilité avec les API C ;
+- Jaguar Headers (`.jah`) ;
+- génération de bindings C avec BindGen ;
+- build system JBS pour les projets multi-fichiers et les bibliothèques.
 
 ---
 
@@ -100,6 +104,66 @@ La sémantique Jaguar reste identique.
 
 ---
 
+# 2.4 Fichiers Jaguar
+
+Jaguar utilise principalement deux extensions :
+
+- `.ja` : fichier source Jaguar ;
+- `.jah` : **Jaguar Header**, un fichier d'interface Jaguar.
+
+Techniquement, un `.jah` utilise la même syntaxe que Jaguar. L'extension indique simplement qu'il s'agit d'une interface destinée à être réutilisée avec `using`.
+
+Exemple :
+
+```text
+include/
+    math.jah
+src/
+    main.ja
+```
+
+Puis :
+
+```jaguar
+using math;
+
+void main(string param) {
+    math:add(10, 20);
+}
+```
+
+Les `.jah` sont particulièrement utilisés pour les bindings d'API C générés par BindGen.
+
+---
+
+# 2.5 Interopérabilité C
+
+Jaguar peut appeler des fonctions définies dans une bibliothèque C avec `@extern`.
+
+```jaguar
+@extern
+int add(int a, int b);
+```
+
+Pour les API C plus complexes, BindGen génère automatiquement un `.jah` à partir du header C.
+
+Les types d'interopérabilité bas niveau comprennent notamment :
+
+```text
+cptr
+cstr
+cfuncptr
+```
+
+ainsi que l'opérateur `&` pour transmettre l'adresse d'une variable à une API C :
+
+```jaguar
+u32 buffer = 0;
+gl:glGenBuffers(1, &buffer);
+```
+
+`cstr` représente une chaîne C (`const char *`) et `cptr` représente un pointeur C opaque. `cfuncptr` représente un pointeur de fonction C, notamment utile pour les callbacks et les APIs comme GLAD.
+
 # 3. Syntaxe générale
 
 Jaguar n'est **pas sensible aux retours à la ligne**.
@@ -147,14 +211,55 @@ Les commentaires de documentation `/** ... */` sont également supprimés par le
 
 # 5. Préprocesseur
 
-Les directives `#define` sont conservées et transmises au C généré.
+Jaguar conserve certaines directives du préprocesseur C et les transmet au C généré. **`#include` n'est pas supporté** : les headers C doivent être intégrés avec BindGen/Jaguar headers.
+
+Les directives supportées sont :
+
+```text
+#define
+#undef
+
+#if
+#ifdef
+#ifndef
+#elif
+#else
+#endif
+
+#pragma
+#error
+#warning
+#line
+```
+
+Exemple :
 
 ```jaguar
 #define PI 3.14159265
 #define GAME_VERSION 1
+
+#ifdef JAGUAR_DEBUG
+    // code de debug
+#elif defined(JAGUAR_RELEASE)
+    // code de release
+#else
+    // autre configuration
+#endif
 ```
 
-Elles peuvent notamment servir dans les expressions constantes.
+Jaguar accepte également `#elseif` comme écriture alternative de `#elif`; elle est normalisée vers `#elif` dans le C généré.
+
+Les conditions sont évaluées par le préprocesseur C lors de la compilation GCC. Les blocs peuvent être imbriqués.
+
+`#include` est volontairement interdit :
+
+```jaguar
+#include <stdio.h> // invalide
+```
+
+Pour utiliser une API C, utilisez un fichier `.jah` généré par BindGen et `using`.
+
+Les macros ne sont pas des variables Jaguar et leur type n'est pas inféré par le compilateur.
 
 ```jaguar
 #define START_HEALTH 100
@@ -789,6 +894,10 @@ if (true) {
 ```
 
 En revanche, masquer une variable visible depuis un scope englobant est interdit.
+
+---
+
+
 
 ---
 
@@ -1593,6 +1702,10 @@ if (jcc:string_contains("Hello world", "world")) {
 
 ---
 
+
+
+---
+
 # 57. Conversions de chaînes
 
 String → nombre :
@@ -1995,24 +2108,561 @@ Le runtime évite notamment d'utiliser `_Bool` pour `bool` et génère son propr
 
 # 75. Ce que Jaguar n'expose volontairement pas
 
-Le langage actuel évite plusieurs fonctionnalités bas niveau du C/C++ :
+Le langage Jaguar général n'expose pas directement plusieurs mécanismes bas niveau du C/C++ :
 
-- pointeurs Jaguar génériques ;
-- arithmétique de pointeurs ;
-- `malloc`/`free` directement depuis le code Jaguar ;
+- arithmétique de pointeurs générale ;
+- `malloc`/`free` comme API Jaguar générale ;
 - `FILE*` ;
-- `memcpy` et autres primitives mémoire directement ;
+- `memcpy` et autres primitives mémoire comme API Jaguar générale ;
 - templates C++ ;
 - fonctionnalités C++ complexes ;
 - lambdas ;
 - exceptions ;
 - héritage multiple.
 
-Les fonctionnalités nécessitant ces mécanismes peuvent être implémentées dans le runtime C ou ajoutées plus tard au langage.
+Cependant, l'interopérabilité C possède un ensemble contrôlé de types et opérations bas niveau :
+
+```text
+cptr
+cstr
+cfuncptr
+&
+```
+
+Ils existent pour permettre d'utiliser des bibliothèques C réelles sans transformer Jaguar en langage de pointeurs général.
+
+Les détails de ces types sont documentés dans la section dédiée à l'interopérabilité C.
+
+Les fonctionnalités nécessitant des mécanismes C plus complexes peuvent être implémentées dans le runtime C ou exposées par BindGen.
 
 ---
 
-# 76. Exemple complet
+# 76. Interopérabilité avec les API C
+
+Jaguar peut utiliser des bibliothèques C externes. Le principe est :
+
+```text
+Header C (.h)
+     ↓
+  jbg.py
+     ↓
+Jaguar Header (.jah)
+     ↓
+    using
+     ↓
+Code Jaguar
+     ↓
+    JCC
+     ↓
+Code C
+     ↓
+   GCC
+     ↓
+Bibliothèque C
+```
+
+## 76.1 `@extern`
+
+Une fonction C externe peut être déclarée manuellement :
+
+```jaguar
+@extern
+int add(int a, int b);
+```
+
+`@extern` conserve le nom C de la fonction et empêche le name mangling Jaguar.
+
+## 76.2 `cptr`
+
+`cptr` représente un pointeur C opaque.
+
+Il est destiné aux handles, contextes, structures C et autres pointeurs dont Jaguar n'a pas besoin de connaître la représentation.
+
+## 76.3 `cstr`
+
+`cstr` représente une chaîne C, typiquement `const char *`.
+
+Exemple :
+
+```jaguar
+cstr version = gl:get_string(GL_VERSION);
+```
+
+Il s'agit d'une chaîne C et non du type `string` propriétaire de Jaguar.
+
+## 76.4 `cfuncptr`
+
+`cfuncptr` représente un pointeur de fonction C.
+
+Il est utile pour les callbacks et les APIs qui exposent des pointeurs de fonctions, notamment les chargeurs d'API graphiques.
+
+## 76.5 Opérateur `&`
+
+L'opérateur `&` permet de transmettre l'adresse d'une variable à une fonction C :
+
+```jaguar
+u32 buffer = 0;
+gl:glGenBuffers(1, &buffer);
+```
+
+Il est particulièrement utile pour les paramètres C de type `T *`.
+
+---
+
+# 77. BindGen (`jbg.py`)
+
+`jbg.py` transforme un header C en Jaguar Header (`.jah`).
+
+Utilisation directe :
+
+```bash
+python jbg.py glad/glad.h -o glad.jah
+```
+
+Le résultat peut ensuite être utilisé avec :
+
+```jaguar
+using glad;
+```
+
+BindGen est conçu pour les headers d'API C et peut notamment représenter :
+
+- fonctions C ;
+- prototypes ;
+- typedefs ;
+- types numériques C ;
+- pointeurs ;
+- chaînes C ;
+- tableaux utilisés comme paramètres ;
+- pointeurs de fonctions ;
+- callbacks ;
+- constantes et macros compatibles ;
+- types opaques ;
+- symboles externes utilisés par les bindings.
+
+Les fonctions externes gardent leur nom C.
+
+---
+
+# 78. Exemple d'utilisation avec une API de type GLAD
+
+Un header C peut contenir des fonctions comme :
+
+```c
+void glClear(unsigned int mask);
+void glGenBuffers(int count, unsigned int *buffers);
+const char *glGetString(unsigned int name);
+```
+
+Après BindGen, le code Jaguar peut utiliser l'API via son `.jah` :
+
+```jaguar
+using glad;
+
+void main(string param) {
+    u32 buffer = 0;
+
+    gl:glGenBuffers(1, &buffer);
+
+    cstr version = gl:glGetString(GL_VERSION);
+
+    gl:glClear(GL_COLOR_BUFFER_BIT);
+}
+```
+
+Les constantes provenant du header peuvent également être utilisées lorsqu'elles sont générées par BindGen.
+
+---
+
+# 79. Jaguar Headers (`.jah`)
+
+Un `.jah` est un fichier Jaguar destiné à être utilisé comme header.
+
+Exemple :
+
+```text
+glad.jah
+math.jah
+window.jah
+```
+
+Puis :
+
+```jaguar
+using glad;
+using math;
+using window;
+```
+
+Un `.jah` peut contenir des prototypes, namespaces, déclarations `@extern`, typedefs/bindings et autres déclarations Jaguar nécessaires à l'interface.
+
+Le `.jah` ne constitue pas une nouvelle syntaxe : c'est une convention d'organisation du code.
+
+---
+
+# 80. Build System
+
+JaguarCC possède un build system séparé : **JBS**.
+
+Un fichier `.jbs` décrit les sources, bibliothèques, includes et targets.
+
+Exemple minimal :
+
+```jbs
+version 1.0
+
+out build
+
+compile Main {
+    main.ja
+}
+```
+
+Cela produit l'exécutable `Main` dans `build`.
+
+---
+
+## 80.1 `out`
+
+`out` définit le répertoire de sortie :
+
+```jbs
+out build
+```
+
+Les targets sont écrites dans ce répertoire.
+
+L'option CLI peut surcharger ce choix :
+
+```bash
+python jbs.py game.jbs -o other_build
+```
+
+---
+
+## 80.2 `compile`
+
+Compile une target Jaguar en exécutable :
+
+```jbs
+compile Main {
+    main.ja
+    player.ja
+}
+```
+
+JBS effectue :
+
+```text
+.ja
+ ↓
+JCC
+ ↓
+.c
+ ↓
+GCC
+ ↓
+exécutable
+```
+
+Plusieurs targets peuvent être définies dans le même fichier. Sans `--target`, JBS les construit dans l'ordre du fichier.
+
+Pour ne construire qu'une target :
+
+```bash
+python jbs.py game.jbs --target Main
+```
+
+---
+
+## 80.3 `compile_static`
+
+Construit une bibliothèque statique :
+
+```jbs
+compile_static MyLib {
+    math.ja
+    player.ja
+}
+```
+
+Le résultat est typiquement :
+
+```text
+libMyLib.a
+```
+
+Cette target ne nécessite pas de fonction `main`.
+
+---
+
+## 80.4 `compile_shared`
+
+Construit une bibliothèque dynamique :
+
+```jbs
+compile_shared MyLib {
+    math.ja
+    player.ja
+}
+```
+
+Sur les plateformes supportées, JBS produit le format de bibliothèque dynamique correspondant, par exemple `.so` sous Linux ou `.dll` avec import library sous MinGW/Windows.
+
+---
+
+## 80.5 `link`
+
+Les bibliothèques externes peuvent être ajoutées à une target :
+
+```jbs
+link Main {
+    MyLib.a
+    SDL2
+}
+```
+
+JBS utilise GCC pour effectuer le lien final.
+
+Les bibliothèques C peuvent donc être utilisées directement.
+
+Des chemins de bibliothèques peuvent également être utilisés avec les directives de chemins du build system.
+
+---
+
+## 80.6 `include`
+
+Ajoute un répertoire de recherche pour les headers/bindings :
+
+```jbs
+include include
+```
+
+Les répertoires d'include sont utilisés notamment pour résoudre les `using` et les headers nécessaires aux bindings.
+
+---
+
+## 80.7 `libpath`
+
+Ajoute un répertoire de recherche de bibliothèques :
+
+```jbs
+libpath lib
+```
+
+Cela permet à JBS/GCC de rechercher les bibliothèques externes dans `lib`.
+
+---
+
+## 80.8 `define`
+
+Définit une macro de compilation :
+
+```jbs
+define PI 3.14
+define MY_GAME_VERSION 2
+```
+
+Les définitions sont disponibles dans le C généré :
+
+```c
+#define PI 3.14
+#define MY_GAME_VERSION 2
+```
+
+Elles peuvent ensuite être utilisées dans Jaguar :
+
+```jaguar
+f64 x = PI;
+```
+
+---
+
+## 80.9 `bindgen`
+
+JBS peut lancer automatiquement BindGen :
+
+```jbs
+bindgen glad {
+    glad/glad.h
+}
+```
+
+Cela génère automatiquement :
+
+```text
+glad.jah
+```
+
+et permet ensuite :
+
+```jaguar
+using glad;
+```
+
+Les paramètres peuvent être indiqués sur la directive :
+
+```jbs
+bindgen glad namespace=gl {
+    glad/glad.h
+}
+```
+
+Le principe est donc :
+
+```text
+glad.h
+  ↓
+bindgen
+  ↓
+glad.jah
+  ↓
+using glad
+```
+
+---
+
+## 80.10 Modes de build
+
+JBS possède plusieurs modes prédéfinis :
+
+```jbs
+mode debug
+```
+
+```jbs
+mode release
+```
+
+```jbs
+mode relwithdebinfo
+```
+
+```jbs
+mode minsizerel
+```
+
+Ils configurent principalement les flags GCC et définissent une macro correspondante :
+
+| Mode | Macro |
+|---|---|
+| `debug` | `JAGUAR_DEBUG` |
+| `release` | `JAGUAR_RELEASE` |
+| `relwithdebinfo` | `JAGUAR_RELWITHDEBINFO` |
+| `minsizerel` | `JAGUAR_MINSIZEREL` |
+
+Cela permet notamment :
+
+```jaguar
+#ifdef JAGUAR_DEBUG
+    sys:print("Debug build");
+#elif defined(JAGUAR_RELEASE)
+    sys:print("Release build");
+#endif
+```
+
+Le mode peut également être sélectionné depuis la ligne de commande :
+
+```bash
+python jbs.py game.jbs --mode release
+```
+
+---
+
+## 80.11 `c89`
+
+JBS peut demander à JCC de générer du C compatible C89 :
+
+```jbs
+c89
+```
+
+---
+
+## 80.12 `keep_c`
+
+Par défaut, JBS peut supprimer les fichiers C intermédiaires.
+
+Pour les conserver :
+
+```jbs
+keep_c
+```
+
+Cela est utile pour inspecter le C généré par JaguarCC ou diagnostiquer une erreur GCC.
+
+---
+
+## 80.13 Exemple de projet complet
+
+Un projet utilisant une API C peut être organisé ainsi :
+
+```text
+MyGame/
+├── example.jbs
+├── src/
+│   └── main.ja
+├── include/
+│   └── ...
+└── lib/
+    └── ...
+```
+
+Fichier `example.jbs` :
+
+```jbs
+version 1.0
+
+out build
+
+mode debug
+
+include include
+libpath lib
+
+c89
+keep_c
+
+define GAME_VERSION 1
+
+bindgen glad {
+    glad/glad.h
+}
+
+compile Main {
+    src/main.ja
+}
+
+link Main {
+    glad
+}
+```
+
+Le pipeline complet devient :
+
+```text
+glad.h
+   ↓
+jbg.py
+   ↓
+glad.jah
+   ↓
+using glad
+   ↓
+main.ja
+   ↓
+JCC
+   ↓
+Main.c
+   ↓
+GCC + bibliothèques C
+   ↓
+Main
+```
+
+---
+
+# 81. Exemple complet
 
 Voici un petit programme utilisant plusieurs fonctionnalités du langage :
 
@@ -2068,7 +2718,7 @@ void main(string param) {
 
 ---
 
-# 77. Exemple : petit programme de jeu
+# 82. Exemple : petit programme de jeu
 
 ```jaguar
 class Player {
@@ -2111,7 +2761,7 @@ void main(string param) {
 
 ---
 
-# 78. Résumé syntaxique
+# 83. Résumé syntaxique
 
 ```text
 // commentaire
@@ -2182,7 +2832,7 @@ jcc:sqrt(25.0);
 
 ---
 
-# 79. Référence rapide
+# 84. Référence rapide
 
 ## Types
 
@@ -2248,6 +2898,36 @@ namespace:function()
 @register
 @exposed
 ```
+
+## C interop
+
+```text
+cptr
+cstr
+cfuncptr
+&
+```
+
+## Préprocesseur
+
+```text
+#define
+#undef
+#if
+#ifdef
+#ifndef
+#elif
+#else
+#endif
+#pragma
+#error
+#warning
+#line
+```
+
+`#elseif` est accepté comme alias Jaguar de `#elif`.
+
+`#include` n'est pas supporté.
 
 ## Collections
 
@@ -2351,7 +3031,7 @@ jcc:env_get()
 
 ---
 
-# 80. Philosophie du langage
+# 85. Philosophie du langage
 
 Jaguar cherche à garder un compromis entre :
 
@@ -2367,7 +3047,7 @@ Le compilateur s'occupe autant que possible des détails bas niveau tout en lais
 
 ---
 
-# 81. Statut des fonctionnalités
+# 86. Statut des fonctionnalités
 
 Cette documentation correspond au comportement actuellement présent dans `jcc.py`.
 
@@ -2386,3 +3066,98 @@ Les points à considérer comme particulièrement spécifiques à l'implémentat
 - le name mangling et la résolution de surcharge.
 
 Pour toute fonctionnalité non décrite ici, il faut se référer au comportement réel de `jcc.py` plutôt que supposer qu'elle est héritée du C ou du C++.
+
+
+---
+
+# 87. Référence rapide JBS
+
+```text
+version
+out
+include
+libpath
+
+define
+mode
+c89
+keep_c
+
+bindgen
+
+compile
+compile_static
+compile_shared
+link
+```
+
+CLI :
+
+```text
+python jbs.py project.jbs
+python jbs.py project.jbs --target Main
+python jbs.py project.jbs --mode release
+```
+
+Le build system utilise JCC pour Jaguar → C et GCC pour les étapes de compilation et de linkage.
+
+---
+
+# 88. Organisation recommandée d'un projet Jaguar
+
+Une organisation typique peut être :
+
+```text
+Project/
+├── build/
+├── include/
+│   ├── engine.jah
+│   └── glad.jah
+├── lib/
+│   ├── libMyEngine.a
+│   └── ...
+├── src/
+│   ├── main.ja
+│   └── game.ja
+└── project.jbs
+```
+
+Les interfaces réutilisables sont placées dans des `.jah`, les implémentations dans des `.ja`, et les API C externes sont généralement introduites par BindGen.
+
+---
+
+# 89. Résumé du pipeline Jaguar moderne
+
+```text
+                         ┌──────────────┐
+                         │   API C .h   │
+                         └──────┬───────┘
+                                │
+                              jbg.py
+                                │
+                                ▼
+                         ┌──────────────┐
+                         │   API .jah   │
+                         └──────┬───────┘
+                                │
+                              using
+                                │
+┌──────────────┐                ▼
+│   source .ja │ ──────────►  JCC
+└──────────────┘                │
+                                ▼
+                              .c
+                                │
+                         ┌──────┴──────┐
+                         │     GCC     │
+                         └──────┬──────┘
+                                │
+                         ┌──────┴──────┐
+                         │ C libraries │
+                         └──────┬──────┘
+                                ▼
+                           executable
+```
+
+JBS orchestre l'ensemble du processus.
+

@@ -1,1722 +1,820 @@
-<html><head><style>body {
-   color: black;
-}
-</style></head><body><h1 id="jaguar-documentation-du-langage">Jaguar — Documentation du langage</h1>
-<blockquote>
-<p>Documentation de référence du langage Jaguar telle qu&#39;implémentée par <code>jcc.py</code>.</p>
-<p><strong>Important :</strong> cette documentation décrit l&#39;implémentation actuelle du compilateur, pas une spécification future. Certaines fonctionnalités peuvent être volontairement limitées.</p>
-</blockquote>
-<hr>
-<h2 id="1-pr-sentation">1. Présentation</h2>
-<p><strong>Jaguar</strong> est un langage compilé qui est traduit en C par <strong>JaguarCC (<code>jcc.py</code>)</strong>, puis compilé avec GCC.</p>
-<p>Le pipeline est :</p>
-<pre><code class="lang-text"><span class="hljs-selector-tag">Code</span> <span class="hljs-selector-tag">Jaguar</span> (<span class="hljs-selector-class">.ja</span>)
-       ↓
-     <span class="hljs-selector-tag">Lexer</span>
-       ↓
-     <span class="hljs-selector-tag">Parser</span>
-       ↓
-    <span class="hljs-selector-tag">Resolver</span>
-       ↓
-    <span class="hljs-selector-tag">CodeGen</span>
-       ↓
-      <span class="hljs-selector-tag">C</span> (<span class="hljs-selector-class">.c</span>)
-       ↓
-      <span class="hljs-selector-tag">GCC</span>
-       ↓
-  <span class="hljs-selector-tag">Ex</span>é<span class="hljs-selector-tag">cutable</span>
-</code></pre>
-<p>Jaguar reprend volontairement plusieurs idées du C/C++ tout en simplifiant certains aspects :</p>
-<ul>
-<li>syntaxe proche du C ;</li>
-<li>types explicites ;</li>
-<li>classes et héritage ;</li>
-<li>surcharge de fonctions ;</li>
-<li>namespaces ;</li>
-<li>collections simples ;</li>
-<li>gestion automatique de certains objets ;</li>
-<li>réflexion limitée ;</li>
-<li>bibliothèque standard <code>jcc</code> ;</li>
-<li>génération de C compatible avec un mode C89.</li>
-</ul>
-<hr>
-<h1 id="2-compiler-un-programme">2. Compiler un programme</h1>
-<h2 id="2-1-compilation-directe">2.1 Compilation directe</h2>
-<pre><code class="lang-bash">python jcc<span class="hljs-selector-class">.py</span> main<span class="hljs-selector-class">.ja</span> -o game
-</code></pre>
-<p>Le compilateur génère :</p>
-<pre><code class="lang-text">game<span class="hljs-selector-class">.c</span>
-game
-</code></pre>
-<p>Puis appelle GCC automatiquement.</p>
-<p>Le nom de sortie <strong>ne doit pas</strong> se terminer par <code>.c</code> :</p>
-<pre><code class="lang-bash">python jcc<span class="hljs-selector-class">.py</span> main<span class="hljs-selector-class">.ja</span> -o game
-</code></pre>
-<p>et non :</p>
-<pre><code class="lang-bash">python jcc<span class="hljs-selector-class">.py</span> main<span class="hljs-selector-class">.ja</span> -o game.c
-</code></pre>
-<hr>
-<h2 id="2-2-g-n-rer-uniquement-le-c">2.2 Générer uniquement le C</h2>
-<p>Sans <code>-o</code>, le C est écrit sur la sortie standard :</p>
-<pre><code class="lang-bash">python jcc<span class="hljs-selector-class">.py</span> main<span class="hljs-selector-class">.ja</span> &gt; main.c
-</code></pre>
-<hr>
-<h2 id="2-3-mode-c89">2.3 Mode C89</h2>
-<pre><code class="lang-bash">python jcc<span class="hljs-selector-class">.py</span> main<span class="hljs-selector-class">.ja</span> --c89 -o game
-</code></pre>
-<p>En mode normal, les déclarations peuvent apparaître après des instructions, comme en C99+.</p>
-<p>Avec <code>--c89</code>, Jaguar déplace les déclarations au début des blocs et laisse l&#39;initialisation à son emplacement logique.</p>
-<p>La sémantique Jaguar reste identique.</p>
-<hr>
-<h1 id="3-syntaxe-g-n-rale">3. Syntaxe générale</h1>
-<p>Jaguar n&#39;est <strong>pas sensible aux retours à la ligne</strong>.</p>
-<p>Les blocs utilisent <code>{}</code> et les instructions se terminent généralement par <code>;</code>.</p>
-<p>Exemple :</p>
-<pre><code class="lang-jaguar"><span class="hljs-function"><span class="hljs-keyword">int</span> <span class="hljs-title">main</span><span class="hljs-params">(<span class="hljs-built_in">string</span> param)</span> </span>{
-    <span class="hljs-keyword">int</span> x = <span class="hljs-number">10</span>;
-    <span class="hljs-keyword">int</span> y = <span class="hljs-number">20</span>;
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Jaguar — un langage qui devient du C</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #FCFCFC;
+    --bg-panel: #FFFFFF;
+    --bg-panel-2: #EFEEE7;
+    --text: #16211B;
+    --muted: #5C695F;
+    --accent: #1F6B47;
+    --accent-soft: rgba(31, 107, 71, 0.10);
+    --grid: #9FAC9F;
+    --border: #DCD8CB;
+    --code-bg: #101B15;
+    --code-text: #DCE6DC;
+    --shadow: 0 1px 2px rgba(15, 25, 18, 0.06);
+    --font-display: 'Sora', 'Segoe UI', system-ui, sans-serif;
+    --font-body: 'IBM Plex Sans', 'Segoe UI', system-ui, sans-serif;
+    --font-mono: 'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace;
+  }
 
-    <span class="hljs-keyword">if</span> (x &lt; y) {
-        sys:print(<span class="hljs-string">"x est plus petit"</span>);
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0A110D;
+      --bg-panel: #121C16;
+      --bg-panel-2: #0E1712;
+      --text: #E6EEE8;
+      --muted: #92A197;
+      --accent: #43AE77;
+      --accent-soft: rgba(67, 174, 119, 0.14);
+      --grid: #3C5747;
+      --border: #1F2B23;
+      --code-bg: #070E0A;
+      --code-text: #D6E2D8;
+      --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
     }
+  }
 
-    <span class="hljs-keyword">return</span> <span class="hljs-number">0</span>;
-}
-</code></pre>
-<hr>
-<h1 id="4-commentaires">4. Commentaires</h1>
-<h2 id="commentaire-sur-une-ligne">Commentaire sur une ligne</h2>
-<pre><code class="lang-jaguar"><span class="hljs-comment">// Ceci est un commentaire</span>
-<span class="hljs-keyword">int</span> x = <span class="hljs-number">10</span>;
-</code></pre>
-<h2 id="commentaire-multiligne">Commentaire multiligne</h2>
-<pre><code class="lang-jaguar"><span class="hljs-comment">/*
-   Commentaire
-   sur plusieurs lignes
-*/</span>
-</code></pre>
-<p>Les commentaires de documentation <code>/** ... */</code> sont également supprimés par le lexer.</p>
-<hr>
-<h1 id="5-pr-processeur">5. Préprocesseur</h1>
-<p>Les directives <code>#define</code> sont conservées et transmises au C généré.</p>
-<pre><code class="lang-jaguar"><span class="hljs-meta">#<span class="hljs-meta-keyword">define</span> PI 3.14159265</span>
-<span class="hljs-meta">#<span class="hljs-meta-keyword">define</span> GAME_VERSION 1</span>
-</code></pre>
-<p>Elles peuvent notamment servir dans les expressions constantes.</p>
-<pre><code class="lang-jaguar"><span class="hljs-meta">#<span class="hljs-meta-keyword">define</span> START_HEALTH 100</span>
+  :root[data-theme="dark"] {
+    --bg: #0A110D;
+    --bg-panel: #121C16;
+    --bg-panel-2: #0E1712;
+    --text: #E6EEE8;
+    --muted: #92A197;
+    --accent: #43AE77;
+    --accent-soft: rgba(67, 174, 119, 0.14);
+    --grid: #3C5747;
+    --border: #1F2B23;
+    --code-bg: #070E0A;
+    --code-text: #D6E2D8;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  }
 
-<span class="hljs-keyword">int</span> default_health = START_HEALTH;
-</code></pre>
-<p>Les macros ne sont pas des variables Jaguar et leur type n&#39;est pas inféré par le compilateur Jaguar.</p>
-<hr>
-<h1 id="6-types">6. Types</h1>
-<h2 id="6-1-types-principaux">6.1 Types principaux</h2>
-<table>
-<thead>
-<tr>
-<th>Jaguar</th>
-<th>Alias</th>
-<th>Type C approximatif</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>void</code></td>
-<td>—</td>
-<td><code>void</code></td>
-</tr>
-<tr>
-<td><code>int</code></td>
-<td><code>i32</code></td>
-<td><code>int</code></td>
-</tr>
-<tr>
-<td><code>uint</code></td>
-<td><code>u32</code></td>
-<td><code>unsigned int</code></td>
-</tr>
-<tr>
-<td><code>short</code></td>
-<td><code>i16</code></td>
-<td><code>short</code></td>
-</tr>
-<tr>
-<td><code>ushort</code></td>
-<td><code>u16</code></td>
-<td><code>unsigned short</code></td>
-</tr>
-<tr>
-<td><code>long</code></td>
-<td><code>i64</code></td>
-<td><code>long long</code></td>
-</tr>
-<tr>
-<td><code>ulong</code></td>
-<td><code>u64</code></td>
-<td><code>unsigned long long</code></td>
-</tr>
-<tr>
-<td><code>char</code></td>
-<td><code>i8</code></td>
-<td><code>signed char</code></td>
-</tr>
-<tr>
-<td><code>uchar</code></td>
-<td><code>u8</code></td>
-<td><code>unsigned char</code></td>
-</tr>
-<tr>
-<td><code>sbyte</code></td>
-<td><code>i8</code></td>
-<td><code>signed char</code></td>
-</tr>
-<tr>
-<td><code>byte</code></td>
-<td><code>u8</code></td>
-<td><code>unsigned char</code></td>
-</tr>
-<tr>
-<td><code>float</code></td>
-<td><code>f32</code></td>
-<td><code>float</code></td>
-</tr>
-<tr>
-<td><code>double</code></td>
-<td><code>f64</code></td>
-<td><code>double</code></td>
-</tr>
-<tr>
-<td><code>bool</code></td>
-<td>—</td>
-<td><code>_jBool</code></td>
-</tr>
-<tr>
-<td><code>string</code></td>
-<td>—</td>
-<td>objet string Jaguar</td>
-</tr>
-</tbody>
-</table>
-<p>Les alias sont normalisés par le compilateur. Par exemple :</p>
-<pre><code class="lang-jaguar">int a = <span class="hljs-number">10</span><span class="hljs-comment">;</span>
-i32 <span class="hljs-keyword">b </span>= <span class="hljs-number">20</span><span class="hljs-comment">;</span>
-</code></pre>
-<p>utilisent tous deux le type logique <code>i32</code>.</p>
-<hr>
-<h1 id="7-variables">7. Variables</h1>
-<h2 id="d-claration">Déclaration</h2>
-<pre><code class="lang-jaguar">int x<span class="hljs-comment">;</span>
-f64 speed<span class="hljs-comment">;</span>
-<span class="hljs-keyword">bool </span>alive<span class="hljs-comment">;</span>
-string name<span class="hljs-comment">;</span>
-</code></pre>
-<h2 id="initialisation">Initialisation</h2>
-<pre><code class="lang-jaguar">int x = <span class="hljs-number">42</span><span class="hljs-comment">;</span>
-f64 speed = <span class="hljs-number">12</span>.<span class="hljs-number">5</span><span class="hljs-comment">;</span>
-<span class="hljs-keyword">bool </span>alive = true<span class="hljs-comment">;</span>
-string name = <span class="hljs-string">"Oscar"</span><span class="hljs-comment">;</span>
-</code></pre>
-<p>Une variable locale peut être déclarée avec n&#39;importe quel type connu.</p>
-<hr>
-<h1 id="8-const-">8. <code>const</code></h1>
-<p><code>const</code> rend une variable ou un paramètre non modifiable.</p>
-<pre><code class="lang-jaguar"><span class="hljs-keyword">const</span> <span class="hljs-keyword">int</span> max_health = <span class="hljs-number">100</span>;
-</code></pre>
-<p>Un paramètre peut également être <code>const</code> :</p>
-<pre><code class="lang-jaguar"><span class="hljs-selector-tag">void</span> <span class="hljs-selector-tag">print_value</span>(<span class="hljs-selector-tag">const</span> <span class="hljs-selector-tag">int</span> <span class="hljs-selector-tag">value</span>) {
-    <span class="hljs-attribute">sys</span>:<span class="hljs-built_in">print</span>(value);
-}
-</code></pre>
-<p>Les méthodes peuvent également être déclarées <code>const</code> :</p>
-<pre><code class="lang-jaguar"><span class="hljs-function"><span class="hljs-keyword">int</span> <span class="hljs-title">get_health</span><span class="hljs-params">()</span> <span class="hljs-keyword">const</span> </span>{
-    <span class="hljs-keyword">return</span> health;
-}
-</code></pre>
-<p>Une variable <code>const</code> locale doit être initialisée immédiatement.</p>
-<pre><code class="lang-jaguar"><span class="hljs-keyword">const</span> <span class="hljs-keyword">int</span> x = <span class="hljs-number">10</span>;
-</code></pre>
-<hr>
-<h1 id="9-auto-">9. <code>auto</code></h1>
-<p><code>auto</code> permet de déduire le type d&#39;une variable locale depuis son initialisation.</p>
-<pre><code class="lang-jaguar"><span class="hljs-attribute">auto x</span> = 42;
-<span class="hljs-attribute">auto value</span> = 3.14;
-<span class="hljs-attribute">auto name</span> = <span class="hljs-string">"hello"</span>;
-</code></pre>
-<p>Une variable <code>auto</code> doit obligatoirement être initialisée.</p>
-<pre><code class="lang-jaguar"><span class="hljs-keyword">auto</span> x; <span class="hljs-comment">// invalide</span>
-</code></pre>
-<p><code>auto</code> est destiné aux variables locales et aux constructions de boucle prévues par Jaguar.</p>
-<hr>
-<h1 id="10-litt-raux">10. Littéraux</h1>
-<h2 id="entiers">Entiers</h2>
-<pre><code class="lang-jaguar"><span class="hljs-number">0</span>
-<span class="hljs-number">42</span>
-<span class="hljs-number">-10</span>
-</code></pre>
-<h2 id="d-cimaux">Décimaux</h2>
-<pre><code class="lang-jaguar">3<span class="hljs-selector-class">.14</span>
-0<span class="hljs-selector-class">.5</span>
-10<span class="hljs-selector-class">.0</span>
-</code></pre>
-<h2 id="bool-ens">Booléens</h2>
-<pre><code class="lang-jaguar"><span class="hljs-literal">true</span>
-<span class="hljs-literal">false</span>
-</code></pre>
-<h2 id="strings">Strings</h2>
-<pre><code class="lang-jaguar"><span class="hljs-string">"Hello world"</span>
-</code></pre>
-<hr>
-<h1 id="11-string-">11. <code>string</code></h1>
-<p><code>string</code> est le type chaîne natif de Jaguar.</p>
-<pre><code class="lang-jaguar"><span class="hljs-built_in">string</span> <span class="hljs-built_in">name</span> = <span class="hljs-string">"Jaguar"</span>;
-</code></pre>
-<p>Il ne s&#39;agit pas d&#39;un simple <code>char*</code> exposé au programme Jaguar.</p>
-<h2 id="m-thodes-disponibles">Méthodes disponibles</h2>
-<h3 id="-length-"><code>length()</code></h3>
-<pre><code class="lang-jaguar">int n = <span class="hljs-built_in">name</span>.<span class="hljs-built_in">length</span>();
-</code></pre>
-<h3 id="-empty-"><code>empty()</code></h3>
-<pre><code class="lang-jaguar"><span class="hljs-keyword">bool</span> <span class="hljs-keyword">empty</span> = name.<span class="hljs-keyword">empty</span>();
-</code></pre>
-<h3 id="-equals-"><code>equals()</code></h3>
-<pre><code class="lang-jaguar"><span class="hljs-selector-tag">if</span> (<span class="hljs-selector-tag">name</span><span class="hljs-selector-class">.equals</span>("<span class="hljs-selector-tag">Jaguar</span>")) {
-    <span class="hljs-attribute">sys</span>:<span class="hljs-built_in">print</span>(<span class="hljs-string">"OK"</span>);
-}
-</code></pre>
-<h3 id="-contains-"><code>contains()</code></h3>
-<pre><code class="lang-jaguar">bool found = <span class="hljs-built_in">name</span>.<span class="hljs-keyword">contains</span>(<span class="hljs-string">"gua"</span>);
-</code></pre>
-<h3 id="-starts_with-"><code>starts_with()</code></h3>
-<pre><code class="lang-jaguar">bool <span class="hljs-literal">result</span> = <span class="hljs-built_in">name</span>.starts_with(<span class="hljs-string">"Jag"</span>);
-</code></pre>
-<h3 id="-ends_with-"><code>ends_with()</code></h3>
-<pre><code class="lang-jaguar">bool <span class="hljs-literal">result</span> = <span class="hljs-built_in">name</span>.ends_with(<span class="hljs-string">"ar"</span>);
-</code></pre>
-<h3 id="-concat-"><code>concat()</code></h3>
-<pre><code class="lang-jaguar"><span class="hljs-built_in">string</span> full = <span class="hljs-built_in">name</span>.concat(<span class="hljs-string">"CC"</span>);
-</code></pre>
-<h3 id="-substring-"><code>substring()</code></h3>
-<pre><code class="lang-jaguar"><span class="hljs-type">string</span> part = name.substring(<span class="hljs-number">0</span>, <span class="hljs-number">3</span>);
-</code></pre>
-<h3 id="-char_at-"><code>char_at()</code></h3>
-<pre><code class="lang-jaguar">i32 c = name.char_at(<span class="hljs-number">0</span>)<span class="hljs-comment">;</span>
-</code></pre>
-<p>Le résultat est le code du caractère, ou <code>-1</code> si l&#39;index est invalide.</p>
-<h3 id="-to_upper-to_lower-"><code>to_upper()</code> / <code>to_lower()</code></h3>
-<pre><code class="lang-jaguar"><span class="hljs-built_in">string</span> upper = <span class="hljs-built_in">name</span>.to_upper();
-<span class="hljs-built_in">string</span> lower = <span class="hljs-built_in">name</span>.to_lower();
-</code></pre>
-<hr>
-<h1 id="12-op-rateurs">12. Opérateurs</h1>
-<h2 id="arithm-tiques">Arithmétiques</h2>
-<pre><code class="lang-text"><span class="hljs-bullet">+   </span>-   *   /   %
-</code></pre>
-<p>Exemple :</p>
-<pre><code class="lang-jaguar">int result = (<span class="hljs-number">10</span> + <span class="hljs-number">5</span>) * <span class="hljs-number">2</span>;
-</code></pre>
-<h2 id="comparaisons">Comparaisons</h2>
-<pre><code class="lang-text"><span class="hljs-section">==  !=  &lt;  &gt;  &lt;=  &gt;=</span>
-</code></pre>
-<p>Les comparaisons produisent un <code>bool</code>.</p>
-<pre><code class="lang-jaguar"><span class="hljs-attribute">bool result</span> = health &lt;= 0;
-</code></pre>
-<h2 id="logique">Logique</h2>
-<pre><code class="lang-text">&amp;&amp;  <span class="hljs-string">||  !</span>
-</code></pre>
-<p>Exemple :</p>
-<pre><code class="lang-jaguar"><span class="hljs-selector-tag">if</span> (<span class="hljs-selector-tag">alive</span> &amp;&amp; <span class="hljs-selector-tag">health</span> &gt; 0) {
-    <span class="hljs-attribute">sys</span>:<span class="hljs-built_in">print</span>(<span class="hljs-string">"vivant"</span>);
-}
-</code></pre>
-<h2 id="priorit-">Priorité</h2>
-<p>La priorité est proche du C :</p>
-<pre><code class="lang-text">||
-&amp;&amp;
-<span class="hljs-section">== !=</span>
-&lt; &gt; &lt;= &gt;=
-+ -
-<span class="hljs-bullet">* </span>/ %
-<span class="hljs-bullet">- </span>!
-</code></pre>
-<p>Les parenthèses peuvent être utilisées pour rendre une expression explicite.</p>
-<hr>
-<h1 id="13-casts">13. Casts</h1>
-<p>Jaguar utilise volontairement la syntaxe de cast C :</p>
-<pre><code class="lang-jaguar">f64 value = (<span class="hljs-name">f64</span>)<span class="hljs-number">10</span><span class="hljs-comment">;</span>
-i32 integer = (<span class="hljs-name">i32</span>)<span class="hljs-number">3.14</span><span class="hljs-comment">;</span>
-</code></pre>
-<p>La forme suivante n&#39;est <strong>pas</strong> un cast Jaguar :</p>
-<pre><code class="lang-jaguar">i<span class="hljs-number">32</span><span class="hljs-comment">(3.14)</span>; <span class="hljs-comment">// ce n'est pas la syntaxe de cast</span>
-</code></pre>
-<hr>
-<h1 id="14-conversion-implicite-pour-les-surcharges">14. Conversion implicite pour les surcharges</h1>
-<p>Le resolver peut utiliser des conversions numériques simples pour choisir une surcharge :</p>
-<ul>
-<li>entier → autre type entier ;</li>
-<li>entier → flottant ;</li>
-<li>flottant → autre type flottant.</li>
-</ul>
-<p>Exemple :</p>
-<pre><code class="lang-jaguar"><span class="hljs-selector-tag">void</span> <span class="hljs-selector-tag">test</span>(<span class="hljs-selector-tag">i32</span> <span class="hljs-selector-tag">value</span>) {
-    <span class="hljs-attribute">sys</span>:<span class="hljs-built_in">print</span>(value);
-}
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; scroll-padding-top: env(safe-area-inset-top, 0px); }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-body);
+    font-size: 16px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  img, svg { max-width: 100%; }
+  a { color: inherit; }
 
-<span class="hljs-selector-tag">void</span> <span class="hljs-selector-tag">test</span>(<span class="hljs-selector-tag">f64</span> <span class="hljs-selector-tag">value</span>) {
-    <span class="hljs-attribute">sys</span>:<span class="hljs-built_in">print</span>(value);
-}
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 28px; }
 
-<span class="hljs-selector-tag">test</span>(10);
-<span class="hljs-selector-tag">test</span>(3<span class="hljs-selector-class">.14</span>);
-</code></pre>
-<p>Si plusieurs surcharges restent équivalentes, l&#39;appel est considéré comme ambigu.</p>
-<hr>
-<h1 id="15-fonctions">15. Fonctions</h1>
-<h2 id="d-claration">Déclaration</h2>
-<pre><code class="lang-jaguar"><span class="hljs-function"><span class="hljs-keyword">int</span> <span class="hljs-title">add</span><span class="hljs-params">(<span class="hljs-keyword">int</span> a, <span class="hljs-keyword">int</span> b)</span> </span>{
-    <span class="hljs-keyword">return</span> a + b;
-}
-</code></pre>
-<h2 id="appel">Appel</h2>
-<pre><code class="lang-jaguar"><span class="hljs-keyword">int</span> result = <span class="hljs-keyword">add</span>(<span class="hljs-number">10</span>, <span class="hljs-number">20</span>);
-</code></pre>
-<h2 id="-void-"><code>void</code></h2>
-<pre><code class="lang-jaguar"><span class="hljs-selector-tag">void</span> <span class="hljs-selector-tag">say_hello</span>() {
-    <span class="hljs-attribute">sys</span>:<span class="hljs-built_in">print</span>(<span class="hljs-string">"Hello"</span>);
-}
-</code></pre>
-<hr>
-<h1 id="16-param-tres-par-d-faut">16. Paramètres par défaut</h1>
-<p>Un paramètre peut avoir une valeur par défaut :</p>
-<pre><code class="lang-jaguar"><span class="hljs-function"><span class="hljs-keyword">int</span> <span class="hljs-title">add</span><span class="hljs-params">(<span class="hljs-keyword">int</span> a, <span class="hljs-keyword">int</span> b = <span class="hljs-number">10</span>)</span> </span>{
-    <span class="hljs-keyword">return</span> a + b;
-}
-</code></pre>
-<p>Les deux appels suivants sont valides :</p>
-<pre><code class="lang-jaguar"><span class="hljs-keyword">add</span><span class="bash">(5);
-</span><span class="hljs-keyword">add</span><span class="bash">(5, 20);</span>
-</code></pre>
-<hr>
-<h1 id="17-arguments-nomm-s">17. Arguments nommés</h1>
-<p>Les arguments peuvent être transmis par nom :</p>
-<pre><code class="lang-jaguar"><span class="hljs-keyword">int</span> <span class="hljs-built_in">move</span>(<span class="hljs-keyword">int</span> x, <span class="hljs-keyword">int</span> y, <span class="hljs-keyword">int</span> speed = <span class="hljs-number">1</span>) {
-    <span class="hljs-built_in">return</span> x + y + speed;
-}
+  /* ---------- Nav ---------- */
+  header {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    background: color-mix(in srgb, var(--bg) 88%, transparent);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--border);
+    padding-top: env(safe-area-inset-top, 0px);
+  }
+  .nav-inner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+    padding: 16px 0;
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: 1.08rem;
+    letter-spacing: -0.01em;
+    text-decoration: none;
+    color: var(--text);
+    flex-shrink: 0;
+  }
+  .brand svg { display: block; }
 
-<span class="hljs-built_in">move</span>(y = <span class="hljs-number">20</span>, x = <span class="hljs-number">10</span>);
-<span class="hljs-built_in">move</span>(x = <span class="hljs-number">10</span>, y = <span class="hljs-number">20</span>, speed = <span class="hljs-number">5</span>);
-</code></pre>
-<p>Une fois qu&#39;un argument nommé est utilisé, un argument positionnel ne peut plus suivre.</p>
-<pre><code class="lang-jaguar">move(x = <span class="hljs-number">10</span>, <span class="hljs-number">20</span>); <span class="hljs-comment">// invalide</span>
-</code></pre>
-<p>Les fonctions intégrées <code>jcc:*</code> et <code>sys:*</code> n&#39;acceptent pas les arguments nommés.</p>
-<hr>
-<h1 id="18-prototypes">18. Prototypes</h1>
-<p>Une fonction peut être déclarée sans corps :</p>
-<pre><code class="lang-jaguar"><span class="hljs-function"><span class="hljs-keyword">int</span> <span class="hljs-title">add</span><span class="hljs-params">(<span class="hljs-keyword">int</span> a, <span class="hljs-keyword">int</span> b)</span></span>;
-</code></pre>
-<p>Puis définie plus loin :</p>
-<pre><code class="lang-jaguar"><span class="hljs-function"><span class="hljs-keyword">int</span> <span class="hljs-title">add</span><span class="hljs-params">(<span class="hljs-keyword">int</span> a, <span class="hljs-keyword">int</span> b)</span> </span>{
-    <span class="hljs-keyword">return</span> a + b;
-}
-</code></pre>
-<p>Le prototype et la définition doivent avoir exactement la même signature.</p>
-<p>Deux prototypes identiques ou deux définitions identiques provoquent une erreur.</p>
-<hr>
-<h1 id="19-surcharge">19. Surcharge</h1>
-<p>Jaguar permet plusieurs fonctions de même nom avec des paramètres différents :</p>
-<pre><code class="lang-jaguar"><span class="hljs-selector-tag">void</span> <span class="hljs-selector-tag">print_value</span>(<span class="hljs-selector-tag">i32</span> <span class="hljs-selector-tag">value</span>) {
-    <span class="hljs-attribute">sys</span>:<span class="hljs-built_in">print</span>(value);
-}
+  .tabs { display: flex; gap: 4px; overflow-x: auto; scrollbar-width: none; -ms-overflow-style: none; }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tab-btn {
+    font-family: var(--font-body);
+    font-weight: 500;
+    font-size: 0.92rem;
+    color: var(--muted);
+    background: none;
+    border: none;
+    padding: 8px 14px;
+    border-radius: 7px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: color 0.15s ease, background 0.15s ease;
+  }
+  .tab-btn:hover { color: var(--text); background: var(--bg-panel-2); }
+  .tab-btn[aria-selected="true"] { color: var(--accent); background: var(--accent-soft); }
 
-<span class="hljs-selector-tag">void</span> <span class="hljs-selector-tag">print_value</span>(<span class="hljs-selector-tag">f64</span> <span class="hljs-selector-tag">value</span>) {
-    <span class="hljs-attribute">sys</span>:<span class="hljs-built_in">print</span>(value);
-}
-</code></pre>
-<p>Le compilateur choisit la surcharge appropriée.</p>
-<p>Le name mangling utilise les types des paramètres lorsque le nom est réellement surchargé.</p>
-<hr>
-<h1 id="20-extern-">20. <code>@extern</code></h1>
-<p><code>@extern</code> empêche le name mangling.</p>
-<pre><code class="lang-jaguar">@<span class="hljs-function"><span class="hljs-keyword">extern</span>
-<span class="hljs-keyword">int</span> <span class="hljs-title">my_native_function</span>(<span class="hljs-params"><span class="hljs-keyword">int</span> <span class="hljs-keyword">value</span></span>)</span>;
-</code></pre>
-<p>Le nom C reste exactement <code>my_native_function</code>.</p>
-<p>Cela permet notamment d&#39;appeler des fonctions définies ailleurs dans le projet ou dans une bibliothèque native.</p>
-<hr>
-<h1 id="21-fonction-main-">21. Fonction <code>main</code></h1>
-<p>La forme spéciale recommandée est :</p>
-<pre><code class="lang-jaguar"><span class="hljs-selector-tag">void</span> <span class="hljs-selector-tag">main</span>(<span class="hljs-selector-tag">string</span> <span class="hljs-selector-tag">param</span>) {
-    <span class="hljs-attribute">sys</span>:<span class="hljs-built_in">print</span>(<span class="hljs-string">"Hello"</span>);
-}
-</code></pre>
-<p>ou une forme retournant un entier selon les fonctions supportées par le programme.</p>
-<p>Jaguar traduit cette fonction vers un <code>main</code> C standard.</p>
-<p>Le compilateur évite d&#39;émettre un <code>main(string)</code> C non standard.</p>
-<hr>
-<h1 id="22-return-">22. <code>return</code></h1>
-<pre><code class="lang-jaguar"><span class="hljs-function"><span class="hljs-keyword">int</span> <span class="hljs-title">square</span><span class="hljs-params">(<span class="hljs-keyword">int</span> x)</span> </span>{
-    <span class="hljs-keyword">return</span> x * x;
-}
-</code></pre>
-<p>Pour une fonction <code>void</code> :</p>
-<pre><code class="lang-jaguar"><span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">stop</span><span class="hljs-params">()</span> </span>{
-    <span class="hljs-keyword">return</span>;
-}
-</code></pre>
-<hr>
-<h1 id="23-conditions">23. Conditions</h1>
-<h2 id="-if-"><code>if</code></h2>
-<pre><code class="lang-jaguar"><span class="hljs-selector-tag">if</span> (<span class="hljs-selector-tag">health</span> &gt; 0) {
-    <span class="hljs-attribute">sys</span>:<span class="hljs-built_in">print</span>(<span class="hljs-string">"alive"</span>);
-}
-</code></pre>
-<h2 id="-else-"><code>else</code></h2>
-<pre><code class="lang-jaguar"><span class="hljs-selector-tag">if</span> (<span class="hljs-selector-tag">health</span> &gt; 0) {
-    <span class="hljs-attribute">sys</span>:<span class="hljs-built_in">print</span>(<span class="hljs-string">"alive"</span>);
-} <span class="hljs-selector-tag">else</span> {
-    <span class="hljs-attribute">sys</span>:<span class="hljs-built_in">print</span>(<span class="hljs-string">"dead"</span>);
-}
-</code></pre>
-<h2 id="-else-if-"><code>else if</code></h2>
-<pre><code class="lang-jaguar"><span class="hljs-selector-tag">if</span> (<span class="hljs-selector-tag">health</span> &gt; 75) {
-    <span class="hljs-attribute">sys</span>:<span class="hljs-built_in">print</span>(<span class="hljs-string">"high"</span>);
-} <span class="hljs-selector-tag">else</span> <span class="hljs-selector-tag">if</span> (<span class="hljs-selector-tag">health</span> &gt; 25) {
-    <span class="hljs-attribute">sys</span>:<span class="hljs-built_in">print</span>(<span class="hljs-string">"medium"</span>);
-} <span class="hljs-selector-tag">else</span> {
-    <span class="hljs-attribute">sys</span>:<span class="hljs-built_in">print</span>(<span class="hljs-string">"low"</span>);
-}
-</code></pre>
-<p>Les accolades sont obligatoires.</p>
-<hr>
-<h1 id="24-while-">24. <code>while</code></h1>
-<p>Le <code>while</code> Jaguar est volontairement différent du C : il ne prend <strong>pas de condition</strong>.</p>
-<pre><code class="lang-jaguar"><span class="hljs-keyword">while</span> {
-    <span class="hljs-keyword">if</span> (health &lt;= <span class="hljs-number">0</span>) {
-        <span class="hljs-keyword">break</span>;
+  .nav-right { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+  .icon-btn {
+    display: flex; align-items: center; justify-content: center;
+    width: 36px; height: 36px; border-radius: 8px;
+    border: 1px solid var(--border);
+    color: var(--text);
+    text-decoration: none;
+    transition: border-color 0.15s ease, background 0.15s ease;
+  }
+  .icon-btn:hover { border-color: var(--accent); background: var(--accent-soft); }
+
+  /* ---------- Buttons ---------- */
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-family: var(--font-body); font-weight: 600; font-size: 0.92rem;
+    padding: 11px 20px; border-radius: 8px;
+    text-decoration: none; border: 1px solid transparent;
+    cursor: pointer;
+    transition: transform 0.12s ease, background 0.15s ease, border-color 0.15s ease;
+  }
+  .btn:active { transform: translateY(1px); }
+  .btn-primary { background: var(--accent); color: #FFFFFF; }
+  .btn-primary:hover { background: color-mix(in srgb, var(--accent) 88%, white 12%); }
+  .btn-outline { border-color: var(--border); color: var(--text); background: transparent; }
+  .btn-outline:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* ---------- Tab panels ---------- */
+  section[role="tabpanel"] { display: none; }
+  section[role="tabpanel"].active { display: block; }
+
+  .eyebrow-tag {
+    display: inline-flex; align-items: center; gap: 7px;
+    font-family: var(--font-mono); font-size: 0.78rem;
+    color: var(--accent); background: var(--accent-soft);
+    padding: 5px 11px; border-radius: 6px;
+  }
+  .eyebrow-tag .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+
+  h1, h2, h3 { font-family: var(--font-display); letter-spacing: -0.015em; margin: 0; }
+
+  /* ---------- Hero ---------- */
+  .hero { position: relative; overflow: hidden; border-bottom: 1px solid var(--border); }
+  .hero-inner {
+    display: grid; grid-template-columns: 1.05fr 0.95fr;
+    gap: 40px; align-items: center; padding: 64px 0 56px;
+  }
+  @media (max-width: 860px) { .hero-inner { grid-template-columns: 1fr; padding: 40px 0 32px; } }
+  .hero h1 { font-size: clamp(2.1rem, 4.1vw, 3rem); line-height: 1.1; margin: 18px 0 18px; }
+  .hero p.lead { font-size: 1.08rem; color: var(--muted); max-width: 48ch; margin: 0 0 28px; }
+  .hero-ctas { display: flex; gap: 12px; flex-wrap: wrap; }
+
+  .jaguar-art {
+    position: relative; aspect-ratio: 4 / 3.3; border-radius: 14px;
+    overflow: hidden; border: 1px solid var(--border); background: var(--bg-panel-2);
+  }
+  .jaguar-art svg { width: 100%; height: 100%; display: block; }
+
+  /* ---------- Section basics ---------- */
+  .section-pad { padding: 56px 0; }
+  .section-head { max-width: 62ch; margin-bottom: 34px; }
+  .section-head .eyebrow-tag { margin-bottom: 14px; }
+  .section-head h2 { font-size: 1.65rem; margin-bottom: 10px; }
+  .section-head p { color: var(--muted); margin: 0; }
+
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  @media (max-width: 860px) { .grid { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 560px) { .grid { grid-template-columns: 1fr; } }
+
+  .card {
+    background: var(--bg-panel); border: 1px solid var(--border); padding: 22px;
+    border-radius: 10px;
+  }
+  .card h3 { font-size: 1rem; margin-bottom: 8px; display: flex; align-items: center; gap: 9px; }
+  .card h3 svg { flex-shrink: 0; color: var(--accent); }
+  .card p { color: var(--muted); font-size: 0.92rem; margin: 0; }
+
+  /* ---------- Code blocks ---------- */
+  .code-block {
+    background: var(--code-bg); color: var(--code-text);
+    font-family: var(--font-mono); font-size: 0.83rem; line-height: 1.6;
+    padding: 18px 20px; border-radius: 10px; overflow-x: auto; white-space: pre;
+  }
+  .code-block .cm { color: #6C7A70; }
+  .code-block .kw { color: #6FBF95; }
+  .code-block .fn { color: #9AD6B4; }
+  .code-block .str { color: #C9B98A; }
+  .code-block .ty { color: #7FB89A; }
+
+  /* ---------- Feature rows ---------- */
+  .feat-row {
+    display: grid; grid-template-columns: 0.85fr 1.15fr; gap: 34px;
+    align-items: start; padding: 34px 0; border-top: 1px solid var(--border);
+  }
+  .feat-row:first-of-type { border-top: none; }
+  @media (max-width: 780px) { .feat-row { grid-template-columns: 1fr; gap: 16px; } }
+  .feat-row .idx { font-family: var(--font-mono); font-size: 0.78rem; color: var(--muted); }
+  .feat-row h3 { font-size: 1.22rem; margin: 6px 0 10px; }
+  .feat-row p { color: var(--muted); margin: 0 0 14px; }
+  .feat-row code.inline {
+    font-family: var(--font-mono); background: var(--accent-soft); color: var(--accent);
+    padding: 1px 6px; border-radius: 4px; font-size: 0.86em;
+  }
+
+  /* ---------- Documentation ---------- */
+  .doc-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
+  @media (max-width: 700px) { .doc-grid { grid-template-columns: 1fr; } }
+  .doc-card {
+    display: block; width: 100%; text-align: left; text-decoration: none; color: var(--text);
+    background: var(--bg-panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 18px 20px; font-family: inherit; cursor: pointer;
+    transition: border-color 0.15s ease;
+  }
+  .doc-card:hover { border-color: var(--accent); }
+  .doc-card .num { font-family: var(--font-mono); font-size: 0.76rem; color: var(--accent); }
+  .doc-card h3 { font-size: 1rem; margin: 6px 0 6px; }
+  .doc-card p { margin: 0; color: var(--muted); font-size: 0.88rem; }
+
+  .doc-callout {
+    display: flex; align-items: center; justify-content: space-between; gap: 20px; flex-wrap: wrap;
+    background: var(--bg-panel-2); border: 1px solid var(--border); border-radius: 12px;
+    padding: 22px 26px; margin-top: 30px;
+  }
+  .doc-callout p { margin: 0; color: var(--muted); max-width: 46ch; }
+  .doc-callout h3 { font-size: 1.05rem; margin-bottom: 6px; }
+
+  /* ---------- Releases ---------- */
+  .status-banner {
+    display: flex; gap: 14px; align-items: flex-start;
+    background: var(--bg-panel); border: 1px solid var(--border); border-radius: 12px;
+    padding: 20px 22px; margin-bottom: 30px;
+  }
+  .status-banner svg { flex-shrink: 0; margin-top: 2px; color: var(--accent); }
+  .status-banner h3 { font-size: 1rem; margin-bottom: 5px; }
+  .status-banner p { margin: 0; color: var(--muted); font-size: 0.92rem; }
+
+  #releases-list { display: grid; gap: 12px; margin-bottom: 10px; }
+  .release-card { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 10px; padding: 18px 20px; }
+  .release-card .rtitle { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
+  .release-card .rtag {
+    font-family: var(--font-mono); font-size: 0.8rem; color: var(--accent);
+    background: var(--accent-soft); padding: 2px 8px; border-radius: 5px;
+  }
+  .release-card .rdate { font-size: 0.82rem; color: var(--muted); }
+  .release-card .rassets { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  .release-card .rassets a {
+    font-family: var(--font-mono); font-size: 0.78rem; text-decoration: none; color: var(--text);
+    border: 1px solid var(--border); padding: 5px 10px; border-radius: 6px;
+  }
+  .release-card .rassets a:hover { border-color: var(--accent); color: var(--accent); }
+
+  .empty-state { text-align: center; padding: 46px 24px; border: 1px dashed var(--border); border-radius: 12px; }
+  .empty-state p { color: var(--muted); max-width: 42ch; margin: 10px auto 22px; }
+  .empty-state .glyph { font-size: 1.6rem; }
+
+  .build-steps { margin-top: 46px; }
+  .steps-list {
+    list-style: none; counter-reset: step; margin: 0; padding: 0; display: grid; gap: 10px;
+  }
+  .steps-list li {
+    counter-increment: step; display: grid; grid-template-columns: 30px 1fr;
+    gap: 14px; align-items: start;
+    background: var(--bg-panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 15px 18px;
+  }
+  .steps-list li::before {
+    content: counter(step); font-family: var(--font-mono); font-size: 0.8rem; color: var(--accent);
+    background: var(--accent-soft); width: 26px; height: 26px;
+    display: flex; align-items: center; justify-content: center; border-radius: 6px;
+  }
+  .steps-list code { font-family: var(--font-mono); font-size: 0.86rem; color: var(--text); }
+  .steps-list .step-note { color: var(--muted); font-size: 0.85rem; margin-top: 3px; }
+
+  /* ---------- Reference table (Language tab) ---------- */
+  .ref-table { width: 100%; border-collapse: collapse; margin: 0 0 6px; font-size: 0.88rem; }
+  .ref-table th, .ref-table td { border: 1px solid var(--border); padding: 9px 12px; text-align: left; vertical-align: top; }
+  .ref-table th { background: var(--bg-panel-2); font-family: var(--font-display); font-weight: 600; font-size: 0.82rem; }
+  .ref-table td { color: var(--muted); }
+  .ref-table td code, .ref-table td span.mono { font-family: var(--font-mono); color: var(--text); }
+
+  footer { border-top: 1px solid var(--border); padding: 30px 0 40px; margin-top: 20px; }
+  .footer-inner { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 14px; }
+  .footer-inner p { margin: 0; color: var(--muted); font-size: 0.86rem; }
+  .footer-links { display: flex; gap: 18px; }
+  .footer-links a { color: var(--muted); text-decoration: none; font-size: 0.86rem; }
+  .footer-links a:hover { color: var(--accent); }
+
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    * { transition: none !important; animation: none !important; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap nav-inner">
+    <a class="brand" href="#accueil" data-tab-link="accueil">
+      <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
+        <rect x="1" y="1" width="20" height="20" rx="6" fill="var(--accent)"/>
+        <circle cx="11" cy="8.6" r="2.3" fill="var(--bg-panel)"/>
+        <circle cx="7.4" cy="13.4" r="1.5" fill="var(--bg-panel)"/>
+        <circle cx="14.6" cy="13.4" r="1.5" fill="var(--bg-panel)"/>
+      </svg>
+      Jaguar
+    </a>
+    <nav class="tabs" role="tablist" aria-label="Navigation principale">
+      <button class="tab-btn" role="tab" aria-selected="true" data-tab="accueil">Accueil</button>
+      <button class="tab-btn" role="tab" aria-selected="false" data-tab="langage">Le langage</button>
+      <button class="tab-btn" role="tab" aria-selected="false" data-tab="outils">Outils</button>
+      <button class="tab-btn" role="tab" aria-selected="false" data-tab="documentation">Documentation</button>
+      <button class="tab-btn" role="tab" aria-selected="false" data-tab="releases">Releases</button>
+    </nav>
+    <div class="nav-right">
+      <a class="icon-btn" href="https://github.com/oscar-soirey/JaguarCC" target="_blank" rel="noopener" aria-label="Voir sur GitHub" title="GitHub">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5C5.73.5.98 5.24.98 11.52c0 5.02 3.26 9.28 7.78 10.78.57.1.78-.25.78-.55 0-.27-.01-1.17-.02-2.12-3.16.69-3.83-1.34-3.83-1.34-.52-1.31-1.26-1.66-1.26-1.66-1.03-.7.08-.69.08-.69 1.14.08 1.74 1.17 1.74 1.17 1.01 1.73 2.65 1.23 3.3.94.1-.73.4-1.23.72-1.51-2.52-.29-5.17-1.26-5.17-5.6 0-1.24.44-2.25 1.17-3.04-.12-.29-.51-1.45.11-3.02 0 0 .96-.31 3.14 1.16.91-.25 1.89-.38 2.86-.38.97 0 1.95.13 2.86.38 2.18-1.47 3.14-1.16 3.14-1.16.62 1.57.23 2.73.11 3.02.73.79 1.17 1.8 1.17 3.04 0 4.35-2.66 5.31-5.19 5.59.41.35.77 1.04.77 2.11 0 1.52-.01 2.75-.01 3.12 0 .3.2.66.79.55 4.51-1.51 7.77-5.76 7.77-10.78C23.02 5.24 18.27.5 12 .5Z"/></svg>
+      </a>
+    </div>
+  </div>
+</header>
+
+<main>
+
+  <!-- ACCUEIL -->
+  <section id="accueil" role="tabpanel" class="active" aria-labelledby="accueil">
+    <div class="hero">
+      <div class="wrap hero-inner">
+        <div>
+          <span class="eyebrow-tag"><span class="dot"></span>Langage compilé</span>
+          <h1>Un langage compilé, avec son propre outillage.</h1>
+          <p class="lead">Jaguar est un langage compilé, à la syntaxe proche du C : types explicites, classes, namespaces et collections simples — avec un runtime qui garde la gestion mémoire hors de portée du code. Un compilateur, un build system et un bindgen forment sa chaîne d'outils.</p>
+          <div class="hero-ctas">
+            <button class="btn btn-primary" data-tab-link="langage">Découvrir le langage</button>
+            <button class="btn btn-outline" data-tab-link="outils">Voir les outils</button>
+          </div>
+        </div>
+        <div class="jaguar-art" aria-hidden="true">
+          <svg viewBox="0 0 400 320" preserveAspectRatio="xMidYMid slice">
+            <defs>
+              <linearGradient id="bgg" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="var(--bg-panel-2)"/>
+                <stop offset="100%" stop-color="var(--bg-panel)"/>
+              </linearGradient>
+            </defs>
+            <rect width="400" height="320" fill="url(#bgg)"/>
+            <g stroke="var(--grid)" stroke-width="1.3" fill="none" opacity="0.8">
+              <path d="M200 160 L200 62"/>
+              <path d="M200 160 L100 232"/>
+              <path d="M200 160 L300 232"/>
+            </g>
+            <circle cx="200" cy="160" r="30" fill="var(--bg-panel)" stroke="var(--accent)" stroke-width="1.6"/>
+            <text x="200" y="165" font-family="'IBM Plex Mono', monospace" font-size="13" fill="var(--accent)" text-anchor="middle">Jaguar</text>
+            <g>
+              <circle cx="200" cy="52" r="20" fill="var(--bg-panel)" stroke="var(--grid)" stroke-width="1.4"/>
+              <text x="200" y="56" font-family="'IBM Plex Mono', monospace" font-size="12" fill="var(--text)" text-anchor="middle">jcc</text>
+              <text x="200" y="24" font-family="'IBM Plex Mono', monospace" font-size="10" fill="var(--muted)" text-anchor="middle">compilateur</text>
+            </g>
+            <g>
+              <circle cx="92" cy="244" r="20" fill="var(--bg-panel)" stroke="var(--grid)" stroke-width="1.4"/>
+              <text x="92" y="248" font-family="'IBM Plex Mono', monospace" font-size="12" fill="var(--text)" text-anchor="middle">jbs</text>
+              <text x="92" y="278" font-family="'IBM Plex Mono', monospace" font-size="10" fill="var(--muted)" text-anchor="middle">build system</text>
+            </g>
+            <g>
+              <circle cx="308" cy="244" r="20" fill="var(--bg-panel)" stroke="var(--grid)" stroke-width="1.4"/>
+              <text x="308" y="248" font-family="'IBM Plex Mono', monospace" font-size="12" fill="var(--text)" text-anchor="middle">jbg</text>
+              <text x="308" y="278" font-family="'IBM Plex Mono', monospace" font-size="10" fill="var(--muted)" text-anchor="middle">bindgen</text>
+            </g>
+          </svg>
+        </div>
+      </div>
+    </div>
+
+    <div class="wrap section-pad">
+      <div class="section-head">
+        <span class="eyebrow-tag">Ce que couvre le langage</span>
+        <h2>Une syntaxe familière, un runtime plus sûr.</h2>
+        <p>Jaguar reprend volontairement plusieurs idées du C tout en simplifiant certains aspects du quotidien.</p>
+      </div>
+      <div class="grid">
+        <div class="card">
+          <h3><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>Compilateur classique</h3>
+          <p><code class="inline" style="font-family:var(--font-mono)">jcc</code> compile vos programmes en exécutables natifs, avec un mode <code class="inline" style="font-family:var(--font-mono)">--c89</code> pour la portabilité.</p>
+        </div>
+        <div class="card">
+          <h3><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l9 5v10l-9 5-9-5V7l9-5z"/></svg>Types explicites</h3>
+          <p>Types C classiques et alias courts (<code class="inline" style="font-family:var(--font-mono)">i32</code>, <code class="inline" style="font-family:var(--font-mono)">f64</code>, <code class="inline" style="font-family:var(--font-mono)">u8</code>…), normalisés par le compilateur.</p>
+        </div>
+        <div class="card">
+          <h3><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 3v18M3 12h18"/></svg>Classes & héritage</h3>
+          <p>Champs, méthodes, constructeurs/destructeurs, méthodes virtuelles, <code class="inline" style="font-family:var(--font-mono)">override</code> et contrôle d'accès (<code class="inline" style="font-family:var(--font-mono)">$</code> / <code class="inline" style="font-family:var(--font-mono)">%</code>).</p>
+        </div>
+        <div class="card">
+          <h3><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16v6H4zM4 14h7v6H4zM14 14h6v6h-6z"/></svg>Surcharge & namespaces</h3>
+          <p>Plusieurs fonctions de même nom, arguments nommés, et un name mangling qui évite les collisions entre namespaces.</p>
+        </div>
+        <div class="card">
+          <h3><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 4l-6 8 6 8M16 4l6 8-6 8"/></svg>Collections simples</h3>
+          <p><code class="inline" style="font-family:var(--font-mono)">list</code>, <code class="inline" style="font-family:var(--font-mono)">map</code>, <code class="inline" style="font-family:var(--font-mono)">pair</code>, <code class="inline" style="font-family:var(--font-mono)">container</code> et <code class="inline" style="font-family:var(--font-mono)">dynamic_list</code>, avec une syntaxe volontairement simple.</p>
+        </div>
+        <div class="card">
+          <h3><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="8" cy="8" r="3"/><circle cx="17" cy="16" r="3"/><path d="M8 11v2a3 3 0 0 0 3 3h1"/></svg>Runtime maîtrisé</h3>
+          <p>Pas de <code class="inline" style="font-family:var(--font-mono)">malloc</code>/<code class="inline" style="font-family:var(--font-mono)">free</code> ni de pointeurs bruts exposés : le runtime gère strings, classes et containers.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- LANGAGE -->
+  <section id="langage" role="tabpanel" aria-labelledby="langage">
+    <div class="wrap section-pad">
+      <div class="section-head">
+        <span class="eyebrow-tag">Sous le capot</span>
+        <h2>Proche du C, avec ses propres règles.</h2>
+        <p>Jaguar assume quelques choix qui le distinguent volontairement du C classique.</p>
+      </div>
+
+      <div class="feat-row">
+        <div>
+          <span class="idx">Contrôle d'accès</span>
+          <h3>Privé par défaut, un symbole pour le reste</h3>
+          <p>Un membre de classe sans marqueur est privé. <code class="inline">$</code> le rend public, <code class="inline">%</code> le rend protégé — vérifié par le compilateur.</p>
+        </div>
+        <div class="code-block"><span class="kw">class</span> Player {
+    <span class="fn">$</span><span class="ty">int</span> health = <span class="str">100</span>;
+    <span class="fn">%</span><span class="ty">int</span> stamina;
+    <span class="ty">int</span> secret_value;
+
+    <span class="ty">int</span> get_health() <span class="kw">const</span> {
+        <span class="kw">return</span> health;
     }
+}</div>
+      </div>
 
-    health = health - <span class="hljs-number">1</span>;
-}
-</code></pre>
-<p>La sortie de boucle se fait avec <code>break</code> ou <code>return</code>.</p>
-<p>La forme suivante est interdite :</p>
-<pre><code class="lang-jaguar"><span class="hljs-keyword">while</span> <span class="hljs-comment">(health &gt; 0)</span> {
-}
-</code></pre>
-<hr>
-<h1 id="25-break-et-continue-">25. <code>break</code> et <code>continue</code></h1>
-<pre><code class="lang-jaguar"><span class="hljs-keyword">while</span> {
-    <span class="hljs-keyword">if</span> (<span class="hljs-keyword">value</span> == <span class="hljs-number">10</span>) {
-        <span class="hljs-keyword">break</span>;
-    }
+      <div class="feat-row">
+        <div>
+          <span class="idx">Ownership</span>
+          <h3><code class="inline">container&lt;T&gt;</code> possède sa donnée</h3>
+          <p>Un container détruit automatiquement l'objet qu'il possède. Pratique pour une classe allouée avec <code class="inline">new</code>, sans gérer sa libération à la main.</p>
+        </div>
+        <div class="code-block"><span class="ty">container</span>&lt;Player&gt; player = <span class="kw">new</span> Player(<span class="str">100</span>);
+player.get().damage(<span class="str">25</span>);
 
-    <span class="hljs-keyword">if</span> (<span class="hljs-keyword">value</span> == <span class="hljs-number">5</span>) {
-        <span class="hljs-keyword">continue</span>;
-    }
-}
-</code></pre>
-<p>Ils ne sont valides qu&#39;à l&#39;intérieur d&#39;une boucle.</p>
-<hr>
-<h1 id="26-for_loop-">26. <code>for_loop</code></h1>
-<p>Jaguar fournit une boucle numérique simplifiée :</p>
-<pre><code class="lang-jaguar"><span class="hljs-keyword">int</span> i = for_loop(<span class="hljs-number">0</span>, <span class="hljs-number">10</span>) {
-    sys:<span class="hljs-built_in">print</span>(i);
-}
-</code></pre>
-<p>La borne finale est <strong>incluse</strong>.</p>
-<p>Donc :</p>
-<pre><code class="lang-text"><span class="hljs-number">0</span> <span class="hljs-number">1</span> <span class="hljs-number">2</span> <span class="hljs-number">3</span> <span class="hljs-number">4</span> <span class="hljs-number">5</span> <span class="hljs-number">6</span> <span class="hljs-number">7</span> <span class="hljs-number">8</span> <span class="hljs-number">9</span> <span class="hljs-number">10</span>
-</code></pre>
-<p>Si le début est supérieur à la fin, aucune itération n&#39;est effectuée.</p>
-<p>Le type de l&#39;index doit être entier :</p>
-<pre><code class="lang-text"><span class="hljs-keyword">int</span> / <span class="hljs-keyword">i8</span> / <span class="hljs-keyword">u8</span> / <span class="hljs-keyword">i16</span> / u16 / <span class="hljs-keyword">i32</span> / <span class="hljs-keyword">u32</span> / <span class="hljs-keyword">i64</span> / <span class="hljs-keyword">u64</span>
-</code></pre>
-<p>L&#39;index est en lecture seule dans la boucle.</p>
-<hr>
-<h1 id="27-port-e-des-variables">27. Portée des variables</h1>
-<p>Chaque bloc possède sa propre portée.</p>
-<pre><code class="lang-jaguar"><span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">test</span><span class="hljs-params">()</span> </span>{
-    <span class="hljs-keyword">int</span> x = <span class="hljs-number">10</span>;
+<span class="cm">// forme courte pour un type simple</span>
+<span class="ty">container</span>&lt;<span class="ty">int</span>&gt; value =&gt; <span class="str">42</span>;</div>
+      </div>
 
-    <span class="hljs-keyword">if</span> (<span class="hljs-keyword">true</span>) {
-        <span class="hljs-keyword">int</span> y = <span class="hljs-number">20</span>;
-        sys:print(y);
-    }
-
-    <span class="hljs-comment">// y n'existe plus ici</span>
-}
-</code></pre>
-<p>Deux blocs frères peuvent utiliser le même nom :</p>
-<pre><code class="lang-jaguar"><span class="hljs-keyword">if</span> (<span class="hljs-literal">true</span>) {
-    <span class="hljs-keyword">int</span> x = <span class="hljs-number">10</span>;
+      <div class="feat-row">
+        <div>
+          <span class="idx">Boucles</span>
+          <h3><code class="inline">while</code> sans condition, <code class="inline">for_loop</code> inclusif</h3>
+          <p>Le <code class="inline">while</code> Jaguar ne prend jamais de condition — on sort avec <code class="inline">break</code>. <code class="inline">for_loop</code> inclut sa borne finale.</p>
+        </div>
+        <div class="code-block"><span class="kw">while</span> {
+    <span class="kw">if</span> (health &lt;= <span class="str">0</span>) { <span class="kw">break</span>; }
+    health = health - <span class="str">1</span>;
 }
 
-<span class="hljs-keyword">if</span> (<span class="hljs-literal">true</span>) {
-    <span class="hljs-keyword">int</span> x = <span class="hljs-number">20</span>;
-}
-</code></pre>
-<p>En revanche, masquer une variable visible depuis un scope englobant est interdit.</p>
-<hr>
-<h1 id="28-variables-globales">28. Variables globales</h1>
-<p>Une variable peut être déclarée au niveau global :</p>
-<pre><code class="lang-jaguar">int max_health = <span class="hljs-number">100</span><span class="hljs-comment">;</span>
-f64 gravity = <span class="hljs-number">9.81</span><span class="hljs-comment">;</span>
-</code></pre>
-<p>Un initialiseur global doit être une expression constante :</p>
-<ul>
-<li>littéral ;</li>
-<li>macro <code>#define</code> ;</li>
-<li>opération entre constantes.</li>
-</ul>
-<p>Ceci est valide :</p>
-<pre><code class="lang-jaguar"><span class="hljs-meta">#<span class="hljs-meta-keyword">define</span> MAX_HEALTH 100</span>
-<span class="hljs-keyword">int</span> max_health = MAX_HEALTH;
-</code></pre>
-<p>Ceci n&#39;est pas valide comme initialisation globale :</p>
-<pre><code class="lang-jaguar"><span class="hljs-attribute">int x</span> = get_value();
-</code></pre>
-<p>Les variables globales doivent également être déclarées avant leur utilisation.</p>
-<p>Les <code>list</code>, <code>map</code> et <code>container</code> ne sont actuellement pas utilisables comme variables globales.</p>
-<hr>
-<h1 id="29-struct-">29. <code>struct</code></h1>
-<p>Les structures Jaguar sont des structures de données simples.</p>
-<pre><code class="lang-jaguar"><span class="hljs-class"><span class="hljs-keyword">struct</span> <span class="hljs-title">Vector2</span></span> {
-    <span class="hljs-keyword">f32</span> x;
-    <span class="hljs-keyword">f32</span> y;
-}
-</code></pre>
-<p>Utilisation :</p>
-<pre><code class="lang-jaguar">Vector2 position<span class="hljs-comment">;</span>
-position.x = <span class="hljs-number">10.0</span><span class="hljs-comment">;</span>
-position.y = <span class="hljs-number">20.0</span><span class="hljs-comment">;</span>
-</code></pre>
-<p>Elles sont générées comme des <code>typedef struct</code> C.</p>
-<hr>
-<h1 id="30-classes">30. Classes</h1>
-<p>Jaguar possède un système de classes avec :</p>
-<ul>
-<li>champs ;</li>
-<li>méthodes ;</li>
-<li>constructeurs ;</li>
-<li>destructeurs ;</li>
-<li>héritage ;</li>
-<li>méthodes virtuelles ;</li>
-<li><code>override</code> ;</li>
-<li>contrôle d&#39;accès.</li>
-</ul>
-<p>Exemple :</p>
-<pre><code class="lang-jaguar"><span class="hljs-keyword">class</span> <span class="hljs-title">Player</span> {
-    $<span class="hljs-keyword">int</span> health = <span class="hljs-number">100</span>;
+<span class="ty">int</span> i = for_loop(<span class="str">0</span>, <span class="str">10</span>) {
+    sys:print(i); <span class="cm">// 0..10, borne incluse</span>
+}</div>
+      </div>
 
-    <span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">take_damage</span>(<span class="hljs-params"><span class="hljs-keyword">int</span> amount</span>) </span>{
-        health = health - amount;
-    }
-
-    <span class="hljs-function"><span class="hljs-keyword">int</span> <span class="hljs-title">get_health</span>(<span class="hljs-params"></span>) <span class="hljs-keyword">const</span> </span>{
-        <span class="hljs-keyword">return</span> health;
-    }
-}
-</code></pre>
-<hr>
-<h1 id="31-contr-le-d-acc-s-des-classes">31. Contrôle d&#39;accès des classes</h1>
-<p>Les membres sont privés par défaut.</p>
-<h2 id="public-">Public : <code>$</code></h2>
-<pre><code class="lang-jaguar"><span class="hljs-class"><span class="hljs-keyword">class</span> <span class="hljs-title">Player</span> </span>{
-    $<span class="hljs-keyword">int</span> health;
-}
-</code></pre>
-<h2 id="protected-">Protected : <code>%</code></h2>
-<pre><code class="lang-jaguar"><span class="hljs-class"><span class="hljs-keyword">class</span> <span class="hljs-title">Player</span> </span>{
-    %<span class="hljs-keyword">int</span> health;
-}
-</code></pre>
-<h2 id="private">Private</h2>
-<p>Sans marqueur :</p>
-<pre><code class="lang-jaguar"><span class="hljs-class"><span class="hljs-keyword">class</span> <span class="hljs-title">Player</span> </span>{
-    <span class="hljs-keyword">int</span> secret_value;
-}
-</code></pre>
-<p>Le contrôle d&#39;accès est vérifié par le compilateur.</p>
-<hr>
-<h1 id="32-m-thodes">32. Méthodes</h1>
-<pre><code class="lang-jaguar"><span class="hljs-keyword">class</span> <span class="hljs-title">Player</span> {
-    $<span class="hljs-keyword">int</span> health;
-
-    <span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">damage</span>(<span class="hljs-params"><span class="hljs-keyword">int</span> amount</span>) </span>{
-        health = health - amount;
-    }
-}
-</code></pre>
-<p>Appel :</p>
-<pre><code class="lang-jaguar"><span class="hljs-built_in">Player</span> <span class="hljs-built_in">player</span> = <span class="hljs-built_in">Player</span>();
-<span class="hljs-built_in">player</span>.<span class="hljs-built_in">damage</span>(<span class="hljs-number">10</span>);
-</code></pre>
-<p>Une méthode possède implicitement un <code>self</code> dans le C généré.</p>
-<hr>
-<h1 id="33-this-">33. <code>this</code></h1>
-<p>Dans une classe, <code>this</code> désigne l&#39;instance courante.</p>
-<pre><code class="lang-jaguar"><span class="hljs-keyword">class</span> <span class="hljs-title">Player</span> {
-    $<span class="hljs-keyword">int</span> health;
-
-    <span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">reset</span>(<span class="hljs-params"></span>) </span>{
-        <span class="hljs-keyword">this</span>.health = <span class="hljs-number">100</span>;
-    }
-}
-</code></pre>
-<p>Dans le C généré, <code>this</code> correspond à <code>self</code>.</p>
-<p><code>this</code> n&#39;est disponible que dans une classe.</p>
-<hr>
-<h1 id="34-constructeur-constr-">34. Constructeur <code>constr</code></h1>
-<pre><code class="lang-jaguar"><span class="hljs-class"><span class="hljs-keyword">class</span> <span class="hljs-title">Player</span> </span>{
-    $<span class="hljs-keyword">int</span> health;
-
-    constr(<span class="hljs-keyword">int</span> initial_health) {
-        health = initial_health;
-    }
-}
-</code></pre>
-<p>Création :</p>
-<pre><code class="lang-jaguar"><span class="hljs-built_in">Player</span> <span class="hljs-built_in">player</span> = <span class="hljs-built_in">Player</span>(<span class="hljs-number">100</span>);
-</code></pre>
-<p>Le compilateur génère également l&#39;allocation de l&#39;objet.</p>
-<hr>
-<h1 id="35-destructeur-destr-">35. Destructeur <code>destr</code></h1>
-<pre><code class="lang-jaguar"><span class="hljs-class"><span class="hljs-keyword">class</span> <span class="hljs-title">Player</span> {</span>
-    destr() {
-        sys:<span class="hljs-built_in">print</span>(<span class="hljs-string">"destroyed"</span>);
-    }
-}
-</code></pre>
-<p>Chaque classe possède un point d&#39;entrée destructeur généré par le compilateur, même si aucun <code>destr()</code> n&#39;est écrit.</p>
-<p>Avec l&#39;héritage, le destructeur de la classe de base est appelé automatiquement.</p>
-<hr>
-<h1 id="36-h-ritage">36. Héritage</h1>
-<p>La syntaxe actuelle est :</p>
-<pre><code class="lang-jaguar"><span class="hljs-class"><span class="hljs-keyword">class</span> <span class="hljs-title">Enemy</span> </span>{
-    $<span class="hljs-keyword">int</span> health;
+      <div class="feat-row">
+        <div>
+          <span class="idx">Appels de fonctions</span>
+          <h3>Arguments nommés et valeurs par défaut</h3>
+          <p>Un paramètre peut avoir une valeur par défaut, et être passé par nom dans n'importe quel ordre — tant qu'aucun positionnel ne suit un nommé.</p>
+        </div>
+        <div class="code-block"><span class="ty">int</span> move(<span class="ty">int</span> x, <span class="ty">int</span> y, <span class="ty">int</span> speed = <span class="str">1</span>) {
+    <span class="kw">return</span> x + y + speed;
 }
 
-<span class="hljs-class"><span class="hljs-keyword">class</span> <span class="hljs-title">Zombie</span>, <span class="hljs-title">Enemy</span> </span>{
-    <span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">attack</span><span class="hljs-params">()</span> </span>{
-        health = health - <span class="hljs-number">10</span>;
-    }
-}
-</code></pre>
-<p>La classe dérivée contient la partie correspondant à sa classe de base.</p>
-<hr>
-<h1 id="37-m-thodes-virtuelles">37. Méthodes virtuelles</h1>
-<p>Une méthode peut être virtuelle :</p>
-<pre><code class="lang-jaguar"><span class="hljs-keyword">class</span> <span class="hljs-title">Enemy</span> {
-    <span class="hljs-function"><span class="hljs-keyword">virtual</span> <span class="hljs-keyword">void</span> <span class="hljs-title">attack</span>(<span class="hljs-params"></span>) </span>{
-        sys:print(<span class="hljs-string">"enemy attack"</span>);
-    }
-}
-</code></pre>
-<p>Une classe dérivée peut l&#39;override :</p>
-<pre><code class="lang-jaguar"><span class="hljs-class"><span class="hljs-keyword">class</span> <span class="hljs-title">Zombie</span>, <span class="hljs-title">Enemy</span> </span>{
-    <span class="hljs-keyword">void</span> attack() <span class="hljs-keyword">override</span> {
-        sys:print(<span class="hljs-string">"zombie attack"</span>);
-    }
-}
-</code></pre>
-<p><code>override</code> doit correspondre à une méthode <code>virtual</code> de la classe de base avec une signature exacte.</p>
-<hr>
-<h1 id="38-m-thodes-const-">38. Méthodes <code>const</code></h1>
-<pre><code class="lang-jaguar"><span class="hljs-keyword">class</span> <span class="hljs-title">Player</span> {
-    $<span class="hljs-keyword">int</span> health;
+move(y = <span class="str">20</span>, x = <span class="str">10</span>);
+move(x = <span class="str">10</span>, y = <span class="str">20</span>, speed = <span class="str">5</span>);</div>
+      </div>
 
-    <span class="hljs-function"><span class="hljs-keyword">int</span> <span class="hljs-title">get_health</span>(<span class="hljs-params"></span>) <span class="hljs-keyword">const</span> </span>{
-        <span class="hljs-keyword">return</span> health;
-    }
+      <div class="feat-row">
+        <div>
+          <span class="idx">Interop C</span>
+          <h3>Namespaces manglés, sorties explicites vers le C</h3>
+          <p>Une fonction dans un namespace est manglée pour éviter les collisions. <code class="inline">@extern</code> désactive ce mangling pour appeler du C natif.</p>
+        </div>
+        <div class="code-block"><span class="kw">namespace</span> math {
+    <span class="ty">int</span> add(<span class="ty">int</span> a, <span class="ty">int</span> b) { <span class="kw">return</span> a + b; }
+    <span class="cm">// devient math_add côté C</span>
 }
-</code></pre>
-<p>Les paramètres peuvent également être <code>const</code>.</p>
-<hr>
-<h1 id="39-new-">39. <code>new</code></h1>
-<p>Jaguar possède l&#39;expression <code>new</code> :</p>
-<pre><code class="lang-jaguar"><span class="hljs-keyword">new</span> <span class="hljs-type">Player</span>(<span class="hljs-number">100</span>)
-</code></pre>
-<p>Elle peut être utilisée dans les mécanismes d&#39;ownership de <code>container</code>.</p>
-<hr>
-<h1 id="40-container-t-">40. <code>container&lt;T&gt;</code></h1>
-<p><code>container&lt;T&gt;</code> représente une valeur dont le container possède la donnée.</p>
-<pre><code class="lang-jaguar"><span class="hljs-keyword">container</span>&lt;<span class="hljs-keyword">int</span>&gt; value = <span class="hljs-keyword">new</span> <span class="hljs-keyword">int</span>(<span class="hljs-number">42</span>);
-</code></pre>
-<p>Une syntaxe courte est disponible :</p>
-<pre><code class="lang-jaguar">container&lt;<span class="hljs-built_in">int</span>&gt; <span class="hljs-keyword">value</span> =&gt; <span class="hljs-number">42</span>;
-</code></pre>
-<p>Lecture :</p>
-<pre><code class="lang-jaguar"><span class="hljs-keyword">int</span> x = <span class="hljs-keyword">value</span>.<span class="hljs-keyword">get</span>();
-</code></pre>
-<p>Pour une classe :</p>
-<pre><code class="lang-jaguar">container&lt;<span class="hljs-built_in">Player</span>&gt; <span class="hljs-built_in">player</span> = new <span class="hljs-built_in">Player</span>(<span class="hljs-number">100</span>);
-<span class="hljs-built_in">player</span>.get().<span class="hljs-built_in">damage</span>(<span class="hljs-number">10</span>);
-</code></pre>
-<p>Le container détruit automatiquement l&#39;objet qu&#39;il possède.</p>
-<p>Les <code>container</code> ne peuvent pas être indexés avec <code>[]</code>.</p>
-<hr>
-<h1 id="41-list-t-">41. <code>list&lt;T&gt;</code></h1>
-<p><code>list&lt;T&gt;</code> est une collection homogène.</p>
-<pre><code class="lang-jaguar"><span class="hljs-type">list</span>&lt;int&gt; numbers = {<span class="hljs-number">1</span>, <span class="hljs-number">2</span>, <span class="hljs-number">3</span>, <span class="hljs-number">4</span>};
-</code></pre>
-<p>Ajouter un élément :</p>
-<pre><code class="lang-jaguar">numbers.push(<span class="hljs-number">5</span>)<span class="hljs-comment">;</span>
-</code></pre>
-<p>Lire un élément :</p>
-<pre><code class="lang-jaguar"><span class="hljs-keyword">int</span> <span class="hljs-keyword">value</span> = numbers[<span class="hljs-number">2</span>];
-</code></pre>
-<p>L&#39;indexation est <strong>en lecture seule</strong>.</p>
-<p>Cette syntaxe n&#39;est pas autorisée :</p>
-<pre><code class="lang-jaguar"><span class="hljs-attr">numbers[2]</span> = <span class="hljs-number">10</span>;
-</code></pre>
-<p>Pour modifier/ajouter des valeurs, utilisez les opérations prévues par la collection.</p>
-<hr>
-<h1 id="42-map-k-v-">42. <code>map&lt;K,V&gt;</code></h1>
-<p><code>map&lt;K,V&gt;</code> est une collection clé/valeur.</p>
-<pre><code class="lang-jaguar"><span class="hljs-built_in">map</span>&lt;<span class="hljs-built_in">string</span>, <span class="hljs-keyword">int</span>&gt; scores = {
-    <span class="hljs-string">"alice"</span>, <span class="hljs-number">10</span>,
-    <span class="hljs-string">"bob"</span>, <span class="hljs-number">20</span>
-};
-</code></pre>
-<p>Ajouter ou remplacer une entrée :</p>
-<pre><code class="lang-jaguar"><span class="hljs-selector-tag">scores</span><span class="hljs-selector-class">.emplace</span>(<span class="hljs-string">"charlie"</span>, <span class="hljs-number">30</span>);
-</code></pre>
-<p>Lire une valeur :</p>
-<pre><code class="lang-jaguar"><span class="hljs-attribute">int score</span> = scores[<span class="hljs-string">"alice"</span>];
-</code></pre>
-<p>L&#39;indexation est en lecture seule :</p>
-<pre><code class="lang-jaguar">scores[<span class="hljs-string">"alice"</span>] = <span class="hljs-number">100</span>; <span class="hljs-comment">// invalide</span>
-</code></pre>
-<p>Pour écrire dans la map, utilisez <code>emplace()</code>.</p>
-<p>La clé <code>string</code> dispose d&#39;une comparaison par contenu.</p>
-<hr>
-<h1 id="43-pair-k-v-">43. <code>pair&lt;K,V&gt;</code></h1>
-<p>Une paire contient deux valeurs : <code>first</code> et <code>second</code>.</p>
-<pre><code class="lang-jaguar">pair&lt;<span class="hljs-built_in">string</span>, int&gt; <span class="hljs-literal">result</span> = {<span class="hljs-string">"score"</span>, <span class="hljs-number">42</span>};
 
-sys:print(<span class="hljs-literal">result</span>.<span class="hljs-keyword">first</span>);
-sys:print(<span class="hljs-literal">result</span>.<span class="hljs-keyword">second</span>);
-</code></pre>
-<p><code>pair</code> est notamment utilisé par <code>loop_map</code>.</p>
-<hr>
-<h1 id="44-dynamic_list-">44. <code>dynamic_list</code></h1>
-<p><code>dynamic_list</code> permet de stocker plusieurs types dans une même collection.</p>
-<pre><code class="lang-jaguar">dynamic_list values = {
-    <span class="hljs-number">42</span>,
-    <span class="hljs-string">"hello"</span>,
-    true,
-    <span class="hljs-number">3.14</span>
-};
-</code></pre>
-<p>Ajouter :</p>
-<pre><code class="lang-jaguar"><span class="hljs-built_in">values</span>.<span class="hljs-built_in">push</span>(<span class="hljs-number">123</span>);
-<span class="hljs-built_in">values</span>.<span class="hljs-built_in">push</span>(<span class="hljs-string">"world"</span>);
-</code></pre>
-<p>Taille :</p>
-<pre><code class="lang-jaguar"><span class="hljs-built_in">int</span> <span class="hljs-built_in">count</span> = values.<span class="hljs-built_in">size</span>();
-</code></pre>
-<p>Type d&#39;une valeur :</p>
-<pre><code class="lang-jaguar"><span class="hljs-title">string</span> <span class="hljs-keyword">type</span> = values.<span class="hljs-keyword">type</span>(1);
-</code></pre>
-<p>Accès brut :</p>
-<pre><code class="lang-jaguar"><span class="hljs-keyword">auto</span> value = values.<span class="hljs-built_in">get</span>(<span class="hljs-number">0</span>);
-</code></pre>
-<p>L&#39;indexation est également disponible :</p>
-<pre><code class="lang-jaguar"><span class="hljs-selector-tag">sys</span><span class="hljs-selector-pseudo">:print(values</span><span class="hljs-selector-attr">[0]</span>);
-</code></pre>
-<p>Pour extraire une valeur primitive avec un type connu, un cast peut être utilisé :</p>
-<pre><code class="lang-jaguar"><span class="hljs-keyword">i32</span> number = (<span class="hljs-keyword">i32</span>)values[<span class="hljs-number">0</span>];
-<span class="hljs-keyword">f64</span> decimal = (<span class="hljs-keyword">f64</span>)values[<span class="hljs-number">3</span>];
-</code></pre>
-<p>Pour les objets/classes, le cast conserve le pointeur vers l&#39;objet stocké.</p>
-<hr>
-<h1 id="45-boucle-loop_list-">45. Boucle <code>loop_list</code></h1>
-<p><code>loop_list</code> parcourt une <code>list&lt;T&gt;</code>.</p>
-<pre><code class="lang-jaguar"><span class="hljs-built_in">list</span>&lt;<span class="hljs-keyword">int</span>&gt; numbers = {<span class="hljs-number">1</span>, <span class="hljs-number">2</span>, <span class="hljs-number">3</span>, <span class="hljs-number">4</span>};
+<span class="fn">@extern</span>
+<span class="ty">int</span> native_function(<span class="ty">int</span> value);</div>
+      </div>
 
-<span class="hljs-keyword">auto</span> item = loop_list(numbers) {
-    sys:print(item);
-}
-</code></pre>
-<p>Pendant la boucle, la collection est considérée comme en lecture seule.</p>
-<p>Ceci est donc interdit :</p>
-<pre><code class="lang-jaguar"><span class="hljs-keyword">auto</span> item = loop_list(numbers) {
-    numbers.push(<span class="hljs-number">10</span>); <span class="hljs-comment">// interdit</span>
-}
-</code></pre>
-<p><code>loop_list</code> ne fonctionne pas sur <code>dynamic_list</code>.</p>
-<hr>
-<h1 id="46-boucle-loop_map-">46. Boucle <code>loop_map</code></h1>
-<p><code>loop_map</code> parcourt une <code>map&lt;K,V&gt;</code> et fournit un <code>pair&lt;K,V&gt;</code>.</p>
-<pre><code class="lang-jaguar">map&lt;<span class="hljs-built_in">string</span>, int&gt; scores = {
-    <span class="hljs-string">"alice"</span>, <span class="hljs-number">10</span>,
-    <span class="hljs-string">"bob"</span>, <span class="hljs-number">20</span>
-};
+      <div class="section-head" style="margin-top:50px;">
+        <span class="eyebrow-tag">Référence rapide</span>
+        <h2>Types principaux</h2>
+      </div>
+      <table class="ref-table">
+        <thead><tr><th>Jaguar</th><th>Alias</th><th>Type C approximatif</th></tr></thead>
+        <tbody>
+          <tr><td><code>int</code></td><td><span class="mono">i32</span></td><td>int</td></tr>
+          <tr><td><code>uint</code></td><td><span class="mono">u32</span></td><td>unsigned int</td></tr>
+          <tr><td><code>short</code> / <code>long</code></td><td><span class="mono">i16 / i64</span></td><td>short / long long</td></tr>
+          <tr><td><code>float</code> / <code>double</code></td><td><span class="mono">f32 / f64</span></td><td>float / double</td></tr>
+          <tr><td><code>char</code> / <code>byte</code></td><td><span class="mono">i8 / u8</span></td><td>signed / unsigned char</td></tr>
+          <tr><td><code>bool</code></td><td>—</td><td><span class="mono">_jBool</span></td></tr>
+          <tr><td><code>string</code></td><td>—</td><td>objet string Jaguar</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
 
-auto <span class="hljs-built_in">item</span> = loop_map(scores) {
-    sys:print(<span class="hljs-built_in">item</span>.<span class="hljs-keyword">first</span>);
-    sys:print(<span class="hljs-built_in">item</span>.<span class="hljs-keyword">second</span>);
+  <!-- OUTILS -->
+  <section id="outils" role="tabpanel" aria-labelledby="outils">
+    <div class="wrap section-pad">
+      <div class="section-head">
+        <span class="eyebrow-tag">Chaîne d'outils</span>
+        <h2>Trois outils, un seul langage.</h2>
+        <p><code class="inline" style="font-family:var(--font-mono)">jcc</code> compile, <code class="inline" style="font-family:var(--font-mono)">jbs</code> orchestre les builds, <code class="inline" style="font-family:var(--font-mono)">jbg</code> importe des API C existantes.</p>
+      </div>
+
+      <div class="feat-row">
+        <div>
+          <span class="idx">Compilateur</span>
+          <h3>jcc, le compilateur Jaguar</h3>
+          <p>jcc est un compilateur classique : il prend un programme Jaguar et produit un exécutable. En détail, il passe par une étape de transpilation vers le C avant d'appeler un compilateur C — une implémentation interne plutôt qu'une contrainte du langage.</p>
+        </div>
+        <div class="code-block"><span class="fn">jcc</span> main.ja -o game
+<span class="fn">jcc</span> main.ja --c89 -o game
+<span class="cm">// sans -o : le C généré est écrit sur la sortie standard</span>
+<span class="fn">jcc</span> main.ja &gt; main.c</div>
+      </div>
+
+      <div class="feat-row">
+        <div>
+          <span class="idx">Build system</span>
+          <h3>jbs, l'orchestrateur de build</h3>
+          <p>jbs décrit un projet dans un fichier de configuration : options de compilation, macros globales, cibles à compiler et étapes de link.</p>
+        </div>
+        <div class="code-block"><span class="kw">version</span> 1.0
+
+<span class="kw">out</span> .
+
+<span class="kw">include</span> lib
+
+<span class="kw">c89</span>
+
+<span class="kw">keep_c</span>
+
+<span class="kw">define</span> PI 3.14
+
+
+<span class="fn">compile</span> Main {
+	main.ja
 }
-</code></pre>
-<p>La map est en lecture seule pendant la boucle.</p>
-<hr>
-<h1 id="47-signal-de-changement-de-variable">47. Signal de changement de variable</h1>
-<p>Jaguar possède une syntaxe <code>signal:</code> pour associer un bloc à une variable :</p>
-<pre><code class="lang-jaguar"><span class="hljs-selector-tag">signal</span><span class="hljs-selector-pseudo">:health</span> {
-    <span class="hljs-attribute">sys</span>:<span class="hljs-built_in">print</span>(<span class="hljs-string">"Health changed"</span>);
-}
-</code></pre>
-<p>Cette fonctionnalité est destinée à associer une réaction aux modifications d&#39;une variable.</p>
-<blockquote>
-<p><strong>Note :</strong> le comportement exact dépend de la génération actuellement implémentée dans <code>jcc.py</code>. Cette syntaxe fait partie de l&#39;AST du compilateur et doit être considérée comme une fonctionnalité spécifique de Jaguar, pas comme une construction C standard.</p>
-</blockquote>
-<hr>
-<h1 id="48-namespaces">48. Namespaces</h1>
-<p>Les namespaces utilisent <code>:</code>.</p>
-<pre><code class="lang-jaguar"><span class="hljs-keyword">namespace</span> <span class="hljs-title">math</span> {
-    <span class="hljs-function"><span class="hljs-keyword">int</span> <span class="hljs-title">add</span>(<span class="hljs-params"><span class="hljs-keyword">int</span> a, <span class="hljs-keyword">int</span> b</span>) </span>{
-        <span class="hljs-keyword">return</span> a + b;
-    }
-}
-</code></pre>
-<p>Appel :</p>
-<pre><code class="lang-jaguar"><span class="hljs-keyword">int</span> <span class="hljs-keyword">value</span> = math:<span class="hljs-keyword">add</span>(<span class="hljs-number">10</span>, <span class="hljs-number">20</span>);
-</code></pre>
-<p>Les namespaces peuvent être imbriqués :</p>
-<pre><code class="lang-jaguar"><span class="hljs-keyword">namespace</span> <span class="hljs-title">engine</span> {
-    <span class="hljs-keyword">namespace</span> <span class="hljs-title">math</span> {
-        <span class="hljs-function"><span class="hljs-keyword">int</span> <span class="hljs-title">add</span>(<span class="hljs-params"><span class="hljs-keyword">int</span> a, <span class="hljs-keyword">int</span> b</span>) </span>{
-            <span class="hljs-keyword">return</span> a + b;
+
+<span class="fn">link</span> Main {
+	add.a
+}</div>
+      </div>
+
+      <div class="feat-row">
+        <div>
+          <span class="idx">Bindgen</span>
+          <h3>jbg, importer une API C</h3>
+          <p>jbg génère des déclarations Jaguar (des <code class="inline">@extern</code>) à partir d'une API C existante, pour appeler une bibliothèque C sans écrire les signatures à la main.</p>
+        </div>
+        <div class="code-block"><span class="cm">// génère les bindings depuis un en-tête C</span>
+<span class="fn">jbg</span> mylib.h -o mylib_bindings.ja
+
+<span class="cm">// utilisables directement depuis Jaguar</span>
+<span class="fn">@extern</span>
+<span class="ty">int</span> mylib_init();</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- DOCUMENTATION -->
+  <section id="documentation" role="tabpanel" aria-labelledby="documentation">
+    <div class="wrap section-pad">
+      <div class="section-head">
+        <span class="eyebrow-tag">Aller plus loin</span>
+        <h2>La documentation complète vit sur son propre site.</h2>
+        <p>Compilation, syntaxe, classes, collections, bibliothèque standard <code class="inline" style="font-family:var(--font-mono)">jcc:*</code> — chaque section est détaillée à part.</p>
+      </div>
+
+      <div class="doc-grid">
+        <a class="doc-card" href="https://oscar-soirey.github.io/JaguarCC/" target="_blank" rel="noopener">
+          <span class="num">01</span>
+          <h3>Compilation & syntaxe</h3>
+          <p>Le pipeline jcc.py, le mode --c89, commentaires, préprocesseur.</p>
+        </a>
+        <a class="doc-card" href="https://oscar-soirey.github.io/JaguarCC/" target="_blank" rel="noopener">
+          <span class="num">02</span>
+          <h3>Types, variables & opérateurs</h3>
+          <p>Types principaux, const, auto, littéraux, casts et priorités.</p>
+        </a>
+        <a class="doc-card" href="https://oscar-soirey.github.io/JaguarCC/" target="_blank" rel="noopener">
+          <span class="num">03</span>
+          <h3>Fonctions</h3>
+          <p>Surcharge, paramètres par défaut, arguments nommés, @extern.</p>
+        </a>
+        <a class="doc-card" href="https://oscar-soirey.github.io/JaguarCC/" target="_blank" rel="noopener">
+          <span class="num">04</span>
+          <h3>Classes & structs</h3>
+          <p>Contrôle d'accès, héritage, méthodes virtuelles, constr/destr.</p>
+        </a>
+        <a class="doc-card" href="https://oscar-soirey.github.io/JaguarCC/" target="_blank" rel="noopener">
+          <span class="num">05</span>
+          <h3>Collections & mémoire</h3>
+          <p>list, map, pair, container, dynamic_list, et gestion mémoire du runtime.</p>
+        </a>
+        <a class="doc-card" href="https://oscar-soirey.github.io/JaguarCC/" target="_blank" rel="noopener">
+          <span class="num">06</span>
+          <h3>Outils : jcc, jbs, jbg</h3>
+          <p>Options du compilateur, configuration jbs, bindgen jbg et bibliothèque standard jcc:*.</p>
+        </a>
+      </div>
+
+      <div class="doc-callout">
+        <div>
+          <h3>Documentation de référence</h3>
+          <p>La documentation complète du langage, telle qu'implémentée par jcc.py, est disponible sur le site dédié.</p>
+        </div>
+        <a class="btn btn-primary" href="https://oscar-soirey.github.io/JaguarCC/" target="_blank" rel="noopener">Ouvrir la documentation</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- RELEASES -->
+  <section id="releases" role="tabpanel" aria-labelledby="releases">
+    <div class="wrap section-pad">
+      <div class="section-head">
+        <span class="eyebrow-tag">Obtenir le compilateur</span>
+        <h2>Releases GitHub, en direct.</h2>
+        <p>Cette page interroge les releases du dépôt au chargement. En attendant un premier paquet, compiler depuis les sources reste la voie la plus simple.</p>
+      </div>
+
+      <div id="releases-list"></div>
+      <div id="releases-empty" class="empty-state" style="display:none;">
+        <div class="glyph">🐆</div>
+        <h3>Aucune release publiée pour le moment</h3>
+        <p>JaguarCC n'a pas encore de version packagée. Le dépôt reste la source de vérité — clonez-le et compilez, ou suivez-le pour être notifié à la première release.</p>
+        <a class="btn btn-primary" href="https://github.com/oscar-soirey/JaguarCC/releases" target="_blank" rel="noopener">Voir les releases sur GitHub</a>
+      </div>
+
+      <div class="build-steps">
+        <div class="section-head" style="margin-bottom:20px;">
+          <h2 style="font-size:1.3rem;">Compiler et exécuter un programme</h2>
+          <p>Avec Python et GCC installés.</p>
+        </div>
+        <ol class="steps-list">
+          <li>
+            <div>
+              <code>git clone https://github.com/oscar-soirey/JaguarCC.git</code>
+              <div class="step-note">Récupère le compilateur jcc.py et ses sources.</div>
+            </div>
+          </li>
+          <li>
+            <div>
+              <code>python jcc.py main.ja -o game</code>
+              <div class="step-note">Génère <code>game.c</code>, puis appelle GCC pour produire l'exécutable <code>game</code>.</div>
+            </div>
+          </li>
+          <li>
+            <div>
+              <code>python jcc.py main.ja &gt; main.c</code>
+              <div class="step-note">Sans <code>-o</code>, seul le C généré est écrit sur la sortie standard.</div>
+            </div>
+          </li>
+          <li>
+            <div>
+              <code>python jcc.py main.ja --c89 -o game</code>
+              <div class="step-note">Génère un C compatible C89 — la sémantique Jaguar reste identique.</div>
+            </div>
+          </li>
+        </ol>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap footer-inner">
+    <p>Jaguar — langage compilé vers C, par Oscar Soirey.</p>
+    <div class="footer-links">
+      <a href="https://github.com/oscar-soirey/JaguarCC" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://oscar-soirey.github.io/JaguarCC/" target="_blank" rel="noopener">Documentation</a>
+      <a href="https://github.com/oscar-soirey/JaguarCC/releases" target="_blank" rel="noopener">Releases</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+  // ---- Tabs ----
+  const tabButtons = document.querySelectorAll('[data-tab]');
+  const tabLinks = document.querySelectorAll('[data-tab-link]');
+  const panels = document.querySelectorAll('section[role="tabpanel"]');
+
+  function activateTab(name) {
+    tabButtons.forEach(b => b.setAttribute('aria-selected', b.dataset.tab === name ? 'true' : 'false'));
+    panels.forEach(p => p.classList.toggle('active', p.id === name));
+    window.scrollTo({ top: 0, behavior: 'instant' in window ? 'instant' : 'auto' });
+  }
+
+  tabButtons.forEach(btn => btn.addEventListener('click', () => activateTab(btn.dataset.tab)));
+  tabLinks.forEach(el => el.addEventListener('click', (e) => {
+    e.preventDefault();
+    activateTab(el.dataset.tabLink);
+  }));
+
+  // ---- GitHub releases ----
+  (async function loadReleases() {
+    const list = document.getElementById('releases-list');
+    const empty = document.getElementById('releases-empty');
+    const showEmpty = () => { empty.style.display = 'block'; };
+
+    try {
+      const res = await fetch('https://api.github.com/repos/oscar-soirey/JaguarCC/releases', {
+        headers: { 'Accept': 'application/vnd.github+json' }
+      });
+      if (!res.ok) throw new Error('status ' + res.status);
+      const data = await res.json();
+      const releases = Array.isArray(data) ? data : [];
+      if (releases.length === 0) { showEmpty(); return; }
+
+      const fmt = new Intl.DateTimeFormat('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' });
+
+      releases.slice(0, 8).forEach(rel => {
+        const card = document.createElement('div');
+        card.className = 'release-card';
+
+        const title = document.createElement('div');
+        title.className = 'rtitle';
+
+        const tag = document.createElement('span');
+        tag.className = 'rtag';
+        tag.textContent = rel.tag_name || 'release';
+        title.appendChild(tag);
+
+        const name = document.createElement('strong');
+        name.textContent = rel.name || rel.tag_name || '';
+        title.appendChild(name);
+
+        if (rel.prerelease) {
+          const pre = document.createElement('span');
+          pre.className = 'rtag';
+          pre.textContent = 'pré-release';
+          title.appendChild(pre);
         }
+
+        card.appendChild(title);
+
+        if (rel.published_at) {
+          const date = document.createElement('div');
+          date.className = 'rdate';
+          date.textContent = fmt.format(new Date(rel.published_at));
+          card.appendChild(date);
+        }
+
+        if (Array.isArray(rel.assets) && rel.assets.length > 0) {
+          const assets = document.createElement('div');
+          assets.className = 'rassets';
+          rel.assets.forEach(a => {
+            const link = document.createElement('a');
+            link.href = a.browser_download_url;
+            link.textContent = a.name;
+            link.target = '_blank';
+            link.rel = 'noopener';
+            assets.appendChild(link);
+          });
+          card.appendChild(assets);
+        } else if (rel.html_url) {
+          const assets = document.createElement('div');
+          assets.className = 'rassets';
+          const link = document.createElement('a');
+          link.href = rel.html_url;
+          link.textContent = 'Voir sur GitHub';
+          link.target = '_blank';
+          link.rel = 'noopener';
+          assets.appendChild(link);
+          card.appendChild(assets);
+        }
+
+        list.appendChild(card);
+      });
+    } catch (e) {
+      showEmpty();
     }
-}
-</code></pre>
-<p>Appel :</p>
-<pre><code class="lang-jaguar"><span class="hljs-symbol">engine:</span>math:<span class="hljs-keyword">add</span>(<span class="hljs-number">10</span>, <span class="hljs-number">20</span>)<span class="hljs-comment">;</span>
-</code></pre>
-<p>Le nom C généré est manglé pour éviter les collisions.</p>
-<p>Les namespaces supportent actuellement les fonctions, structs, classes et namespaces imbriqués selon les règles du compilateur. Les variables globales directement dans un namespace ne sont pas supportées.</p>
-<hr>
-<h1 id="49-appels-de-fonctions-au-niveau-global">49. Appels de fonctions au niveau global</h1>
-<p>Une expression d&#39;appel peut être placée au niveau global :</p>
-<pre><code class="lang-jaguar">my_<span class="hljs-function"><span class="hljs-keyword">function</span>(<span class="hljs-params"></span>)</span>;
-</code></pre>
-<p>Le compilateur peut alors générer l&#39;appel correspondant dans le C produit lorsque le contexte le permet.</p>
-<hr>
-<h1 id="50-biblioth-que-sys-">50. Bibliothèque <code>sys</code></h1>
-<p><code>sys</code> fournit les fonctions système directement intégrées à JaguarCC.</p>
-<hr>
-<h2 id="-sys-print-"><code>sys:print</code></h2>
-<pre><code class="lang-jaguar">sys:print(<span class="hljs-string">"Hello"</span>);
-sys:print(42);
-sys:print(3.14);
-sys:print(<span class="hljs-keyword">true</span>);
-</code></pre>
-<p>Types imprimables automatiquement :</p>
-<ul>
-<li><code>string</code></li>
-<li><code>int</code></li>
-<li><code>i8</code></li>
-<li><code>u8</code></li>
-<li><code>i16</code></li>
-<li><code>u16</code></li>
-<li><code>i32</code></li>
-<li><code>u32</code></li>
-<li><code>i64</code></li>
-<li><code>u64</code></li>
-<li><code>float</code></li>
-<li><code>f32</code></li>
-<li><code>f64</code></li>
-<li><code>bool</code></li>
-<li>certaines valeurs de <code>dynamic_list</code>.</li>
-</ul>
-<p>Chaque appel imprime une valeur suivie d&#39;un retour à la ligne.</p>
-<hr>
-<h1 id="51-console">51. Console</h1>
-<h2 id="-sys-console-set_color-"><code>sys:console:set_color</code></h2>
-<pre><code class="lang-jaguar"><span class="hljs-string">sys:</span><span class="hljs-string">console:</span>set_color(<span class="hljs-string">"\\033[31m"</span>);
-<span class="hljs-string">sys:</span>print(<span class="hljs-string">"Red"</span>);
-<span class="hljs-string">sys:</span><span class="hljs-string">console:</span>reset_color();
-</code></pre>
-<p>La fonction attend une séquence ANSI.</p>
-<h2 id="-sys-console-reset_color-"><code>sys:console:reset_color</code></h2>
-<pre><code class="lang-jaguar"><span class="hljs-selector-tag">sys</span><span class="hljs-selector-pseudo">:console</span><span class="hljs-selector-pseudo">:reset_color()</span>;
-</code></pre>
-<hr>
-<h1 id="52-ex-cution-de-programme">52. Exécution de programme</h1>
-<pre><code class="lang-jaguar"><span class="hljs-keyword">int</span> result = sys:execute(<span class="hljs-string">"program"</span>, <span class="hljs-string">"."</span>);
-</code></pre>
-<p>Le deuxième argument représente le répertoire de travail.</p>
-<p>Le résultat correspond au code retourné par l&#39;exécution système.</p>
-<hr>
-<h1 id="53-syst-me-de-fichiers">53. Système de fichiers</h1>
-<h2 id="lire-un-fichier">Lire un fichier</h2>
-<pre><code class="lang-jaguar"><span class="hljs-built_in">string</span> data = sys:fs:<span class="hljs-built_in">read</span>(<span class="hljs-string">"save.txt"</span>);
-</code></pre>
-<h2 id="-crire-un-fichier">Écrire un fichier</h2>
-<pre><code class="lang-jaguar"><span class="hljs-string">sys:</span><span class="hljs-string">fs:</span>write(<span class="hljs-string">"save.txt"</span>, <span class="hljs-string">"hello"</span>);
-</code></pre>
-<p>Ces fonctions utilisent l&#39;API fichier C en interne sans exposer <code>FILE*</code> au langage Jaguar.</p>
-<hr>
-<h1 id="54-biblioth-que-standard-jcc-">54. Bibliothèque standard <code>jcc</code></h1>
-<p><code>jcc</code> est la bibliothèque standard simplifiée de JaguarCC.</p>
-<p>Elle expose des fonctions inspirées de la libc, mais adaptées aux types et conventions Jaguar.</p>
-<p>Les pointeurs et les API libc trop bas niveau ne sont volontairement pas exposés directement.</p>
-<hr>
-<h2 id="54-1-processus">54.1 Processus</h2>
-<h3 id="-jcc-exit-"><code>jcc:exit</code></h3>
-<pre><code class="lang-jaguar">jcc:<span class="hljs-keyword">exit</span>(<span class="hljs-number">0</span>);
-</code></pre>
-<p>Termine le programme avec le code fourni.</p>
-<h3 id="-jcc-abort-"><code>jcc:abort</code></h3>
-<pre><code class="lang-jaguar">jcc:<span class="hljs-keyword">abort</span>();
-</code></pre>
-<p>Arrête immédiatement le programme.</p>
-<hr>
-<h2 id="54-2-entiers">54.2 Entiers</h2>
-<h3 id="-jcc-abs_i32-"><code>jcc:abs_i32</code></h3>
-<pre><code class="lang-jaguar">i32 x = jcc:abs_i32(-42);
-</code></pre>
-<h3 id="-jcc-min_i32-"><code>jcc:min_i32</code></h3>
-<pre><code class="lang-jaguar">i<span class="hljs-number">32</span> x = jcc:mi<span class="hljs-symbol">n_i32</span><span class="hljs-comment">(10, 20)</span>;
-</code></pre>
-<h3 id="-jcc-max_i32-"><code>jcc:max_i32</code></h3>
-<pre><code class="lang-jaguar">i32 x = <span class="hljs-keyword">jcc:max_i32(10, </span><span class="hljs-number">20</span>)<span class="hljs-comment">;</span>
-</code></pre>
-<h3 id="-jcc-clamp_i32-"><code>jcc:clamp_i32</code></h3>
-<pre><code class="lang-jaguar">i32 x = <span class="hljs-keyword">jcc:clamp_i32(value, </span><span class="hljs-number">0</span>, <span class="hljs-number">100</span>)<span class="hljs-comment">;</span>
-</code></pre>
-<h3 id="-jcc-random_i32-"><code>jcc:random_i32</code></h3>
-<pre><code class="lang-jaguar">i<span class="hljs-number">32</span> x = jcc:ra<span class="hljs-symbol">ndom_i32</span><span class="hljs-comment">(0, 100)</span>;
-</code></pre>
-<h3 id="-jcc-time_ms-"><code>jcc:time_ms</code></h3>
-<pre><code class="lang-jaguar">i64 now = jcc:time_ms();
-</code></pre>
-<p>Retourne un temps en millisecondes.</p>
-<h3 id="-jcc-assert-"><code>jcc:assert</code></h3>
-<pre><code class="lang-jaguar">jcc:<span class="hljs-keyword">assert</span>(health &gt;= 0, <span class="hljs-string">"health must not be negative"</span>);
-</code></pre>
-<hr>
-<h1 id="55-fonctions-math-matiques-jcc-">55. Fonctions mathématiques <code>jcc</code></h1>
-<p>Toutes les fonctions suivantes utilisent principalement <code>f64</code>.</p>
-<table>
-<thead>
-<tr>
-<th>Fonction</th>
-<th>Signature</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>sqrt</code></td>
-<td><code>f64 -&gt; f64</code></td>
-</tr>
-<tr>
-<td><code>pow</code></td>
-<td><code>f64, f64 -&gt; f64</code></td>
-</tr>
-<tr>
-<td><code>sin</code></td>
-<td><code>f64 -&gt; f64</code></td>
-</tr>
-<tr>
-<td><code>cos</code></td>
-<td><code>f64 -&gt; f64</code></td>
-</tr>
-<tr>
-<td><code>tan</code></td>
-<td><code>f64 -&gt; f64</code></td>
-</tr>
-<tr>
-<td><code>asin</code></td>
-<td><code>f64 -&gt; f64</code></td>
-</tr>
-<tr>
-<td><code>acos</code></td>
-<td><code>f64 -&gt; f64</code></td>
-</tr>
-<tr>
-<td><code>atan</code></td>
-<td><code>f64 -&gt; f64</code></td>
-</tr>
-<tr>
-<td><code>atan2</code></td>
-<td><code>f64, f64 -&gt; f64</code></td>
-</tr>
-<tr>
-<td><code>floor</code></td>
-<td><code>f64 -&gt; f64</code></td>
-</tr>
-<tr>
-<td><code>ceil</code></td>
-<td><code>f64 -&gt; f64</code></td>
-</tr>
-<tr>
-<td><code>round</code></td>
-<td><code>f64 -&gt; f64</code></td>
-</tr>
-<tr>
-<td><code>log</code></td>
-<td><code>f64 -&gt; f64</code></td>
-</tr>
-<tr>
-<td><code>log10</code></td>
-<td><code>f64 -&gt; f64</code></td>
-</tr>
-<tr>
-<td><code>exp</code></td>
-<td><code>f64 -&gt; f64</code></td>
-</tr>
-<tr>
-<td><code>fmod</code></td>
-<td><code>f64, f64 -&gt; f64</code></td>
-</tr>
-</tbody>
-</table>
-<p>Exemple :</p>
-<pre><code class="lang-jaguar">f64 <span class="hljs-keyword">distance </span>= <span class="hljs-keyword">jcc:sqrt(x </span>* x + y * y)<span class="hljs-comment">;</span>
-f64 angle = <span class="hljs-keyword">jcc:atan2(y, </span>x)<span class="hljs-comment">;</span>
-f64 power = <span class="hljs-keyword">jcc:pow(2.0, </span><span class="hljs-number">8</span>.<span class="hljs-number">0</span>)<span class="hljs-comment">;</span>
-</code></pre>
-<hr>
-<h1 id="56-fonctions-string-de-jcc-">56. Fonctions string de <code>jcc</code></h1>
-<p><code>jcc</code> expose également des wrappers simples autour des opérations de chaînes.</p>
-<pre><code class="lang-jaguar"><span class="hljs-attribute">string a</span> = <span class="hljs-string">"Hello"</span>;
-<span class="hljs-attribute">string b</span> = <span class="hljs-string">" World"</span>;
+  })();
+</script>
 
-<span class="hljs-attribute">int length</span> = jcc:string_length(a);
-<span class="hljs-attribute">bool same</span> = jcc:string_equals(a, b);
-<span class="hljs-attribute">string result</span> = jcc:string_concat(a, b);
-</code></pre>
-<p>Fonctions :</p>
-<pre><code class="lang-text"><span class="hljs-keyword">string_length
-</span><span class="hljs-keyword">string_equals
-</span><span class="hljs-keyword">string_compare
-</span><span class="hljs-keyword">string_contains
-</span><span class="hljs-keyword">string_starts_with
-</span><span class="hljs-keyword">string_ends_with
-</span><span class="hljs-keyword">string_concat
-</span><span class="hljs-keyword">string_substring
-</span><span class="hljs-keyword">string_char_at
-</span><span class="hljs-keyword">string_find
-</span><span class="hljs-keyword">string_to_upper
-</span><span class="hljs-keyword">string_to_lower</span>
-</code></pre>
-<p>Exemple :</p>
-<pre><code class="lang-jaguar"><span class="hljs-selector-tag">if</span> (<span class="hljs-selector-tag">jcc</span><span class="hljs-selector-pseudo">:string_contains("Hello</span> <span class="hljs-selector-tag">world</span>", "<span class="hljs-selector-tag">world</span>")) {
-    <span class="hljs-attribute">sys</span>:<span class="hljs-built_in">print</span>(<span class="hljs-string">"found"</span>);
-}
-</code></pre>
-<hr>
-<h1 id="57-conversions-de-cha-nes">57. Conversions de chaînes</h1>
-<p>String → nombre :</p>
-<pre><code class="lang-jaguar">i32 a = jcc:string_to_i32(<span class="hljs-string">"42"</span>);
-i64 b = jcc:string_to_i64(<span class="hljs-string">"100000"</span>);
-f64 c = jcc:string_to_f64(<span class="hljs-string">"3.14"</span>);
-</code></pre>
-<p>Nombre → string :</p>
-<pre><code class="lang-jaguar"><span class="hljs-attribute">string a</span> = jcc:i32_to_string(42);
-<span class="hljs-attribute">string b</span> = jcc:i64_to_string(100000);
-<span class="hljs-attribute">string c</span> = jcc:f64_to_string(3.14);
-</code></pre>
-<hr>
-<h1 id="58-fonctions-caract-res">58. Fonctions caractères</h1>
-<p>Les fonctions inspirées de <code>ctype.h</code> utilisent des codes de caractères entiers.</p>
-<pre><code class="lang-jaguar"><span class="hljs-attribute">bool digit</span> = jcc:is_digit(<span class="hljs-string">'0'</span>);
-</code></pre>
-<p>Fonctions disponibles :</p>
-<pre><code class="lang-text"><span class="hljs-keyword">is</span><span class="hljs-number">_</span>digit
-<span class="hljs-keyword">is</span><span class="hljs-number">_</span>alpha
-<span class="hljs-keyword">is</span><span class="hljs-number">_</span>alnum
-<span class="hljs-keyword">is</span><span class="hljs-number">_</span>space
-<span class="hljs-keyword">is</span><span class="hljs-number">_u</span>pper
-<span class="hljs-keyword">is</span><span class="hljs-number">_</span>lower
-to<span class="hljs-number">_u</span>pper<span class="hljs-number">_</span>char
-to<span class="hljs-number">_</span>lower<span class="hljs-number">_</span>char
-</code></pre>
-<p>Elles peuvent être utilisées sur le résultat de <code>string.char_at()</code>.</p>
-<p>Exemple :</p>
-<pre><code class="lang-jaguar">i32 <span class="hljs-built_in">c</span> = name.char_at(<span class="hljs-number">0</span>);
-<span class="hljs-keyword">if</span> (jcc:is_alpha(<span class="hljs-built_in">c</span>)) {
-    sys:<span class="hljs-built_in">print</span>(<span class="hljs-string">"letter"</span>);
-}
-</code></pre>
-<hr>
-<h1 id="59-fichiers-et-environnement-avec-jcc-">59. Fichiers et environnement avec <code>jcc</code></h1>
-<h2 id="-file_exists-"><code>file_exists</code></h2>
-<pre><code class="lang-jaguar"><span class="hljs-keyword">bool</span> <span class="hljs-built_in">exists</span> = jcc:file_exists(<span class="hljs-string">"save.dat"</span>);
-</code></pre>
-<h2 id="-remove_file-"><code>remove_file</code></h2>
-<pre><code class="lang-jaguar"><span class="hljs-attribute">bool success</span> = jcc:remove_file(<span class="hljs-string">"save.dat"</span>);
-</code></pre>
-<h2 id="-rename_file-"><code>rename_file</code></h2>
-<pre><code class="lang-jaguar"><span class="hljs-attribute">bool success</span> = jcc:rename_file(<span class="hljs-string">"old.txt"</span>, <span class="hljs-string">"new.txt"</span>);
-</code></pre>
-<h2 id="-env_get-"><code>env_get</code></h2>
-<pre><code class="lang-jaguar"><span class="hljs-keyword">string</span> <span class="hljs-built_in">home</span> = jcc:env_get(<span class="hljs-string">"HOME"</span>);
-</code></pre>
-<p>Ces fonctions évitent de manipuler directement <code>FILE*</code>, <code>char*</code>, etc.</p>
-<hr>
-<h1 id="60-r-flexion">60. Réflexion</h1>
-<p>Jaguar possède un système de réflexion volontairement limité.</p>
-<p>Une classe peut être enregistrée avec <code>@register</code> :</p>
-<pre><code class="lang-jaguar"><span class="hljs-meta">@register</span>
-<span class="hljs-class"><span class="hljs-keyword">class</span> <span class="hljs-title">Player</span> </span>{
-    $<span class="hljs-built_in">int</span> health = <span class="hljs-number">100</span>;
-}
-</code></pre>
-<p>Un champ public peut être exposé avec <code>@exposed</code> :</p>
-<pre><code class="lang-jaguar"><span class="hljs-meta">@register</span>
-<span class="hljs-class"><span class="hljs-keyword">class</span> <span class="hljs-title">Player</span> </span>{
-    <span class="hljs-meta">@exposed</span>
-    $<span class="hljs-built_in">int</span> health = <span class="hljs-number">100</span>;
-}
-</code></pre>
-<p><code>@exposed</code> ne peut être utilisé que sur un champ public.</p>
-<hr>
-<h1 id="61-factory-construct-">61. <code>factory:construct</code></h1>
-<p>Une classe enregistrée peut être construite dynamiquement avec son nom :</p>
-<pre><code class="lang-jaguar">string <span class="hljs-keyword">class</span><span class="hljs-number">_n</span>ame = <span class="hljs-string">"Player"</span>;
-auto <span class="hljs-keyword">object</span> = factory:construct(<span class="hljs-keyword">class</span><span class="hljs-number">_n</span>ame);
-</code></pre>
-<p>La classe doit être enregistrée avec <code>@register</code>.</p>
-<p>Le nom est résolu à l&#39;exécution.</p>
-<p>Si la classe n&#39;est pas enregistrée, le runtime produit une erreur.</p>
-<hr>
-<h1 id="62-getmember-">62. <code>GetMember</code></h1>
-<p>Un membre exposé peut être récupéré dynamiquement :</p>
-<pre><code class="lang-jaguar"><span class="hljs-keyword">string</span> member = <span class="hljs-string">"health"</span>;
-<span class="hljs-keyword">int</span> health = (<span class="hljs-keyword">int</span>)<span class="hljs-keyword">object</span>.GetMember(member);
-</code></pre>
-<p>Le nom du membre est une <code>string</code>.</p>
-<p>Si le membre n&#39;existe pas ou n&#39;est pas exposé, le runtime affiche une erreur.</p>
-<p>Le cast est important pour obtenir une valeur typée.</p>
-<hr>
-<h1 id="63-memberexists-">63. <code>MemberExists</code></h1>
-<p>Avant un accès dynamique :</p>
-<pre><code class="lang-jaguar"><span class="hljs-keyword">string</span> name = <span class="hljs-string">"health"</span>;
-
-<span class="hljs-keyword">if</span> (<span class="hljs-keyword">object</span>.MemberExists(name)) {
-    <span class="hljs-keyword">int</span> health = (<span class="hljs-keyword">int</span>)<span class="hljs-keyword">object</span>.GetMember(name);
-}
-</code></pre>
-<p>Cela permet de vérifier si un membre est exposé.</p>
-<hr>
-<h1 id="64-setmember-">64. <code>SetMember</code></h1>
-<p>Un membre exposé peut être modifié dynamiquement :</p>
-<pre><code class="lang-jaguar"><span class="hljs-keyword">object</span>.SetMember(<span class="hljs-string">"health"</span>, <span class="hljs-number">50</span>);
-</code></pre>
-<p>Les valeurs primitives et <code>string</code> sont prises en charge par le runtime de réflexion.</p>
-<hr>
-<h1 id="65-exemple-complet-de-r-flexion">65. Exemple complet de réflexion</h1>
-<pre><code class="lang-jaguar"><span class="hljs-meta">@register</span>
-<span class="hljs-class"><span class="hljs-keyword">class</span> <span class="hljs-title">Enemy</span> </span>{
-    <span class="hljs-meta">@exposed</span>
-    $<span class="hljs-keyword">int</span> health = <span class="hljs-number">100</span>;
-
-    $string name = <span class="hljs-string">"Enemy"</span>;
-}
-
-<span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">main</span><span class="hljs-params">(string param)</span> </span>{
-    string class_name = <span class="hljs-string">"Enemy"</span>;
-    auto enemy = factory:construct(class_name);
-
-    <span class="hljs-keyword">if</span> (enemy.MemberExists(<span class="hljs-string">"health"</span>)) {
-        sys:print((<span class="hljs-keyword">int</span>)enemy.GetMember(<span class="hljs-string">"health"</span>));
-        enemy.SetMember(<span class="hljs-string">"health"</span>, <span class="hljs-number">25</span>);
-        sys:print((<span class="hljs-keyword">int</span>)enemy.GetMember(<span class="hljs-string">"health"</span>));
-    }
-}
-</code></pre>
-<p>Seuls les membres marqués <code>@exposed</code> sont accessibles via la réflexion.</p>
-<hr>
-<h1 id="66-attributs-disponibles">66. Attributs disponibles</h1>
-<p>Les attributs actuellement reconnus par le compilateur sont :</p>
-<pre><code class="lang-text"><span class="hljs-variable">@extern</span>
-<span class="hljs-variable">@register</span>
-<span class="hljs-variable">@exposed</span>
-</code></pre>
-<p>Leur utilisation dépend du contexte :</p>
-<table>
-<thead>
-<tr>
-<th>Attribut</th>
-<th>Utilisation</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>@extern</code></td>
-<td>fonction</td>
-</tr>
-<tr>
-<td><code>@register</code></td>
-<td>classe</td>
-</tr>
-<tr>
-<td><code>@exposed</code></td>
-<td>champ public de classe</td>
-</tr>
-</tbody>
-</table>
-<p>Un attribut inconnu produit une erreur de compilation.</p>
-<hr>
-<h1 id="67-cr-ation-de-collections-avec-">67. Création de collections avec <code>{}</code></h1>
-<p>Les accolades peuvent créer des littéraux de collection.</p>
-<p>Liste :</p>
-<pre><code class="lang-jaguar"><span class="hljs-type">list</span>&lt;int&gt; values = {<span class="hljs-number">1</span>, <span class="hljs-number">2</span>, <span class="hljs-number">3</span>};
-</code></pre>
-<p>Map :</p>
-<pre><code class="lang-jaguar"><span class="hljs-built_in">map</span>&lt;<span class="hljs-built_in">string</span>, <span class="hljs-keyword">int</span>&gt; values = {
-    <span class="hljs-string">"one"</span>, <span class="hljs-number">1</span>,
-    <span class="hljs-string">"two"</span>, <span class="hljs-number">2</span>
-};
-</code></pre>
-<p>Pair :</p>
-<pre><code class="lang-jaguar">pair&lt;<span class="hljs-keyword">string</span>, <span class="hljs-keyword">int</span>&gt; <span class="hljs-keyword">value</span> = {<span class="hljs-string">"score"</span>, <span class="hljs-number">42</span>};
-</code></pre>
-<p><code>dynamic_list</code> :</p>
-<pre><code class="lang-jaguar">dynamic_list <span class="hljs-built_in">values</span> = {<span class="hljs-number">1</span>, <span class="hljs-string">"hello"</span>, <span class="hljs-literal">true</span>};
-</code></pre>
-<hr>
-<h1 id="68-indexation">68. Indexation</h1>
-<p><code>[]</code> est disponible sur certaines collections.</p>
-<pre><code class="lang-jaguar"><span class="hljs-attribute">int x</span> = numbers[0];
-<span class="hljs-attribute">int score</span> = scores[<span class="hljs-string">"player"</span>];
-<span class="hljs-attribute">auto value</span> = values[0];
-</code></pre>
-<p>Elle est volontairement en lecture seule.</p>
-<p>Les <code>container&lt;T&gt;</code> ne sont pas indexables.</p>
-<hr>
-<h1 id="69-gestion-m-moire">69. Gestion mémoire</h1>
-<p>Jaguar ne donne volontairement pas accès à toute la libc mémoire directement.</p>
-<p>Le runtime gère notamment :</p>
-<ul>
-<li>les strings ;</li>
-<li>les classes ;</li>
-<li>les containers ;</li>
-<li>les listes ;</li>
-<li>les maps ;</li>
-<li>les dynamic lists.</li>
-</ul>
-<p>Les structures internes utilisent C <code>malloc</code>, <code>calloc</code>, <code>realloc</code>, <code>free</code>, etc., mais ces pointeurs ne sont pas exposés comme API Jaguar générale.</p>
-<p>Cela permet de conserver une syntaxe Jaguar plus sûre et plus simple.</p>
-<hr>
-<h1 id="70-fonctions-libc-volontairement-non-expos-es">70. Fonctions libc volontairement non exposées</h1>
-<p>Le compilateur connaît plusieurs noms libc afin d&#39;éviter les collisions avec les fonctions Jaguar.</p>
-<p>Par exemple, les noms suivants sont réservés lorsqu&#39;ils sont utilisés comme fonctions Jaguar ordinaires :</p>
-<pre><code class="lang-text"><span class="hljs-built_in">malloc</span>
-<span class="hljs-built_in">free</span>
-<span class="hljs-built_in">memcpy</span>
-<span class="hljs-built_in">memset</span>
-<span class="hljs-built_in">printf</span>
-<span class="hljs-built_in">scanf</span>
-fopen
-fclose
-<span class="hljs-built_in">strlen</span>
-<span class="hljs-built_in">strcmp</span>
-<span class="hljs-built_in">strcpy</span>
-qsort
-rand
-srand
-system
-...
-</code></pre>
-<p>L&#39;objectif est d&#39;éviter qu&#39;une fonction Jaguar génère accidentellement un symbole C entrant en collision avec la libc.</p>
-<p>Lorsqu&#39;une fonctionnalité libc est utile, elle doit idéalement être exposée par une API Jaguar <code>jcc:*</code> adaptée plutôt que par les pointeurs C bruts.</p>
-<hr>
-<h1 id="71-name-mangling">71. Name mangling</h1>
-<p>Jaguar génère des noms C compatibles avec les namespaces et la surcharge.</p>
-<p>Une fonction simple :</p>
-<pre><code class="lang-jaguar"><span class="hljs-function"><span class="hljs-keyword">int</span> <span class="hljs-title">add</span><span class="hljs-params">(<span class="hljs-keyword">int</span> a, <span class="hljs-keyword">int</span> b)</span> </span>{
-    <span class="hljs-keyword">return</span> a + b;
-}
-</code></pre>
-<p>reste généralement <code>add</code> côté C lorsqu&#39;elle n&#39;est pas surchargée.</p>
-<p>Une fonction dans un namespace :</p>
-<pre><code class="lang-jaguar"><span class="hljs-keyword">namespace</span> <span class="hljs-title">math</span> {
-    <span class="hljs-function"><span class="hljs-keyword">int</span> <span class="hljs-title">add</span>(<span class="hljs-params"><span class="hljs-keyword">int</span> a, <span class="hljs-keyword">int</span> b</span>) </span>{
-        <span class="hljs-keyword">return</span> a + b;
-    }
-}
-</code></pre>
-<p>est manglée pour éviter les collisions, par exemple sous une forme du type :</p>
-<pre><code class="lang-text">math_add
-</code></pre>
-<p>Une surcharge utilise également les types des paramètres dans son nom C.</p>
-<hr>
-<h1 id="72-r-solution-des-appels">72. Résolution des appels</h1>
-<p>Lorsqu&#39;un appel est rencontré, Jaguar recherche :</p>
-<ol>
-<li>le namespace et le nom ;</li>
-<li>les fonctions candidates ;</li>
-<li>les paramètres par défaut ;</li>
-<li>les arguments nommés ;</li>
-<li>le type des arguments ;</li>
-<li>les conversions numériques autorisées ;</li>
-<li>la surcharge la plus adaptée.</li>
-</ol>
-<p>Un appel ambigu provoque une erreur.</p>
-<hr>
-<h1 id="73-fonctions-natives-inconnues">73. Fonctions natives inconnues</h1>
-<p>Pour appeler une fonction C externe, la forme prévue est <code>@extern</code>.</p>
-<pre><code class="lang-jaguar">@<span class="hljs-function"><span class="hljs-keyword">extern</span>
-<span class="hljs-keyword">int</span> <span class="hljs-title">native_function</span>(<span class="hljs-params"><span class="hljs-keyword">int</span> <span class="hljs-keyword">value</span></span>)</span>;
-</code></pre>
-<p>Cela évite d&#39;exposer arbitrairement toutes les fonctions de la libc au langage.</p>
-<hr>
-<h1 id="74-compatibilit-c">74. Compatibilité C</h1>
-<p>Jaguar génère du C destiné principalement à GCC et à des compilateurs C modernes.</p>
-<p>Le mode :</p>
-<pre><code class="lang-bash"><span class="hljs-comment">--c89</span>
-</code></pre>
-<p>demande au générateur de produire une organisation compatible avec C89.</p>
-<p>Le runtime évite notamment d&#39;utiliser <code>_Bool</code> pour <code>bool</code> et génère son propre type <code>_jBool</code>.</p>
-<hr>
-<h1 id="75-ce-que-jaguar-n-expose-volontairement-pas">75. Ce que Jaguar n&#39;expose volontairement pas</h1>
-<p>Le langage actuel évite plusieurs fonctionnalités bas niveau du C/C++ :</p>
-<ul>
-<li>pointeurs Jaguar génériques ;</li>
-<li>arithmétique de pointeurs ;</li>
-<li><code>malloc</code>/<code>free</code> directement depuis le code Jaguar ;</li>
-<li><code>FILE*</code> ;</li>
-<li><code>memcpy</code> et autres primitives mémoire directement ;</li>
-<li>templates C++ ;</li>
-<li>fonctionnalités C++ complexes ;</li>
-<li>lambdas ;</li>
-<li>exceptions ;</li>
-<li>héritage multiple.</li>
-</ul>
-<p>Les fonctionnalités nécessitant ces mécanismes peuvent être implémentées dans le runtime C ou ajoutées plus tard au langage.</p>
-<hr>
-<h1 id="76-exemple-complet">76. Exemple complet</h1>
-<p>Voici un petit programme utilisant plusieurs fonctionnalités du langage :</p>
-<pre><code class="lang-jaguar"><span class="hljs-meta">#<span class="hljs-meta-keyword">define</span> MAX_HEALTH 100</span>
-
-@<span class="hljs-keyword">register</span>
-<span class="hljs-keyword">class</span> Player {
-    @exposed
-    $<span class="hljs-keyword">int</span> health = MAX_HEALTH;
-
-    constr(<span class="hljs-keyword">int</span> initial_health = MAX_HEALTH) {
-        health = initial_health;
-    }
-
-    <span class="hljs-keyword">void</span> damage(<span class="hljs-keyword">int</span> amount) {
-        health = health - amount;
-    }
-
-    <span class="hljs-keyword">bool</span> alive() <span class="hljs-keyword">const</span> {
-        <span class="hljs-built_in">return</span> health &gt; <span class="hljs-number">0</span>;
-    }
-}
-
-<span class="hljs-keyword">int</span> add(<span class="hljs-keyword">int</span> a, <span class="hljs-keyword">int</span> b = <span class="hljs-number">0</span>) {
-    <span class="hljs-built_in">return</span> a + b;
-}
-
-<span class="hljs-keyword">void</span> main(<span class="hljs-keyword">string</span> param) {
-    Player player = Player(<span class="hljs-number">100</span>);
-
-    list&lt;<span class="hljs-keyword">int</span>&gt; values = {<span class="hljs-number">10</span>, <span class="hljs-number">20</span>, <span class="hljs-number">30</span>};
-
-    <span class="hljs-keyword">auto</span> item = loop_list(values) {
-        sys:<span class="hljs-built_in">print</span>(item);
-    }
-
-    player.damage(<span class="hljs-number">25</span>);
-
-    sys:<span class="hljs-built_in">print</span>(player.health);
-
-    <span class="hljs-built_in">if</span> (player.alive()) {
-        sys:<span class="hljs-built_in">print</span>(<span class="hljs-string">"Player alive"</span>);
-    }
-
-    f64 distance = jcc:<span class="hljs-built_in">sqrt</span>(<span class="hljs-number">3.0</span> * <span class="hljs-number">3.0</span> + <span class="hljs-number">4.0</span> * <span class="hljs-number">4.0</span>);
-    sys:<span class="hljs-built_in">print</span>(distance);
-
-    <span class="hljs-keyword">string</span> <span class="hljs-built_in">text</span> = jcc:i32_to_string(add(<span class="hljs-number">10</span>, b = <span class="hljs-number">20</span>));
-    sys:<span class="hljs-built_in">print</span>(<span class="hljs-built_in">text</span>);
-}
-</code></pre>
-<hr>
-<h1 id="77-exemple-petit-programme-de-jeu">77. Exemple : petit programme de jeu</h1>
-<pre><code class="lang-jaguar"><span class="hljs-keyword">class</span> Player {
-    $f32 x = <span class="hljs-number">0.0</span>;
-    $f32 y = <span class="hljs-number">0.0</span>;
-    $<span class="hljs-keyword">int</span> health = <span class="hljs-number">100</span>;
-
-    <span class="hljs-keyword">void</span> <span class="hljs-built_in">move</span>(f32 dx, f32 dy) {
-        x = x + dx;
-        y = y + dy;
-    }
-
-    <span class="hljs-keyword">void</span> damage(<span class="hljs-keyword">int</span> amount) {
-        health = health - amount;
-    }
-
-    <span class="hljs-keyword">bool</span> alive() <span class="hljs-keyword">const</span> {
-        <span class="hljs-built_in">return</span> health &gt; <span class="hljs-number">0</span>;
-    }
-}
-
-<span class="hljs-keyword">void</span> main(<span class="hljs-keyword">string</span> param) {
-    Player player = Player();
-
-    <span class="hljs-keyword">int</span> i = for_loop(<span class="hljs-number">0</span>, <span class="hljs-number">4</span>) {
-        player.<span class="hljs-built_in">move</span>(<span class="hljs-number">1.0</span>, <span class="hljs-number">0.5</span>);
-        sys:<span class="hljs-built_in">print</span>(i);
-    }
-
-    player.damage(<span class="hljs-number">20</span>);
-
-    <span class="hljs-built_in">if</span> (player.alive()) {
-        sys:<span class="hljs-built_in">print</span>(<span class="hljs-string">"Player is alive"</span>);
-    }
-
-    sys:<span class="hljs-built_in">print</span>(player.x);
-    sys:<span class="hljs-built_in">print</span>(player.y);
-}
-</code></pre>
-<hr>
-<h1 id="78-r-sum-syntaxique">78. Résumé syntaxique</h1>
-<pre><code class="lang-text"><span class="hljs-comment">// commentaire</span>
-<span class="hljs-comment">/* commentaire */</span>
-
-<span class="hljs-meta">#<span class="hljs-meta-keyword">define</span> NAME VALUE</span>
-
-<span class="hljs-keyword">const</span> <span class="hljs-keyword">int</span> x = <span class="hljs-number">10</span>;
-<span class="hljs-keyword">auto</span> y = <span class="hljs-number">20</span>;
-
-<span class="hljs-function"><span class="hljs-keyword">int</span> <span class="hljs-title">add</span><span class="hljs-params">(<span class="hljs-keyword">int</span> a, <span class="hljs-keyword">int</span> b)</span> </span>{
-    <span class="hljs-keyword">return</span> a + b;
-}
-
-<span class="hljs-function"><span class="hljs-keyword">int</span> <span class="hljs-title">add</span><span class="hljs-params">(<span class="hljs-keyword">int</span> a, <span class="hljs-keyword">int</span> b)</span></span>;
-
-<span class="hljs-keyword">if</span> (condition) {
-} <span class="hljs-keyword">else</span> <span class="hljs-keyword">if</span> (other) {
-} <span class="hljs-keyword">else</span> {
-}
-
-<span class="hljs-keyword">while</span> {
-    <span class="hljs-keyword">break</span>;
-    <span class="hljs-keyword">continue</span>;
-}
-
-<span class="hljs-keyword">int</span> i = for_loop(<span class="hljs-number">0</span>, <span class="hljs-number">10</span>) {
-}
-
-<span class="hljs-keyword">struct</span> Vector2 {
-    f32 x;
-    f32 y;
-}
-
-<span class="hljs-keyword">class</span> Player {
-    $<span class="hljs-keyword">int</span> health;
-    %<span class="hljs-keyword">int</span> protected_value;
-    <span class="hljs-keyword">int</span> private_value;
-
-    constr() {
-    }
-
-    <span class="hljs-function"><span class="hljs-keyword">virtual</span> <span class="hljs-keyword">void</span> <span class="hljs-title">update</span><span class="hljs-params">()</span> </span>{
-    }
-
-    <span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">update_child</span><span class="hljs-params">()</span> override </span>{
-    }
-
-    destr() {
-    }
-}
-
-<span class="hljs-keyword">namespace</span> game {
-    <span class="hljs-function"><span class="hljs-keyword">int</span> <span class="hljs-title">start</span><span class="hljs-params">()</span> </span>{
-        <span class="hljs-keyword">return</span> <span class="hljs-number">0</span>;
-    }
-}
-
-<span class="hljs-built_in">list</span>&lt;<span class="hljs-keyword">int</span>&gt; values = {<span class="hljs-number">1</span>, <span class="hljs-number">2</span>, <span class="hljs-number">3</span>};
-<span class="hljs-built_in">map</span>&lt;<span class="hljs-built_in">string</span>, <span class="hljs-keyword">int</span>&gt; scores = {<span class="hljs-string">"a"</span>, <span class="hljs-number">10</span>};
-pair&lt;<span class="hljs-built_in">string</span>, <span class="hljs-keyword">int</span>&gt; result = {<span class="hljs-string">"score"</span>, <span class="hljs-number">42</span>};
-dynamic_list data = {<span class="hljs-number">42</span>, <span class="hljs-string">"hello"</span>, <span class="hljs-literal">true</span>};
-container&lt;<span class="hljs-keyword">int</span>&gt; value =&gt; <span class="hljs-number">42</span>;
-
-sys:print(<span class="hljs-string">"Hello"</span>);
-jcc:<span class="hljs-built_in">sqrt</span>(<span class="hljs-number">25.0</span>);
-</code></pre>
-<hr>
-<h1 id="79-r-f-rence-rapide">79. Référence rapide</h1>
-<h2 id="types">Types</h2>
-<pre><code class="lang-text">void
-<span class="hljs-keyword">int</span> / <span class="hljs-keyword">i32</span>
-<span class="hljs-keyword">uint</span> / <span class="hljs-keyword">u32</span>
-short / <span class="hljs-keyword">i16</span>
-ushort / u16
-long / <span class="hljs-keyword">i64</span>
-ulong / <span class="hljs-keyword">u64</span>
-<span class="hljs-keyword">char</span> / <span class="hljs-keyword">i8</span>
-uchar / <span class="hljs-keyword">u8</span>
-sbyte / <span class="hljs-keyword">i8</span>
-byte / <span class="hljs-keyword">u8</span>
-<span class="hljs-keyword">float</span> / <span class="hljs-keyword">f32</span>
-double / <span class="hljs-keyword">f64</span>
-<span class="hljs-keyword">bool</span>
-string
-list&lt;T&gt;
-map&lt;K,V&gt;
-pair&lt;K,V&gt;
-container&lt;T&gt;
-dynamic_list
-</code></pre>
-<h2 id="contr-le">Contrôle</h2>
-<pre><code class="lang-text"><span class="hljs-keyword">if</span> / <span class="hljs-keyword">else</span>
-<span class="hljs-keyword">while</span>
-for_loop
-<span class="hljs-keyword">break</span>
-<span class="hljs-keyword">continue</span>
-<span class="hljs-keyword">return</span>
-</code></pre>
-<h2 id="classes">Classes</h2>
-<pre><code class="lang-text"><span class="hljs-class"><span class="hljs-keyword">class</span></span>
-constr
-destr
-virtual
-<span class="hljs-keyword">override</span>
-<span class="hljs-keyword">this</span>
-$
-%
-const
-</code></pre>
-<h2 id="namespaces">Namespaces</h2>
-<pre><code class="lang-text"><span class="hljs-keyword">namespace</span>
-<span class="hljs-keyword">namespace</span>:<span class="hljs-function"><span class="hljs-keyword">function</span><span class="hljs-params">()</span></span>
-</code></pre>
-<h2 id="attributs">Attributs</h2>
-<pre><code class="lang-text"><span class="hljs-variable">@extern</span>
-<span class="hljs-variable">@register</span>
-<span class="hljs-variable">@exposed</span>
-</code></pre>
-<h2 id="collections">Collections</h2>
-<pre><code class="lang-text"><span class="hljs-selector-tag">list</span><span class="hljs-selector-class">.push</span>()
-<span class="hljs-selector-tag">list</span><span class="hljs-selector-attr">[index]</span>
-
-<span class="hljs-selector-tag">map</span><span class="hljs-selector-class">.emplace</span>()
-<span class="hljs-selector-tag">map</span><span class="hljs-selector-attr">[key]</span>
-
-<span class="hljs-selector-tag">pair</span><span class="hljs-selector-class">.first</span>
-<span class="hljs-selector-tag">pair</span><span class="hljs-selector-class">.second</span>
-
-<span class="hljs-selector-tag">container</span><span class="hljs-selector-class">.get</span>()
-
- <span class="hljs-selector-tag">dynamic_list</span><span class="hljs-selector-class">.push</span>()
- <span class="hljs-selector-tag">dynamic_list</span><span class="hljs-selector-class">.get</span>()
- <span class="hljs-selector-tag">dynamic_list</span><span class="hljs-selector-class">.type</span>()
- <span class="hljs-selector-tag">dynamic_list</span><span class="hljs-selector-class">.size</span>()
- <span class="hljs-selector-tag">dynamic_list</span><span class="hljs-selector-attr">[index]</span>
-
-<span class="hljs-selector-tag">loop_list</span>()
-<span class="hljs-selector-tag">loop_map</span>()
-</code></pre>
-<h2 id="syst-me">Système</h2>
-<pre><code class="lang-text"><span class="hljs-keyword">sy</span><span class="hljs-variable">s:print</span>()
-<span class="hljs-keyword">sy</span><span class="hljs-variable">s:console</span>:set_color()
-<span class="hljs-keyword">sy</span><span class="hljs-variable">s:console</span>:reset_color()
-<span class="hljs-keyword">sy</span><span class="hljs-variable">s:execute</span>()
-<span class="hljs-keyword">sy</span><span class="hljs-variable">s:fs</span>:<span class="hljs-keyword">read</span>()
-<span class="hljs-keyword">sy</span><span class="hljs-variable">s:fs</span>:<span class="hljs-keyword">write</span>()
-</code></pre>
-<h2 id="standard-jcc-">Standard <code>jcc</code></h2>
-<pre><code class="lang-text">jcc:exit()
-jcc:abort()
-jcc:abs_i32()
-jcc:min_i32()
-jcc:max_i32()
-jcc:clamp_i32()
-jcc:random_i32()
-jcc:time_ms()
-jcc:<span class="hljs-keyword">assert</span>()
-
-jcc:sqrt()
-jcc:pow()
-jcc:sin()
-jcc:cos()
-jcc:tan()
-jcc:asin()
-jcc:acos()
-jcc:atan()
-jcc:atan2()
-jcc:floor()
-jcc:ceil()
-jcc:round()
-jcc:log()
-jcc:log10()
-jcc:exp()
-jcc:fmod()
-
-jcc:string_length()
-jcc:string_equals()
-jcc:string_compare()
-jcc:string_contains()
-jcc:string_starts_with()
-jcc:string_ends_with()
-jcc:string_concat()
-jcc:string_substring()
-jcc:string_char_at()
-jcc:string_find()
-jcc:string_to_upper()
-jcc:string_to_lower()
-
-jcc:string_to_i32()
-jcc:string_to_i64()
-jcc:string_to_f64()
-jcc:i32_to_string()
-jcc:i64_to_string()
-jcc:f64_to_string()
-
-jcc:is_digit()
-jcc:is_alpha()
-jcc:is_alnum()
-jcc:is_space()
-jcc:is_upper()
-jcc:is_lower()
-jcc:to_upper_char()
-jcc:to_lower_char()
-
-jcc:file_exists()
-jcc:remove_file()
-jcc:rename_file()
-jcc:env_get()
-</code></pre>
-<hr>
-<h1 id="80-philosophie-du-langage">80. Philosophie du langage</h1>
-<p>Jaguar cherche à garder un compromis entre :</p>
-<ul>
-<li><strong>simplicité d&#39;utilisation</strong> ;</li>
-<li><strong>syntaxe proche du C/C++</strong> ;</li>
-<li><strong>performances d&#39;un langage compilé</strong> ;</li>
-<li><strong>contrôle explicite des types</strong> ;</li>
-<li><strong>fonctionnalités modernes pratiques</strong> ;</li>
-<li><strong>runtime minimal</strong> ;</li>
-<li><strong>interopérabilité avec le C</strong>.</li>
-</ul>
-<p>Le compilateur s&#39;occupe autant que possible des détails bas niveau tout en laissant les fonctionnalités essentielles du langage explicites.</p>
-<hr>
-<h1 id="81-statut-des-fonctionnalit-s">81. Statut des fonctionnalités</h1>
-<p>Cette documentation correspond au comportement actuellement présent dans <code>jcc.py</code>.</p>
-<p>Les points à considérer comme particulièrement spécifiques à l&#39;implémentation actuelle sont :</p>
-<ul>
-<li>la forme du <code>while</code> sans condition ;</li>
-<li><code>for_loop</code> avec borne finale incluse ;</li>
-<li>les collections sans templates C++ ;</li>
-<li>l&#39;interdiction de modifier une collection pendant <code>loop_list</code> / <code>loop_map</code> ;</li>
-<li>les <code>container&lt;T&gt;</code> ;</li>
-<li><code>dynamic_list</code> ;</li>
-<li>le système <code>@register</code> / <code>@exposed</code> / <code>factory:construct</code> ;</li>
-<li>les fonctions <code>sys:*</code> ;</li>
-<li>la bibliothèque <code>jcc:*</code> ;</li>
-<li>la stratégie de génération C89 ;</li>
-<li>le name mangling et la résolution de surcharge.</li>
-</ul>
-<p>Pour toute fonctionnalité non décrite ici, il faut se référer au comportement réel de <code>jcc.py</code> plutôt que supposer qu&#39;elle est héritée du C ou du C++.</p>
-</body></html>
+</body>
+</html>

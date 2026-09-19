@@ -328,20 +328,16 @@ def build_target(
             raise JBSError(f"jcc n'a pas généré le fichier C attendu: {c_path}")
 
         # Second stage: C -> requested artifact.
-        include_flags = []
-        for inc in include_dirs or []:
-            include_flags.extend(["-I", str(inc)])
-
         if target.kind == "compile":
-            gcc_cmd = ["gcc", *include_flags, str(c_path), "-o", str(output_path)]
+            gcc_cmd = ["gcc", str(c_path), "-o", str(output_path)]
             for lib in target.links or []:
-                gcc_cmd.append(resolve_link_arg(lib, output_base, base_dir, include_dirs))
+                gcc_cmd.append(resolve_link_arg(lib, output_base, base_dir))
 
         elif target.kind == "compile_static":
             obj_path = output_base / f"{target.name}.o"
             archive_path = output_base / f"lib{target.name}.a"
 
-            gcc_cmd = ["gcc", *include_flags, "-c", str(c_path), "-o", str(obj_path)]
+            gcc_cmd = ["gcc", "-c", str(c_path), "-o", str(obj_path)]
             if c89:
                 gcc_cmd.insert(1, "-std=c89")
 
@@ -377,7 +373,6 @@ def build_target(
                 import_lib = output_base / f"{target.name}.dll.a"
                 gcc_cmd = [
                     "gcc",
-                    *include_flags,
                     "-shared",
                     str(c_path),
                     "-o",
@@ -386,10 +381,10 @@ def build_target(
                 ]
             else:
                 shared_path = output_base / f"lib{target.name}.so"
-                gcc_cmd = ["gcc", *include_flags, "-shared", "-fPIC", str(c_path), "-o", str(shared_path)]
+                gcc_cmd = ["gcc", "-shared", "-fPIC", str(c_path), "-o", str(shared_path)]
 
             for lib in target.links or []:
-                gcc_cmd.append(resolve_link_arg(lib, output_base, base_dir, include_dirs))
+                gcc_cmd.append(resolve_link_arg(lib, output_base, base_dir))
 
         else:
             raise JBSError(f"type de target inconnu: {target.kind}")
@@ -422,7 +417,7 @@ def build_target(
                 pass
 
 
-def resolve_link_arg(value: str, output_base: Path, base_dir: Path, include_dirs=None) -> str:
+def resolve_link_arg(value: str, output_base: Path, base_dir: Path) -> str:
     """Transforme une entrée JBS link en argument GCC.
 
     Exemples:
@@ -444,8 +439,6 @@ def resolve_link_arg(value: str, output_base: Path, base_dir: Path, include_dirs
         output_base / value,
         base_dir / value,
     ]
-    for inc in include_dirs or []:
-        candidates.append(Path(inc) / value)
 
     # Alias pratiques :
     #   MyLib.a -> libMyLib.a
