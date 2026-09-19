@@ -8,8 +8,6 @@ mylist.push(5);
 
 -messages d'erreur en anglais, et avec la ligne de l'erreur
 
--mot clé auto
-
 -ecrire une documentation officielle en partant du code source jcc.py
 
 -ajoute des fonctions a la libjcc (standard library JaguarCC)
@@ -17,10 +15,6 @@ mylist.push(5);
 -ajoute le systeme de reflexion et factory native
 
 -separation header/implementation
-
--arguments par defaut des parametres
-
--aussi en jaguar on peut nommer des fonctions avec les noms des fonctions de la libc, genre printf par exemple. ca genere des erreurs, le compiler doit empecher de nommer les fonctions comme ca.
 
 
 Salut, je developpe un langage de programmation avec cette syntaxe : #define M_PI 3.141 //types standards i32 add(i32 a, i32 b) { return a+b; } //surcharge : meme nom, types differents float add(float a, float b) { return a+b; } //surcharge : arite differente i32 add(i32 a, i32 b, i32 c) { return a+b+c; } //@extern desactive le name mangling @extern void jaguar_init() { //contenu } namespace physics { //surcharge dans un namespace f32 compute(f32 x) { return x*x; } f64 compute(f64 x) { return x*x; } } struct vector2_t { f32 x; f32 y; bool normalized; } //renvoie un type concret (f32), ce qui leve l'ambiguite au niveau de l'appel f32 make_speed(f32 v) { return v; } void main(string param) { add(1, 2); add(1.0, 2.0); add(1, 2, 3); jaguar_init(); physics:compute(make_speed(1.5)); } J'ai deja un compilateur en python tres primaire. Tu peux modifier mon compilateur et me renvoyer le fichier stp.

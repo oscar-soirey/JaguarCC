@@ -55,7 +55,7 @@ struct my_struct_t {
 
 
 //register decorateur pour factory native
-@register @export class MyClass {
+@register class MyClass {
   //$ : public
   void $foo() {}
   void$ foo2() {} //marche aussi
@@ -103,3 +103,6 @@ sys:console:reset_color();
 sys:execute("program.exe", "C:/path_courant/...");
 sys:fs:read("path/to/the/file.txt", "mode (r for example)");
 sys:fs:write("path", "data", "mode (b for binary for example)");
+
+List<type>
+DynamicList // non typée, peut stocker des elements de plusieurs types différents

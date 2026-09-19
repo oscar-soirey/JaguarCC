@@ -140,6 +140,8 @@ static void _j_sys_print_bool(_jBool v) {
     printf("%s\n", v ? "true" : "false");
 }
 
+static void *_j_reflect_get_member(void *obj, const char *name);
+
 #define M_PI 3.141
 
 i32 add_i32_i32(i32 a, i32 b) {
@@ -190,30 +192,29 @@ typedef struct MyClass MyClass;
 typedef struct MyClass_vtable MyClass_vtable;
 struct MyClass {
     MyClass_vtable *_vptr;
+    i32 value;
 };
 struct MyClass_vtable {
-    void (*foo)(void *self);
+    const char *type_name;
+    void *(*get_member)(void *self, const char *name);
 };
-void MyClass_foo(MyClass *self);
-void MyClass_printff(MyClass *self);
+static void *MyClass_get_member(void *obj, const char *name) {
+    MyClass *self = (MyClass*)obj;
+    if (strcmp(name, "value") == 0) return (void*)&self->value;
+    return 0;
+}
 void MyClass_destr(MyClass *self);
 MyClass *MyClass_new(void);
 MyClass *MyClass_ctor();
 static MyClass_vtable MyClass_vtable_instance = {
-    (void (*)(void *))MyClass_foo,
+    "MyClass",
+    MyClass_get_member,
 };
-void MyClass_foo(MyClass *self) {
-    _j_sys_print_string(string_from_cstr("foo from MyClass"));
-    MyClass_printff(self);
-}
-void MyClass_printff(MyClass *self) {
-    const i32 a = 1;
-    _j_sys_print_string(string_from_cstr("bonjour"));
-}
 MyClass *MyClass_ctor() {
     MyClass *self = (MyClass*)calloc(1, sizeof(MyClass));
     if (!self) return 0;
     self->_vptr = &MyClass_vtable_instance;
+    self->value = 10;
     _j_sys_print_string(string_from_cstr("hello from class"));
     return self;
 }
@@ -223,9 +224,17 @@ void MyClass_destr(MyClass *self) {
 
 int main(int argc, char *argv[]) {
     string *param = string_from_cstr((argc > 1) ? argv[1] : "");
-    MyClass * h = MyClass_ctor();
-    h->_vptr->foo((void*)h);
+    MyClass * h = (MyClass*)_j_factory_construct(param);
     MyClass_destr(h);
     free(h);
     return 0;
+}
+
+/* Jaguar native reflection / factory runtime. */
+#include <string.h>
+typedef struct _jReflectVTable { const char *type_name; void *(*get_member)(void*, const char*); } _jReflectVTable;
+static void *_j_reflect_get_member(void *obj, const char *name) {
+    if (!obj || !name) return 0;
+    _jReflectVTable *vt = *(_jReflectVTable**)obj;
+    return (vt && vt->get_member) ? vt->get_member(obj, name) : 0;
 }

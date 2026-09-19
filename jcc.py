@@ -155,7 +155,7 @@ FLOAT_TYPES = {"float", "f32", "f64"}
 
 KEYWORDS = TYPE_KEYWORDS | {
     "struct", "namespace", "class", "virtual", "override", "constr", "destr", "return", "true", "false", "const",
-    "if", "else", "while", "break", "continue", "for_loop",
+    "if", "else", "while", "break", "continue", "for_loop", "this", "auto",
 }
 
 # tokens à deux caractères (testés AVANT les tokens à un caractère)
@@ -289,6 +289,7 @@ class Param:
     type: str
     name: str
     is_const: bool = False
+    default: Optional[object] = None
 
 
 @dataclass
@@ -304,6 +305,7 @@ class ClassField:
     access: str = "private"
     init: Optional[object] = None
     is_const: bool = False
+    is_exposed: bool = False
 
 
 @dataclass
@@ -327,6 +329,7 @@ class ClassDecl:
     base: Optional[str]
     fields: List[ClassField]
     methods: List[ClassMethod]
+    is_registered: bool = False
 
 
 # --- expressions ---
@@ -359,6 +362,12 @@ class StringLit:
 @dataclass
 class BoolLit:
     value: bool
+
+
+@dataclass
+class CastExpr:
+    target_type: str
+    operand: object
 
 
 @dataclass
@@ -528,7 +537,7 @@ class ParseError(Exception):
     pass
 
 
-KNOWN_ATTRIBUTES = {"extern"}
+KNOWN_ATTRIBUTES = {"extern", "register", "exposed"}
 
 
 class Parser:
@@ -585,9 +594,14 @@ class Parser:
             return self.parse_namespace()
 
         if tok.kind == "@":
+            save = self.pos
+            attrs = self.parse_attributes()
+            if self.peek().kind == "class":
+                return self.parse_class(attrs)
+            self.pos = save
             if not self._is_function_ahead():
                 raise ParseError(
-                    f"les attributs (@...) ne s'appliquent qu'aux fonctions (ligne {tok.line})"
+                    f"les attributs (@...) ne s'appliquent qu'aux fonctions ou classes (ligne {tok.line})"
                 )
             return self.parse_function()
 
@@ -644,7 +658,8 @@ class Parser:
         return StructDecl(name, fields)
 
     # -- class -------------------------------------------------------------
-    def parse_class(self) -> ClassDecl:
+    def parse_class(self, class_attrs=None) -> ClassDecl:
+        class_attrs = class_attrs or set()
         self.expect("class")
         name = self.expect("IDENT").value
         base = None
@@ -654,6 +669,12 @@ class Parser:
         self.expect("{")
         fields, methods = [], []
         while self.peek().kind != "}":
+            exposed = False
+            if self.peek().kind == "@":
+                attrs = self.parse_attributes()
+                if attrs - {"exposed"}:
+                    raise ParseError(f"attributs invalides sur un membre de classe (ligne {self.peek().line})")
+                exposed = "exposed" in attrs
             access = "private"
             if self.peek().kind in ("$", "%"):
                 access = "public" if self.advance().kind == "$" else "protected"
@@ -705,9 +726,9 @@ class Parser:
                 self.expect(";")
                 if is_virtual:
                     raise ParseError(f"'virtual' ne peut s'appliquer qu'à une méthode (ligne {self.peek().line})")
-                methods.append(None) if False else fields.append(ClassField(ret_type, member_name, access, init, field_const))
+                methods.append(None) if False else fields.append(ClassField(ret_type, member_name, access, init, field_const, exposed))
         self.expect("}")
-        return ClassDecl(name, base, fields, methods)
+        return ClassDecl(name, base, fields, methods, "register" in class_attrs)
 
     # -- namespace ---------------------------------------------------------
     # Namespaces are stored as a path such as "physics:common".
@@ -754,7 +775,11 @@ class Parser:
             self.advance(); is_const = True
         t = self.parse_type()
         n = self.expect("IDENT")
-        return Param(t, n.value, is_const)
+        default = None
+        if self.peek().kind == "=":
+            self.advance()
+            default = self.parse_expr()
+        return Param(t, n.value, is_const, default)
 
     def parse_function(self, namespace: Optional[str] = None) -> FunctionDecl:
         attrs = self.parse_attributes()
@@ -789,9 +814,9 @@ class Parser:
         return Block(stmts)
 
     def _starts_var_decl(self) -> bool:
-        """Détecte aussi les déclarations `const type nom`."""
+        """Détecte les déclarations typées, `const type nom` et `auto nom`."""
         tok = self.peek()
-        if tok.kind == "const":
+        if tok.kind in ("const", "auto"):
             return True
         if tok.kind in TYPE_KEYWORDS:
             return True
@@ -802,19 +827,20 @@ class Parser:
         is_const = False
         if self.peek().kind == "const":
             self.advance(); is_const = True
-        t = self.parse_type()
-        if t == "void":
-            raise ParseError(
-                f"une variable ne peut pas être de type 'void' (ligne {type_tok.line})"
-            )
+        is_auto = self.peek().kind == "auto"
+        if is_auto:
+            self.advance(); t = "auto"
+        else:
+            t = self.parse_type()
+            if t == "void":
+                raise ParseError(f"une variable ne peut pas être de type 'void' (ligne {type_tok.line})")
         name = self.expect("IDENT").value
         init = None
         if self.peek().kind == "=":
-            self.advance()
-            init = self.parse_expr()
+            self.advance(); init = self.parse_expr()
         self.expect(";")
-        if is_const and init is None:
-            raise ParseError(f"une variable const '{name}' doit être initialisée (ligne {type_tok.line})")
+        if (is_auto or is_const) and init is None:
+            raise ParseError(f"une variable '{'auto' if is_auto else 'const'}' '{name}' doit être initialisée (ligne {type_tok.line})")
         return VarDecl(t, name, init, is_const)
 
     # -- contrôle de flux -------------------------------------------------
@@ -909,14 +935,16 @@ class Parser:
         if tok.kind == "IDENT" and self.peek(1).kind == "=":
             return self.parse_assignment()
 
-        if tok.kind == "IDENT":
+        if tok.kind in ("IDENT", "this"):
             save=self.pos
             lhs=self.parse_expr()
             if self.peek().kind == "=":
-                if not isinstance(lhs, MemberAccess):
-                    self.pos=save
-                else:
+                if isinstance(lhs, MemberAccess):
                     self.advance(); rhs=self.parse_expr(); self.expect(";"); return MemberAssignStmt(lhs,rhs)
+                if isinstance(lhs, Call) and isinstance(lhs.callee, MemberAccess) and lhs.callee.name == "GetMember":
+                    self.advance(); rhs=self.parse_expr(); self.expect(";")
+                    return MemberAssignStmt(lhs, rhs)
+                self.pos=save
             self.pos=save
 
         if self._starts_var_decl():
@@ -975,13 +1003,21 @@ class Parser:
     def parse_primary(self):
         tok = self.peek()
 
+        # Les casts Jaguar sont volontairement C-style uniquement :
+        # `(i32)0.0`. La forme fonctionnelle `i32(0.0)` n'est pas un cast.
+        if tok.kind == "(" and self.peek(1).kind in TYPE_KEYWORDS and self.peek(2).kind == ")":
+            self.advance()
+            target_type = canonical_type(self.advance().value)
+            self.expect(")")
+            return CastExpr(target_type, self.parse_unary())
+
         if tok.kind == "INT": self.advance(); return IntLit(tok.value)
         if tok.kind == "FLOAT": self.advance(); return FloatLit(tok.value)
         if tok.kind == "STRING": self.advance(); return StringLit(tok.value)
         if tok.kind in ("true", "false"): self.advance(); return BoolLit(tok.kind == "true")
         if tok.kind == "(":
             self.advance(); e=self.parse_expr(); self.expect(")"); return e
-        if tok.kind != "IDENT":
+        if tok.kind not in ("IDENT", "this"):
             if tok.kind == "for_loop":
                 raise ParseError("for_loop s'utilise uniquement sous la forme `int i = for_loop(début, fin) { ... }`")
             raise ParseError(f"expression inattendue: '{tok.kind}' ligne {tok.line}")
@@ -1014,6 +1050,21 @@ class Parser:
 
 class ResolverError(Exception):
     pass
+
+LIBC_FUNCTION_NAMES = {
+    "abort", "abs", "acos", "acosh", "asin", "asinh", "atan", "atan2", "atanh", "atexit", "atof", "atoi", "atol",
+    "bsearch", "calloc", "ceil", "clearerr", "clock", "cos", "cosh", "ctime", "difftime", "div", "exit", "exp", "fabs",
+    "fclose", "feof", "ferror", "fflush", "fgetc", "fgets", "fopen", "fprintf", "fputc", "fputs", "fread", "free",
+    "freopen", "fscanf", "fseek", "fsetpos", "ftell", "fwrite", "getc", "getchar", "getenv", "gets", "isalnum", "isalpha",
+    "iscntrl", "isdigit", "isgraph", "islower", "isprint", "ispunct", "isspace", "isupper", "isxdigit", "labs", "ldexp",
+    "ldiv", "localeconv", "log", "log10", "longjmp", "malloc", "mblen", "mbstowcs", "mbtowc", "memchr", "memcmp",
+    "memcpy", "memmove", "memset", "mktime", "modf", "perror", "pow", "printf", "putc", "putchar", "puts", "qsort",
+    "raise", "rand", "realloc", "remove", "rename", "rewind", "scanf", "setbuf", "setlocale", "setvbuf", "signal",
+    "sin", "sinh", "sprintf", "sqrt", "srand", "sscanf", "strcat", "strchr", "strcmp", "strcoll", "strcpy", "strcspn",
+    "strerror", "strftime", "strlen", "strncat", "strncmp", "strncpy", "strpbrk", "strrchr", "strspn", "strstr", "strtod",
+    "strtok", "strtol", "strtoul", "strxfrm", "system", "tan", "tanh", "time", "tmpfile", "tmpnam", "tolower", "toupper",
+    "ungetc", "vfprintf", "vprintf", "vsprintf", "wctomb", "wcstombs",
+}
 
 
 FuncKey = Tuple[Optional[str], str]  # (namespace, nom)
@@ -1066,6 +1117,8 @@ class Resolver:
 
     def resolve(self) -> Dict[FuncKey, List[FunctionDecl]]:
         for (namespace, name), fns in self.groups.items():
+            if name in LIBC_FUNCTION_NAMES and any(not fn.is_extern for fn in fns):
+                raise ResolverError(f"le nom de fonction '{name}' est réservé par la libc et ne peut pas être utilisé en Jaguar")
             overloaded = len(fns) > 1
             for fn in fns:
                 if fn.is_extern:
@@ -1499,6 +1552,8 @@ class CodeGen:
         }
         for item in program.items:
             if isinstance(item, VarDecl):
+                if item.type == "auto":
+                    raise CodeGenError("'auto' n'est pas autorisé pour une variable globale")
                 if item.name in self.global_types:
                     raise CodeGenError(
                         f"la variable globale '{item.name}' est déclarée plusieurs fois"
@@ -1536,8 +1591,16 @@ class CodeGen:
         runtime = _system_runtime(used_system, used_string)
         if runtime:
             parts.append(runtime)
+        reflection = self._native_reflection_runtime()
+        if reflection:
+            # Prototypes are enough for code emitted before the implementation.
+            if any(c.is_registered for c in self.classes.values() if c.name != "string"):
+                parts.append("static void *_j_factory_construct(string *name);")
+            parts.append("static void *_j_reflect_get_member(void *obj, const char *name);")
         for item in self.program.items:
             parts.append(self.gen_item(item))
+        if reflection:
+            parts.append(reflection)
 
         return "\n\n".join(parts) + "\n"
 
@@ -1552,6 +1615,8 @@ class CodeGen:
                         used.add(key)
                 for a in e.args:
                     scan_expr(a)
+            elif isinstance(e, CastExpr):
+                scan_expr(e.operand)
             elif isinstance(e, UnaryOp):
                 scan_expr(e.operand)
             elif isinstance(e, BinOp):
@@ -1606,6 +1671,7 @@ class CodeGen:
             if isinstance(e, StringLit): return True
             if isinstance(e, Call): return expr(e.callee) or any(expr(a) for a in e.args)
             if isinstance(e, MemberAccess): return expr(e.obj)
+            if isinstance(e, CastExpr): return expr(e.operand)
             if isinstance(e, UnaryOp): return expr(e.operand)
             if isinstance(e, BinOp): return expr(e.left) or expr(e.right)
             return False
@@ -1642,6 +1708,8 @@ class CodeGen:
                 for s in _iter_stmts(item.body.statements):
                     if isinstance(s, VarDecl):
                         note(s.type)
+                        if s.type == "auto":
+                            used.update(("i32", "f32"))
                     elif isinstance(s, ForLoopStmt):
                         note(s.var_type)
             elif isinstance(item, StructDecl):
@@ -1654,10 +1722,34 @@ class CodeGen:
                     note(m.ret_type)
                     for p in m.params: note(p.type)
                     for st in _iter_stmts(m.body.statements):
-                        if isinstance(st, VarDecl): note(st.type)
+                        if isinstance(st, VarDecl):
+                            note(st.type)
+                            if st.type == "auto": used.update(("i32", "f32"))
             elif isinstance(item, VarDecl):     # variable globale
                 note(item.type)
         return used
+
+
+    def _native_reflection_runtime(self):
+        registered = [c for c in self.classes.values() if c.name != "string" and c.is_registered]
+        if not registered and not any(getattr(f, "is_exposed", False) for c in self.classes.values() for f in c.fields):
+            return ""
+        lines = [
+            "/* Jaguar native reflection / factory runtime. */",
+            "#include <string.h>",
+            "typedef struct _jReflectVTable { const char *type_name; void *(*get_member)(void*, const char*); } _jReflectVTable;",
+            "static void *_j_reflect_get_member(void *obj, const char *name) {",
+            "    if (!obj || !name) return 0;",
+            "    _jReflectVTable *vt = *(_jReflectVTable**)obj;",
+            "    return (vt && vt->get_member) ? vt->get_member(obj, name) : 0;",
+            "}",
+        ]
+        if registered:
+            lines += ["static void *_j_factory_construct(string *name) {", "    if (!name || !name->data) return 0;"]
+            for c in registered:
+                lines.append(f'    if (strcmp(name->data, "{c.name}") == 0) return (void*){c.name}_ctor();')
+            lines += ["    return 0;", "}"]
+        return "\n".join(lines)
 
     # -- déclarations --
     def gen_item(self, item) -> str:
@@ -1687,6 +1779,8 @@ class CodeGen:
             # un identifiant qui n'est pas une variable globale est supposé
             # être une macro #define (ex: M_PI), donc constant
             return e.name not in self.global_types
+        if isinstance(e, CastExpr):
+            return self._is_const_expr(e.operand)
         if isinstance(e, UnaryOp):
             return self._is_const_expr(e.operand)
         if isinstance(e, BinOp):
@@ -1740,12 +1834,25 @@ class CodeGen:
         for f in cls.fields: lines.append(f"    {'const ' if f.is_const else ''}{c_type(f.type)} {f.name};")
         lines.append("};")
         lines.append(f"struct {cls.name}_vtable {{")
+        # Keep reflection metadata first so every class vtable has the same
+        # native prefix and can be inspected through _jReflectVTable.
+        lines.append("    const char *type_name;")
+        lines.append("    void *(*get_member)(void *self, const char *name);")
         virt=[]
         for m in self._all_virtual_methods(cls):
             virt.append(m)
             ps=", ".join(["void *self"] + [("const " if p.is_const else "") + f"{c_type(p.type)} {p.name}" for p in m.params])
             lines.append(f"    {c_type(m.ret_type)} (*{m.name})({ps});")
         lines.append("};")
+        # Native reflection: each registered/exposed class gets a typed member lookup.
+        exposed = [f for f in self._class_all_fields(cls) if getattr(f[1], "is_exposed", False)]
+        lines.append(f"static void *{cls.name}_get_member(void *obj, const char *name) {{")
+        lines.append(f"    {cls.name} *self = ({cls.name}*)obj;")
+        for owner, f in exposed:
+            access_expr = self._base_member_expr("self", cls, f.name)
+            lines.append(f"    if (strcmp(name, \"{f.name}\") == 0) return (void*)&{access_expr};")
+        lines.append("    return 0;")
+        lines.append("}")
         # constructors/prototypes are needed before method bodies
         for m in cls.methods:
             if m.is_constructor or m.is_destructor: continue
@@ -1765,6 +1872,8 @@ class CodeGen:
             lines.append(f"{cls.name} *{cls.name}_ctor(void);")
         # vtable definition
         lines.append(f"static {cls.name}_vtable {cls.name}_vtable_instance = {{")
+        lines.append(f"    \"{cls.name}\",")
+        lines.append(f"    {cls.name}_get_member,")
         for m in virt:
             lines.append(f"    ({c_type(m.ret_type)} (*)(void *{', ' if m.params else ''}{', '.join(c_type(p.type)+' '+p.name for p in m.params)})){cls.name}_{m.name},")
         lines.append("};")
@@ -1917,6 +2026,14 @@ class CodeGen:
     # La même règle s'applique à chaque bloc imbriqué (if / else / while /
     # for_loop) : C89 autorise les déclarations en tête de N'IMPORTE quel
     # bloc, donc chaque bloc a ses propres déclarations.
+    def _resolve_auto_type(self, expr, local_types: dict) -> str:
+        t = self.infer_type(expr, local_types)
+        if isinstance(t, tuple) and t[0] == "literal":
+            return "i32" if t[1] == "int" else "f32"
+        if t is None:
+            raise CodeGenError("impossible de déduire le type de la variable 'auto'")
+        return canonical_type(t)
+
     def _is_owned_class_type(self, type_name: str) -> bool:
         return type_name in self.classes
 
@@ -1959,8 +2076,16 @@ class CodeGen:
                         f"la variable locale '{s.name}' masque une variable globale "
                         f"du même nom"
                     )
-                # l'initialiseur est généré AVANT d'enregistrer la variable
-                init = self.gen_expr(s.init, local_types) if s.init is not None else None
+                # L'initialiseur est généré avant d'enregistrer la variable.
+                # `auto` est résolu à partir de son expression d'initialisation.
+                if s.type == "auto":
+                    s.type = self._resolve_auto_type(s.init, local_types)
+                if s.init is not None and s.type != "auto" and s.type in self.classes and isinstance(s.init, Call) and isinstance(s.init.callee, NamespacedIdent) and s.init.callee.namespace == "factory" and s.init.callee.name == "construct":
+                    if len(s.init.args) != 1:
+                        raise CodeGenError("factory:construct() attend exactement un nom de classe")
+                    init = f"({s.type}*)_j_factory_construct({self.gen_expr(s.init.args[0].expr if isinstance(s.init.args[0], NamedArg) else s.init.args[0], local_types)})"
+                else:
+                    init = self.gen_expr(s.init, local_types) if s.init is not None else None
                 local_types[s.name] = s.type
                 if self._is_owned_class_type(s.type):
                     owned.append((s.name, s.type))
@@ -2019,11 +2144,15 @@ class CodeGen:
             expr = self.gen_expr(s.expr, local_types)
             return cleanup + [f"return {expr};"]
         if isinstance(s, MemberAssignStmt):
+            if self._is_reflection_call(s.target):
+                ot, member, obj, name = self._reflection_member(s.target, local_types)
+                target = f"(*(({c_type(member.type)}*)_j_reflect_get_member((void*){self.gen_expr(obj, local_types)}, {s.target.args[0].value})))"
+                return [f"{target} = {self.gen_expr(s.expr, local_types)};"]
             ot = self.infer_type(s.target.obj, local_types)
             owner, member = self._find_class_member(ot, s.target.name, "field") if ot in self.classes else (None, None)
             if member is not None and getattr(member, "is_const", False):
                 raise CodeGenError(f"le membre const '{s.target.name}' ne peut pas être modifié")
-            if self._current_class_method_const and isinstance(s.target.obj, Ident) and s.target.obj.name == "self":
+            if self._current_class_method_const and isinstance(s.target.obj, Ident) and s.target.obj.name == "this":
                 raise CodeGenError(f"une méthode const ne peut pas modifier le membre '{s.target.name}'")
             target = self.gen_member_access(s.target, local_types)
             return [f"{target} = {self.gen_expr(s.expr, local_types)};"]
@@ -2202,8 +2331,7 @@ class CodeGen:
 
     # -- résolution d'appel (choix de la bonne surcharge) --
     def _ordered_call_args(self, args, params, callee_name="fonction"):
-        if not any(isinstance(a, NamedArg) for a in args):
-            return args
+        """Réordonne les arguments et insère les valeurs par défaut."""
         ordered = [None] * len(params)
         by_name = {p.name:i for i,p in enumerate(params)}
         next_pos = 0; named_seen = False
@@ -2216,14 +2344,37 @@ class CodeGen:
             else:
                 if named_seen:
                     raise CodeGenError("un argument positionnel ne peut pas suivre un argument nommé")
-                while next_pos < len(ordered) and ordered[next_pos] is not None: next_pos += 1
-                if next_pos >= len(ordered): raise CodeGenError(f"trop d'arguments pour {callee_name}")
+                while next_pos < len(ordered) and ordered[next_pos] is not None:
+                    next_pos += 1
+                if next_pos >= len(ordered):
+                    raise CodeGenError(f"trop d'arguments pour {callee_name}")
                 i = next_pos; next_pos += 1
-            if ordered[i] is not None: raise CodeGenError(f"paramètre '{params[i].name}' fourni plusieurs fois")
+            if ordered[i] is not None:
+                raise CodeGenError(f"paramètre '{params[i].name}' fourni plusieurs fois")
             ordered[i] = arg.expr if isinstance(arg, NamedArg) else arg
-        missing = [params[i].name for i,x in enumerate(ordered) if x is None]
-        if missing: raise CodeGenError(f"paramètres manquants pour {callee_name}: {', '.join(missing)}")
+        missing = [params[i].name for i,x in enumerate(ordered) if x is None and params[i].default is None]
+        if missing:
+            raise CodeGenError(f"paramètres manquants pour {callee_name}: {', '.join(missing)}")
+        for i, x in enumerate(ordered):
+            if x is None:
+                ordered[i] = params[i].default
         return ordered
+
+    @staticmethod
+    def _implicit_type_match(param_type, arg_type):
+        if _type_matches(param_type, arg_type):
+            return 3
+        if isinstance(arg_type, tuple):
+            return 0
+        integer = set(INTEGER_TYPES)
+        floating = set(FLOAT_TYPES)
+        if arg_type in integer and param_type in integer:
+            return 2
+        if arg_type in integer and param_type in floating:
+            return 1
+        if arg_type in floating and param_type in floating:
+            return 2
+        return 0
 
     def resolve_call_target(self, call: Call, local_types: dict) -> Optional[FunctionDecl]:
         if isinstance(call.callee, Ident):
@@ -2250,9 +2401,10 @@ class CodeGen:
         scored = []
         for fn, ordered in prepared:
             arg_types = [self.infer_type(a, local_types) for a in ordered]
-            if len(fn.params) == len(ordered) and all(_type_matches(p.type, at) for p,at in zip(fn.params,arg_types)):
-                score = sum(1 if isinstance(at, tuple) else 2 for at in arg_types)
-                scored.append((score, fn))
+            if len(fn.params) == len(ordered):
+                scores = [self._implicit_type_match(p.type, at) for p, at in zip(fn.params, arg_types)]
+                if all(scores):
+                    scored.append((sum(scores), fn))
         if scored:
             best=max(x[0] for x in scored); matches=[fn for score,fn in scored if score==best]
         else:
@@ -2275,7 +2427,7 @@ class CodeGen:
         if isinstance(e, BoolLit):
             return "bool"
         if isinstance(e, Ident):
-            if e.name == "self" and self._current_class:
+            if e.name == "this" and self._current_class:
                 return self._current_class.name
             # implicit class members inside a method
             if self._current_class:
@@ -2297,6 +2449,8 @@ class CodeGen:
             return None
         if isinstance(e, NamespacedIdent):
             return None
+        if isinstance(e, CastExpr):
+            return e.target_type
         if isinstance(e, UnaryOp):
             if e.op == "!":
                 return "bool"
@@ -2306,6 +2460,10 @@ class CodeGen:
                 return "bool"
             return self.infer_type(e.left, local_types) or self.infer_type(e.right, local_types)
         if isinstance(e, Call):
+            if isinstance(e.callee, Ident) and e.callee.name in TYPE_KEYWORDS and e.callee.name not in self.classes and e.callee.name != "string":
+                raise CodeGenError(f"cast fonctionnel interdit : utilise la syntaxe C-style `({e.callee.name})expression`")
+            if self._is_reflection_call(e):
+                return self._reflection_member(e, local_types)[1].type
             if isinstance(e.callee, Ident) and e.callee.name in self.classes:
                 cls = self.classes[e.callee.name]
                 ctor = next((m for m in cls.methods if m.is_constructor), None)
@@ -2318,6 +2476,8 @@ class CodeGen:
                 if m is not None:
                     self._check_member_access(owner, m, e.callee.name)
                     return m.ret_type
+            if isinstance(e.callee, NamespacedIdent) and e.callee.namespace == "factory" and e.callee.name == "construct":
+                return "void_ptr"
             if isinstance(e.callee, NamespacedIdent) and self._current_class and e.callee.namespace in self.classes and self._current_class.base == e.callee.namespace:
                 owner, m = self._find_class_member(e.callee.namespace, e.callee.name, "method")
                 if m is not None:
@@ -2390,11 +2550,30 @@ class CodeGen:
         if member is None:
             owner, member=self._find_class_member(ot,e.name,"method")
         if member is None: raise CodeGenError(f"membre '{e.name}' absent de '{ot}'")
-        self._check_member_access(owner, member, e.name)
+        if not getattr(member, "is_exposed", False):
+            self._check_member_access(owner, member, e.name)
         if isinstance(member, ClassField):
-            if isinstance(e.obj, Ident) and self._current_class and e.obj.name=="self": return self._base_member_expr("self", self._current_class, e.name)
+            if isinstance(e.obj, Ident) and self._current_class and e.obj.name=="this": return self._base_member_expr("self", self._current_class, e.name)
             return self.gen_expr(e.obj,local_types)+"->"+e.name if owner.name==ot else self.gen_expr(e.obj,local_types)+"->_base."+e.name
         return self.gen_expr(e.obj,local_types)+"->"+e.name
+
+    def _is_reflection_call(self, e):
+        return (isinstance(e, Call) and isinstance(e.callee, MemberAccess)
+                and e.callee.name == "GetMember" and len(e.args) == 1
+                and isinstance(e.args[0], StringLit))
+
+    def _reflection_member(self, e, local_types):
+        obj = e.callee.obj
+        ot = self.infer_type(obj, local_types)
+        if ot not in self.classes:
+            raise CodeGenError("GetMember() ne peut être utilisé que sur une instance de classe")
+        name = e.args[0].value[1:-1]
+        owner, member = self._find_class_member(ot, name, "field")
+        if member is None or not getattr(member, "is_exposed", False):
+            raise CodeGenError(f"le membre '{name}' n'est pas exposé par réflexion sur '{ot}'")
+        # @exposed is an explicit reflection boundary: it may expose a
+        # private/protected field without changing ordinary member access.
+        return ot, member, obj, name
 
     def gen_expr(self, e, local_types: dict) -> str:
         if isinstance(e, IntLit):
@@ -2406,6 +2585,10 @@ class CodeGen:
         if isinstance(e, BoolLit):
             return "1" if e.value else "0"     # pas de <stdbool.h> en C89
         if isinstance(e, Ident):
+            if e.name == "this":
+                if not self._current_class:
+                    raise CodeGenError("'this' n'est disponible que dans une classe")
+                return "self"
             if self._current_class and e.name not in local_types and e.name not in self.global_types:
                 fowner, f=self._find_class_member(self._current_class.name,e.name,"field")
                 if f:
@@ -2419,11 +2602,16 @@ class CodeGen:
         if isinstance(e, MemberAccess):
             return self.gen_member_access(e, local_types)
         if isinstance(e, NamespacedIdent):
+            if e.namespace == "factory" and e.name == "construct":
+                return "_j_factory_construct"
             if self._current_class and e.namespace in self.classes:
                 owner, m = self._find_class_member(e.namespace, e.name, "method")
                 if m is not None and self._current_class.base == e.namespace:
                     return f"{e.namespace}_{e.name}(self" + (", " if m.params else "") + ", ".join(p.name for p in m.params) + ")"
             return self.default_mangle(e.name, e.namespace)
+        if isinstance(e, CastExpr):
+            # Casts are emitted exclusively in C-style form.
+            return f"({c_type(e.target_type)}){self.gen_expr(e.operand, local_types)}"
         if isinstance(e, UnaryOp):
             inner = self.gen_expr(e.operand, local_types)
             # -(-x) et non --x (qui serait un décrément en C) ; !(a && b)
@@ -2436,6 +2624,9 @@ class CodeGen:
             right = self._gen_operand(e.right, prec, local_types, is_right=True)
             return f"{left} {e.op} {right}"
         if isinstance(e, Call):
+            if self._is_reflection_call(e):
+                ot, member, obj, name = self._reflection_member(e, local_types)
+                return f"(*(({c_type(member.type)}*)_j_reflect_get_member((void*){self.gen_expr(obj, local_types)}, {e.args[0].value})))"
             # Appel direct à une méthode de la classe courante :
             # `printff()` doit devenir `MyClass_printff(self, ...)` et non
             # un appel C libre à `printff()`. Cela doit aussi passer par la
@@ -2455,6 +2646,10 @@ class CodeGen:
                         return f"self->_vptr->{method.name}((void*)self" + (", " + args if args else "") + ")"
                     return f"{owner.name}_{method.name}(self" + (", " + args if args else "") + ")"
 
+            if isinstance(e.callee, NamespacedIdent) and e.callee.namespace == "factory" and e.callee.name == "construct":
+                if len(e.args) != 1 or isinstance(e.args[0], NamedArg):
+                    raise CodeGenError("factory:construct() attend exactement un argument positionnel (le nom de classe)")
+                return f"_j_factory_construct({self.gen_expr(e.args[0], local_types)})"
             if isinstance(e.callee, Ident) and e.callee.name == "string":
                 if len(e.args) != 0:
                     raise CodeGenError("string() ne prend aucun argument ; utilisez un littéral string")
