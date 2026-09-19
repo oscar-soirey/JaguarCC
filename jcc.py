@@ -9,7 +9,7 @@ Pipeline : Lexer -> Parser (récursif descendant) -> AST
 
 Usage :
     python3 jcc.py mon_fichier.ja            # écrit le C sur stdout
-    python3 jcc.py mon_fichier.ja -o out.c
+    python3 jcc.py mon_fichier.ja -o out
     python3 jcc.py mon_fichier.ja --c89      # C89 strict (voir plus bas)
     cat mon_fichier.ja | python3 jcc.py      # lecture depuis stdin
 
@@ -99,6 +99,7 @@ Déclarations de variables et ordre du code généré :
 """
 
 import sys
+import subprocess
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Tuple
 
@@ -726,6 +727,10 @@ class Parser:
                 self.expect(";")
                 if is_virtual:
                     raise ParseError(f"'virtual' ne peut s'appliquer qu'à une méthode (ligne {self.peek().line})")
+                if exposed and access != "public":
+                    raise ParseError(
+                        f"une variable @exposed doit être publique (ligne {self.peek().line})"
+                    )
                 methods.append(None) if False else fields.append(ClassField(ret_type, member_name, access, init, field_const, exposed))
         self.expect("}")
         return ClassDecl(name, base, fields, methods, "register" in class_attrs)
@@ -1593,10 +1598,17 @@ class CodeGen:
             parts.append(runtime)
         reflection = self._native_reflection_runtime()
         if reflection:
-            # Prototypes are enough for code emitted before the implementation.
-            if any(c.is_registered for c in self.classes.values() if c.name != "string"):
-                parts.append("static void *_j_factory_construct(string *name);")
-            parts.append("static void *_j_reflect_get_member(void *obj, const char *name);")
+            parts.append(self._native_reflection_prelude())
+            # La factory est une API runtime dynamique : son symbole doit
+            # toujours être déclaré avant le code utilisateur dès que le
+            # runtime réflexion/factory est présent. On ne peut pas dépendre
+            # de la présence d'une classe @register ici, car l'appel
+            # `factory:construct(name)` peut utiliser un nom dynamique.
+            parts.append("static void *_j_factory_construct(string *name);")
+            "static void *_j_reflect_get_member(void *obj, const char *name) { _jReflectEntry *e=_j_reflect_find(obj,name); if(!e){fprintf(stderr,\"Jaguar runtime error: member '%s' does not exist or is not exposed\\n\",name?name:\"<null>\"); return 0;} return e->ptr; }",
+            parts.append("static _jBool _j_reflect_member_exists(void *obj, const char *name);")
+            parts.append("static void _j_reflect_set_member(void *obj, const char *name, const char *type_name, long long si, unsigned long long ui, double f, string *str, void *ptr);")
+            parts.append("static void _j_reflect_print(void *obj, const char *name);")
         for item in self.program.items:
             parts.append(self.gen_item(item))
         if reflection:
@@ -1730,25 +1742,66 @@ class CodeGen:
         return used
 
 
+    def _native_reflection_prelude(self):
+        return "\n".join([
+            "typedef struct _jReflectEntry { const char *name; void *ptr; const char *type_name; } _jReflectEntry;",
+            "typedef struct _jReflectMap { _jReflectEntry *entries; size_t count; } _jReflectMap;",
+            "typedef struct _jReflectVTable { const char *type_name; _jReflectEntry *(*get_member)(void*, const char*); } _jReflectVTable;",
+            "static _jReflectEntry *_j_reflect_find(void *obj, const char *name) { _jReflectVTable *vt; if (!obj || !name) return 0; vt=*(_jReflectVTable**)obj; return (vt&&vt->get_member)?vt->get_member(obj,name):0; }",
+            "static void *_j_reflect_get_member(void *obj, const char *name) { _jReflectEntry *e=_j_reflect_find(obj,name); if(!e){fprintf(stderr,\"Jaguar runtime error: member '%s' does not exist or is not exposed\\n\",name?name:\"<null>\"); return 0;} return e->ptr; }",
+            "static const char *_j_reflect_get_type(void *obj, const char *name) { _jReflectEntry *e=_j_reflect_find(obj,name); return e?e->type_name:0; }",
+            "static _jBool _j_reflect_member_exists(void *obj,const char *name) { return _j_reflect_find(obj,name)!=0; }",
+            "",
+            "static void _j_reflect_set_member(void *obj,const char *name,const char *src_type,long long si,unsigned long long ui,double f,string *str,void *ptr) {",
+            "    _jReflectEntry *e=_j_reflect_find(obj,name); if(!e||!e->ptr||!e->type_name||!src_type){fprintf(stderr,\"Jaguar runtime error: member '%s' does not exist or is not exposed\\n\",name?name:\"<null>\");return;}",
+            '    if(!strcmp(e->type_name,"string")&&!strcmp(src_type,"string")){*(string**)e->ptr=str;return;}',
+            '    if(!strcmp(e->type_name,"i32")||!strcmp(e->type_name,"int")){*(int*)e->ptr=(int)(f && (!strcmp(src_type,"f32")||!strcmp(src_type,"f64")||!strcmp(src_type,"float")) ? f : si);return;}',
+            '    if(!strcmp(e->type_name,"u32")){*(unsigned int*)e->ptr=(unsigned int)ui;return;}',
+            '    if(!strcmp(e->type_name,"i64")){*(long long*)e->ptr=(long long)si;return;}',
+            '    if(!strcmp(e->type_name,"u64")){*(unsigned long long*)e->ptr=(unsigned long long)ui;return;}',
+            '    if(!strcmp(e->type_name,"f32")||!strcmp(e->type_name,"float")){*(float*)e->ptr=(float)f;return;}',
+            '    if(!strcmp(e->type_name,"f64")){*(double*)e->ptr=f;return;}',
+            '    if(!strcmp(e->type_name,"bool")){*(unsigned char*)e->ptr=(unsigned char)si;return;}',
+            "    fprintf(stderr,\"Jaguar runtime error: cannot assign value of type '%s' to reflected member '%s' of type '%s'\\n\",src_type,name?name:\"<null>\",e->type_name);",
+            "}",
+        ])
+
     def _native_reflection_runtime(self):
-        registered = [c for c in self.classes.values() if c.name != "string" and c.is_registered]
-        if not registered and not any(getattr(f, "is_exposed", False) for c in self.classes.values() for f in c.fields):
-            return ""
-        lines = [
-            "/* Jaguar native reflection / factory runtime. */",
-            "#include <string.h>",
-            "typedef struct _jReflectVTable { const char *type_name; void *(*get_member)(void*, const char*); } _jReflectVTable;",
-            "static void *_j_reflect_get_member(void *obj, const char *name) {",
-            "    if (!obj || !name) return 0;",
-            "    _jReflectVTable *vt = *(_jReflectVTable**)obj;",
-            "    return (vt && vt->get_member) ? vt->get_member(obj, name) : 0;",
+        registered=[c for c in self.classes.values() if c.name!="string" and c.is_registered]
+        exposed_any=any(getattr(f,"is_exposed",False) for c in self.classes.values() for f in c.fields)
+        # Le runtime factory doit exister même lorsqu'aucune classe n'est
+        # actuellement enregistrée : `factory:construct()` est résolu au
+        # runtime et son argument peut être une string dynamique.
+        lines=[
+            "/* Jaguar native dynamic reflection / factory runtime. */", "#include <string.h>",
+            "static void _j_reflect_print(void *obj,const char *name) {",
+            "    _jReflectEntry *e=_j_reflect_find(obj,name); if(!e){printf(\"<null>\\n\");return;}",
+            "    if(!strcmp(e->type_name,\"string\")){string *s=*(string**)e->ptr;printf(\"%s\\n\",(s&&s->data)?s->data:\"\");}",
+            "    else if(!strcmp(e->type_name,\"bool\")){printf(\"%s\\n\",*(unsigned char*)e->ptr?\"true\":\"false\");}",
+            "    else if(!strcmp(e->type_name,\"i32\")||!strcmp(e->type_name,\"int\")){printf(\"%d\\n\",*(int*)e->ptr);}",
+            "    else if(!strcmp(e->type_name,\"u32\")){printf(\"%u\\n\",*(unsigned int*)e->ptr);}",
+            "    else if(!strcmp(e->type_name,\"i64\")){printf(\"%lld\\n\",*(long long*)e->ptr);}",
+            "    else if(!strcmp(e->type_name,\"u64\")){printf(\"%llu\\n\",*(unsigned long long*)e->ptr);}",
+            "    else if(!strcmp(e->type_name,\"f32\")||!strcmp(e->type_name,\"float\")){printf(\"%g\\n\",(double)*(float*)e->ptr);}",
+            "    else if(!strcmp(e->type_name,\"f64\")){printf(\"%g\\n\",*(double*)e->ptr);}",
+            "    else printf(\"<object:%s>\\n\",e->type_name);",
             "}",
         ]
-        if registered:
-            lines += ["static void *_j_factory_construct(string *name) {", "    if (!name || !name->data) return 0;"]
-            for c in registered:
-                lines.append(f'    if (strcmp(name->data, "{c.name}") == 0) return (void*){c.name}_ctor();')
-            lines += ["    return 0;", "}"]
+        lines += [
+            "static void *_j_factory_construct(string *name) {",
+            "    if(!name||!name->data) {",
+            '        fprintf(stderr, "Jaguar runtime error: factory:construct() received a null class name\\n");',
+            "        abort();",
+            "    }",
+        ]
+        for c in registered:
+            lines.append(f'    if(strcmp(name->data,"{c.name}")==0)return(void*){c.name}_ctor();')
+        lines += [
+            '    fprintf(stderr, "Jaguar runtime error: cannot construct class \'%s\': class is not registered\\n", name->data);',
+            "    abort();",
+            "    return 0;",
+            "}",
+        ]
         return "\n".join(lines)
 
     # -- déclarations --
@@ -1811,7 +1864,7 @@ class CodeGen:
 
     def _class_all_fields(self, cls):
         out=[]
-        if cls.base: out += [(cls.base, f) for f in self._class_all_fields(self.classes[cls.base])]
+        if cls.base: out += self._class_all_fields(self.classes[cls.base])
         out += [(cls.name, f) for f in cls.fields]
         return out
 
@@ -1831,13 +1884,15 @@ class CodeGen:
         lines.append(f"struct {cls.name} {{")
         lines.append(f"    {cls.name}_vtable *_vptr;")
         if cls.base: lines.append(f"    {cls.base} _base;")
+        if any(getattr(f, "is_exposed", False) for _, f in self._class_all_fields(cls)):
+            lines.append("    _jReflectMap _reflect_map;")
         for f in cls.fields: lines.append(f"    {'const ' if f.is_const else ''}{c_type(f.type)} {f.name};")
         lines.append("};")
         lines.append(f"struct {cls.name}_vtable {{")
         # Keep reflection metadata first so every class vtable has the same
         # native prefix and can be inspected through _jReflectVTable.
         lines.append("    const char *type_name;")
-        lines.append("    void *(*get_member)(void *self, const char *name);")
+        lines.append("    _jReflectEntry *(*get_member)(void *self, const char *name);")
         virt=[]
         for m in self._all_virtual_methods(cls):
             virt.append(m)
@@ -1846,11 +1901,13 @@ class CodeGen:
         lines.append("};")
         # Native reflection: each registered/exposed class gets a typed member lookup.
         exposed = [f for f in self._class_all_fields(cls) if getattr(f[1], "is_exposed", False)]
-        lines.append(f"static void *{cls.name}_get_member(void *obj, const char *name) {{")
+        lines.append(f"static _jReflectEntry *{cls.name}_get_member(void *obj, const char *name) {{")
         lines.append(f"    {cls.name} *self = ({cls.name}*)obj;")
-        for owner, f in exposed:
-            access_expr = self._base_member_expr("self", cls, f.name)
-            lines.append(f"    if (strcmp(name, \"{f.name}\") == 0) return (void*)&{access_expr};")
+        if exposed:
+            lines.append("    size_t i;")
+            lines.append("    if (!self->_reflect_map.entries) return 0;")
+            lines.append("    for (i = 0; i < self->_reflect_map.count; ++i)")
+            lines.append("        if (strcmp(self->_reflect_map.entries[i].name, name) == 0) return &self->_reflect_map.entries[i];")
         lines.append("    return 0;")
         lines.append("}")
         # constructors/prototypes are needed before method bodies
@@ -1901,7 +1958,20 @@ class CodeGen:
                     args=", ".join(p.name for p in ctor_params) if [p.type for p in bctor.params]==[p.type for p in ctor_params] else ""
                     if [p.type for p in bctor.params] != [p.type for p in ctor_params]:
                         raise CodeGenError(f"le constructeur de '{cls.name}' doit fournir les mêmes paramètres que celui de '{cls.base}' dans cette implémentation")
-                    lines.append(f"    {{ {cls.base} *_base_tmp = {cls.base}_ctor({args}); if (_base_tmp) {{ self->_base = *_base_tmp; free(_base_tmp); }} }}")
+                    base_has_reflection = any(getattr(f, "is_exposed", False) for _, f in self._class_all_fields(self.classes[cls.base]))
+                    if base_has_reflection:
+                        lines.append(f"    {{ {cls.base} *_base_tmp = {cls.base}_ctor({args}); if (_base_tmp) {{ self->_base = *_base_tmp; _base_tmp->_reflect_map.entries = 0; _base_tmp->_reflect_map.count = 0; free(_base_tmp); }} }}")
+                    else:
+                        lines.append(f"    {{ {cls.base} *_base_tmp = {cls.base}_ctor({args}); if (_base_tmp) {{ self->_base = *_base_tmp; free(_base_tmp); }} }}")
+            if exposed:
+                lines.append(f"    self->_reflect_map.count = {len(exposed)};")
+                lines.append(f"    self->_reflect_map.entries = (_jReflectEntry*)calloc({len(exposed)}, sizeof(_jReflectEntry));")
+                lines.append("    if (!self->_reflect_map.entries) { free(self); return 0; }")
+                for idx, (owner, f) in enumerate(exposed):
+                    access_expr = self._base_member_expr("self", cls, f.name)
+                    lines.append(f'    self->_reflect_map.entries[{idx}].name = "{f.name}";')
+                    lines.append(f"    self->_reflect_map.entries[{idx}].ptr = (void*)&{access_expr};")
+                    lines.append(f'    self->_reflect_map.entries[{idx}].type_name = "{f.type}";')
             for f in cls.fields:
                 if f.init is not None: lines.append(f"    self->{f.name} = {self.gen_expr(f.init, {p.name:p.type for p in ctor_params})};")
             # user ctor body
@@ -2040,7 +2110,11 @@ class CodeGen:
     def _scope_cleanup_lines(self, owned) -> List[str]:
         out = []
         for name, type_name in reversed(owned):
-            out.append(f"{type_name}_destr({name});")
+            # Une instance de classe peut être NULL si sa construction
+            # dynamique (ex: factory:construct) a échoué. Dans ce cas,
+            # n'appelle surtout pas le destructeur : un destructeur Jaguar
+            # suppose que l'objet existe réellement.
+            out.append(f"if ({name}) {type_name}_destr({name});")
             out.append(f"free({name});")
         return out
 
@@ -2084,6 +2158,12 @@ class CodeGen:
                     if len(s.init.args) != 1:
                         raise CodeGenError("factory:construct() attend exactement un nom de classe")
                     init = f"({s.type}*)_j_factory_construct({self.gen_expr(s.init.args[0].expr if isinstance(s.init.args[0], NamedArg) else s.init.args[0], local_types)})"
+                elif s.init is not None and isinstance(s.init, Call) and self._is_reflection_call(s.init):
+                    # GetMember() est dynamique et retourne un void*. Dans un
+                    # contexte typé, le type déclaré de la destination fournit
+                    # implicitement le type à lire. Pas besoin d'écrire
+                    # `(int)h.GetMember(name)`.
+                    init = self._gen_reflection_value(s.init, s.type, local_types)
                 else:
                     init = self.gen_expr(s.init, local_types) if s.init is not None else None
                 local_types[s.name] = s.type
@@ -2145,9 +2225,16 @@ class CodeGen:
             return cleanup + [f"return {expr};"]
         if isinstance(s, MemberAssignStmt):
             if self._is_reflection_call(s.target):
-                ot, member, obj, name = self._reflection_member(s.target, local_types)
-                target = f"(*(({c_type(member.type)}*)_j_reflect_get_member((void*){self.gen_expr(obj, local_types)}, {s.target.args[0].value})))"
-                return [f"{target} = {self.gen_expr(s.expr, local_types)};"]
+                self._validate_reflection_call(s.target, local_types)
+                obj=self.gen_expr(s.target.callee.obj,local_types); name=self.gen_expr(s.target.args[0],local_types)
+                t=self.infer_type(s.expr,local_types); expr=self.gen_expr(s.expr,local_types)
+                if isinstance(t,tuple): t="i32" if t[1]=="int" else "f64"
+                if t == "string": call = f'_j_reflect_set_member((void*){obj},{name}->data,"string",0,0,0.0,{expr},0)'
+                elif t in ("f32","float","f64"): call = f'_j_reflect_set_member((void*){obj},{name}->data,"{t}",0,0,(double)({expr}),0,0)'
+                elif t == "bool": call = f'_j_reflect_set_member((void*){obj},{name}->data,"bool",(long long)({expr}),0,0.0,0,0)'
+                elif t in INTEGER_TYPES: call = f'_j_reflect_set_member((void*){obj},{name}->data,"{t}",(long long)({expr}),(unsigned long long)({expr}),0.0,0,0)'
+                else: call = f'_j_reflect_set_member((void*){obj},{name}->data,"{t}",0,0,0.0,0,(void*)({expr}))'
+                return [call + ";"]
             ot = self.infer_type(s.target.obj, local_types)
             owner, member = self._find_class_member(ot, s.target.name, "field") if ot in self.classes else (None, None)
             if member is not None and getattr(member, "is_const", False):
@@ -2463,13 +2550,35 @@ class CodeGen:
             if isinstance(e.callee, Ident) and e.callee.name in TYPE_KEYWORDS and e.callee.name not in self.classes and e.callee.name != "string":
                 raise CodeGenError(f"cast fonctionnel interdit : utilise la syntaxe C-style `({e.callee.name})expression`")
             if self._is_reflection_call(e):
-                return self._reflection_member(e, local_types)[1].type
+                self._validate_reflection_call(e, local_types)
+                return "void_ptr"
+            if self._is_reflection_member_exists_call(e):
+                self._validate_member_exists_call(e, local_types)
+                return "bool"
+            if self._is_reflection_set_member_call(e):
+                self._validate_set_member_call(e, local_types)
+                return "void"
             if isinstance(e.callee, Ident) and e.callee.name in self.classes:
                 cls = self.classes[e.callee.name]
                 ctor = next((m for m in cls.methods if m.is_constructor), None)
                 if ctor is None and e.args:
                     raise CodeGenError(f"'{cls.name}' n'a pas de constructeur prenant des arguments")
                 return cls.name
+            if self._is_reflection_member_exists_call(e):
+                self._validate_member_exists_call(e, local_types)
+                obj=self.gen_expr(e.callee.obj,local_types); name=self.gen_expr(e.args[0],local_types)
+                return f"_j_reflect_member_exists((void*){obj},{name}->data)"
+            if self._is_reflection_set_member_call(e):
+                self._validate_set_member_call(e, local_types)
+                obj=self.gen_expr(e.callee.obj,local_types); name=self.gen_expr(e.args[0],local_types)
+                value=e.args[1]; t=self.infer_type(value,local_types); expr=self.gen_expr(value,local_types)
+                if isinstance(t,tuple): t="i32" if t[1]=="int" else "f64"
+                if t == "string": call = f'_j_reflect_set_member((void*){obj},{name}->data,"string",0,0,0.0,{expr},0)'
+                elif t in ("f32","float","f64"): call = f'_j_reflect_set_member((void*){obj},{name}->data,"{t}",0,0,(double)({expr}),0,0)'
+                elif t == "bool": call = f'_j_reflect_set_member((void*){obj},{name}->data,"bool",(long long)({expr}),0,0.0,0,0)'
+                elif t in INTEGER_TYPES: call = f'_j_reflect_set_member((void*){obj},{name}->data,"{t}",(long long)({expr}),(unsigned long long)({expr}),0.0,0,0)'
+                else: call = f'_j_reflect_set_member((void*){obj},{name}->data,"{t}",0,0,0.0,0,(void*)({expr}))'
+                return call
             if isinstance(e.callee, MemberAccess):
                 ot = self.infer_type(e.callee.obj, local_types)
                 owner, m = self._find_class_member(ot, e.callee.name, "method") if ot in self.classes else (None, None)
@@ -2503,15 +2612,19 @@ class CodeGen:
         return s
 
     def _base_member_expr(self, root, cls, name):
-        cur=cls
-        expr=root
+        cur = cls
+        expr = root
+        first = True
         while cur:
             for f in cur.fields:
-                if f.name==name: return expr+"->"+f.name
+                if f.name == name:
+                    return (expr + "->" + f.name) if first else (expr + "." + f.name)
             if cur.base:
-                expr += "->_base"
-                cur=self.classes[cur.base]
-            else: break
+                expr = expr + "->_base" if first else expr + "._base"
+                first = False
+                cur = self.classes[cur.base]
+            else:
+                break
         raise CodeGenError(f"membre '{name}' introuvable dans la classe '{cls.name}'")
 
     def _class_can_access(self, owner, member) -> bool:
@@ -2559,21 +2672,58 @@ class CodeGen:
 
     def _is_reflection_call(self, e):
         return (isinstance(e, Call) and isinstance(e.callee, MemberAccess)
-                and e.callee.name == "GetMember" and len(e.args) == 1
-                and isinstance(e.args[0], StringLit))
+                and e.callee.name == "GetMember" and len(e.args) == 1)
 
-    def _reflection_member(self, e, local_types):
-        obj = e.callee.obj
-        ot = self.infer_type(obj, local_types)
-        if ot not in self.classes:
-            raise CodeGenError("GetMember() ne peut être utilisé que sur une instance de classe")
-        name = e.args[0].value[1:-1]
-        owner, member = self._find_class_member(ot, name, "field")
-        if member is None or not getattr(member, "is_exposed", False):
-            raise CodeGenError(f"le membre '{name}' n'est pas exposé par réflexion sur '{ot}'")
-        # @exposed is an explicit reflection boundary: it may expose a
-        # private/protected field without changing ordinary member access.
-        return ot, member, obj, name
+    def _is_reflection_member_exists_call(self, e):
+        return (isinstance(e, Call) and isinstance(e.callee, MemberAccess)
+                and e.callee.name == "MemberExists" and len(e.args) == 1)
+
+    def _is_reflection_set_member_call(self, e):
+        return (isinstance(e, Call) and isinstance(e.callee, MemberAccess)
+                and e.callee.name == "SetMember" and len(e.args) == 2)
+
+    def _validate_reflection_call(self, e, local_types):
+        ot=self.infer_type(e.callee.obj,local_types)
+        if ot not in self.classes: raise CodeGenError("GetMember() ne peut être utilisé que sur une instance de classe")
+        if self.infer_type(e.args[0],local_types)!="string": raise CodeGenError("GetMember() attend un nom de membre de type 'string'")
+        return ot
+
+    def _validate_member_exists_call(self, e, local_types):
+        ot=self.infer_type(e.callee.obj,local_types)
+        if ot not in self.classes: raise CodeGenError("MemberExists() ne peut être utilisé que sur une instance de classe")
+        if self.infer_type(e.args[0],local_types)!="string": raise CodeGenError("MemberExists() attend un nom de membre de type 'string'")
+        return ot
+
+    def _validate_set_member_call(self, e, local_types):
+        ot=self.infer_type(e.callee.obj,local_types)
+        if ot not in self.classes: raise CodeGenError("SetMember() ne peut être utilisé que sur une instance de classe")
+        if self.infer_type(e.args[0],local_types)!="string": raise CodeGenError("SetMember() attend un nom de membre de type 'string' en premier argument")
+        if len(e.args) != 2: raise CodeGenError("SetMember() attend exactement 2 arguments")
+        if self.infer_type(e.args[1],local_types) is None: raise CodeGenError("SetMember() ne peut pas déterminer le type de la valeur")
+        return ot
+
+    def _gen_reflection_value(self, call, target_type, local_types: dict) -> str:
+        """Convertit implicitement le pointeur retourné par GetMember() en
+        une valeur du type attendu par le contexte (ex: `int v =
+        h.GetMember(name)`). Le nom du membre reste entièrement dynamique :
+        seul le type attendu par le code appelant est connu à la compilation.
+        """
+        self._validate_reflection_call(call, local_types)
+        obj = self.gen_expr(call.callee.obj, local_types)
+        name = self.gen_expr(call.args[0], local_types)
+        ptr = f"_j_reflect_get_member((void*){obj},{name}->data)"
+        target = canonical_type(target_type)
+        if target in INTEGER_TYPES:
+            return f"(({c_type(target)})({ptr} ? *({c_type(target)}*){ptr} : 0))"
+        if target in ("f32", "float", "f64", "double"):
+            return f"(({c_type(target)})({ptr} ? *({c_type(target)}*){ptr} : 0.0))"
+        if target == "bool":
+            return f"(({c_type(target)})({ptr} ? *({c_type(target)}*){ptr} : 0))"
+        if target == "string":
+            return f'(({ptr} && *(string**){ptr}) ? string_from_cstr((*(string**){ptr})->data) : string_from_cstr(""))'
+        # Pour les types de classes/pointeurs, GetMember() fournit
+        # directement la valeur stockée.
+        return f"({c_type(target)}){ptr}"
 
     def gen_expr(self, e, local_types: dict) -> str:
         if isinstance(e, IntLit):
@@ -2610,7 +2760,29 @@ class CodeGen:
                     return f"{e.namespace}_{e.name}(self" + (", " if m.params else "") + ", ".join(p.name for p in m.params) + ")"
             return self.default_mangle(e.name, e.namespace)
         if isinstance(e, CastExpr):
-            # Casts are emitted exclusively in C-style form.
+            # GetMember() retourne volontairement un pointeur vers la vraie
+            # valeur stockée dans l'objet. Un cast Jaguar vers un type valeur
+            # doit donc déréférencer ce pointeur, au lieu de convertir
+            # directement l'adresse en entier (ce qui donnait l'adresse du
+            # champ, tronquée en i32).
+            if isinstance(e.operand, Call) and self._is_reflection_call(e.operand):
+                self._validate_reflection_call(e.operand, local_types)
+                obj = self.gen_expr(e.operand.callee.obj, local_types)
+                name = self.gen_expr(e.operand.args[0], local_types)
+                target = e.target_type
+                ptr = f"_j_reflect_get_member((void*){obj},{name}->data)"
+                if target in INTEGER_TYPES:
+                    return f"(({c_type(target)})({ptr} ? *({c_type(target)}*){ptr} : 0))"
+                if target in ("f32", "float", "f64", "double"):
+                    return f"(({c_type(target)})({ptr} ? *({c_type(target)}*){ptr} : 0.0))"
+                if target == "bool":
+                    return f"(({c_type(target)})({ptr} ? *({c_type(target)}*){ptr} : 0))"
+                if target == "string":
+                    return f'(({ptr} && *(string**){ptr}) ? string_from_cstr((*(string**){ptr})->data) : string_from_cstr(""))'
+                # Pour les types pointeurs/classes, GetMember() fournit déjà
+                # directement l'adresse/valeur stockée.
+                return f"({c_type(target)}){ptr}"
+            # Casts ordinaires : forme C classique.
             return f"({c_type(e.target_type)}){self.gen_expr(e.operand, local_types)}"
         if isinstance(e, UnaryOp):
             inner = self.gen_expr(e.operand, local_types)
@@ -2625,8 +2797,9 @@ class CodeGen:
             return f"{left} {e.op} {right}"
         if isinstance(e, Call):
             if self._is_reflection_call(e):
-                ot, member, obj, name = self._reflection_member(e, local_types)
-                return f"(*(({c_type(member.type)}*)_j_reflect_get_member((void*){self.gen_expr(obj, local_types)}, {e.args[0].value})))"
+                self._validate_reflection_call(e, local_types)
+                obj=self.gen_expr(e.callee.obj,local_types); name=self.gen_expr(e.args[0],local_types)
+                return f"_j_reflect_get_member((void*){obj},{name}->data)"
             # Appel direct à une méthode de la classe courante :
             # `printff()` doit devenir `MyClass_printff(self, ...)` et non
             # un appel C libre à `printff()`. Cela doit aussi passer par la
@@ -2654,6 +2827,21 @@ class CodeGen:
                 if len(e.args) != 0:
                     raise CodeGenError("string() ne prend aucun argument ; utilisez un littéral string")
                 return "string_ctor()"
+            if self._is_reflection_member_exists_call(e):
+                self._validate_member_exists_call(e, local_types)
+                obj=self.gen_expr(e.callee.obj,local_types); name=self.gen_expr(e.args[0],local_types)
+                return f"_j_reflect_member_exists((void*){obj},{name}->data)"
+            if self._is_reflection_set_member_call(e):
+                self._validate_set_member_call(e, local_types)
+                obj=self.gen_expr(e.callee.obj,local_types); name=self.gen_expr(e.args[0],local_types)
+                value=e.args[1]; t=self.infer_type(value,local_types); expr=self.gen_expr(value,local_types)
+                if isinstance(t,tuple): t="i32" if t[1]=="int" else "f64"
+                if t == "string": call = f'_j_reflect_set_member((void*){obj},{name}->data,"string",0,0,0.0,{expr},0)'
+                elif t in ("f32","float","f64"): call = f'_j_reflect_set_member((void*){obj},{name}->data,"{t}",0,0,(double)({expr}),0,0)'
+                elif t == "bool": call = f'_j_reflect_set_member((void*){obj},{name}->data,"bool",(long long)({expr}),0,0.0,0,0)'
+                elif t in INTEGER_TYPES: call = f'_j_reflect_set_member((void*){obj},{name}->data,"{t}",(long long)({expr}),(unsigned long long)({expr}),0.0,0,0)'
+                else: call = f'_j_reflect_set_member((void*){obj},{name}->data,"{t}",0,0,0.0,0,(void*)({expr}))'
+                return call
             if isinstance(e.callee, MemberAccess):
                 ot = self.infer_type(e.callee.obj, local_types)
                 if ot == "string":
@@ -2705,6 +2893,10 @@ class CodeGen:
                 if isinstance(e.callee, NamespacedIdent) and (
                     e.callee.namespace, e.callee.name
                 ) == ("sys", "print"):
+                    if self._is_reflection_call(e.args[0]):
+                        self._validate_reflection_call(e.args[0], local_types)
+                        robj=self.gen_expr(e.args[0].callee.obj,local_types); rname=self.gen_expr(e.args[0].args[0],local_types)
+                        return f"_j_reflect_print((void*){robj},{rname}->data)"
                     arg_type = self.infer_type(e.args[0], local_types)
                     callee_str = self._system_print_function(arg_type)
                     if callee_str is None:
@@ -2776,8 +2968,28 @@ def main(argv):
         return 1
 
     if out_path:
-        with open(out_path, "w", encoding="utf-8") as f:
+        if out_path.endswith(".c"):
+            print("Erreur Jaguar: le nom de sortie doit être donné sans l'extension .c (ex: -o out)", file=sys.stderr)
+            return 1
+
+        c_path = out_path + ".c"
+        with open(c_path, "w", encoding="utf-8") as f:
             f.write(c_code)
+
+        print(f"Jaguar: C généré dans {c_path}")
+        print(f"Jaguar: compilation GCC -> {out_path}")
+        try:
+            result = subprocess.run(
+                ["gcc", c_path, "-o", out_path],
+                check=False,
+            )
+        except OSError as e:
+            print(f"Erreur Jaguar: impossible de lancer gcc: {e}", file=sys.stderr)
+            return 1
+
+        if result.returncode != 0:
+            print(f"Erreur Jaguar: gcc a échoué avec le code {result.returncode}", file=sys.stderr)
+            return result.returncode
     else:
         sys.stdout.write(c_code)
     return 0

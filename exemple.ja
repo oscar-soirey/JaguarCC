@@ -1,67 +1,15 @@
-#define M_PI 3.141
-
-//types standards
-i32 add(i32 a, i32 b) {
-  return a+b;
-}
-
-//surcharge : meme nom, types differents
-float add(float a, float b) {
-  return a+b;
-}
-
-//surcharge : arite differente
-i32 add(i32 a, i32 b, i32 c) {
-  return a+b+c;
-}
-
-//@extern desactive le name mangling
-@extern void jaguar_init() {
-  //contenu
-  string e;
-int a;
-a=10;
-e = "hello";
-bool b=true;
-}
-
-namespace physics {
-  //surcharge dans un namespace
-  f32 compute(f32 x) {
-    return x*x;
-  }
-
-  f64 compute(f64 x) {
-    return x*x;
-  }
-  
-  namespace common {
-	f32 GetCommon(){return 0;}
-  }
-}
-
-struct vector2_t {
-  f32 x;
-  f32 y;
-  bool normalized;
-}
-
-//renvoie un type concret (f32), ce qui leve l'ambiguite au niveau de l'appel
-f32 make_speed(f32 v) {
-  return v;
-}
-
-
-class MyClass {
+@register class MyClass {
 	constr(){ sys:print("hello from class"); }
 	destr() { sys:print("bye from class"); }
 	
-	@exposed int value=10;
+	@exposed int$ value=10;
 }
 
 
 void main(string param) {
 
-MyClass h = factory:construct(param);
+MyClass h = factory:construct("MyClass");
+h.SetMember(param, 43);
+sys:print(h.value);
 
 }
