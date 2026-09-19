@@ -519,6 +519,7 @@ class FunctionDecl:
     namespace: Optional[str] = None
     is_extern: bool = False
     is_const: bool = False
+    is_prototype: bool = False
     # rempli par le Resolver (nom final choisi pour le C généré)
     mangled_name: Optional[str] = None
 
@@ -853,8 +854,18 @@ class Parser:
         suffix_const = False
         if self.peek().kind == "const":
             self.advance(); suffix_const = True
+
+        # Prototype : `int add(int a, int b);`
+        # Il n'a pas de corps Jaguar et sera émis comme une déclaration C.
+        if self.peek().kind == ";":
+            self.advance()
+            return FunctionDecl(
+                ret_type, name_tok.value, params, Block([]), namespace,
+                is_extern, prefix_const or suffix_const, True
+            )
+
         body = self.parse_block()
-        return FunctionDecl(ret_type, name_tok.value, params, body, namespace, is_extern, prefix_const or suffix_const)
+        return FunctionDecl(ret_type, name_tok.value, params, body, namespace, is_extern, prefix_const or suffix_const, False)
 
     # -- bloc / instructions --
     def parse_block(self) -> Block:
@@ -1184,16 +1195,46 @@ class Resolver:
 
     def __init__(self, program: Program):
         self.program = program
+        raw_groups: Dict[FuncKey, List[FunctionDecl]] = {}
+        self._all_functions: List[FunctionDecl] = []
         self.groups: Dict[FuncKey, List[FunctionDecl]] = {}
         self.classes: Dict[str, ClassDecl] = {}
         for item in program.items:
             if isinstance(item, FunctionDecl):
                 key = (item.namespace, item.name)
-                self.groups.setdefault(key, []).append(item)
+                raw_groups.setdefault(key, []).append(item)
+                self._all_functions.append(item)
             elif isinstance(item, ClassDecl):
                 if item.name in self.classes:
                     raise ResolverError(f"classe '{item.name}' déclarée plusieurs fois")
                 self.classes[item.name] = item
+        # Fusionne les prototypes et définitions ayant exactement la même
+        # signature. Un prototype + une définition est valide ; deux
+        # définitions ou deux prototypes identiques ne le sont pas.
+        for key, fns in raw_groups.items():
+            by_sig: Dict[tuple, List[FunctionDecl]] = {}
+            for fn in fns:
+                sig = tuple(p.type for p in fn.params)
+                by_sig.setdefault(sig, []).append(fn)
+            representatives = []
+            for sig, same in by_sig.items():
+                defs = [fn for fn in same if not fn.is_prototype]
+                protos = [fn for fn in same if fn.is_prototype]
+                if len(defs) > 1:
+                    raise ResolverError(
+                        f"fonction '{key[1]}' définie plusieurs fois avec la même signature"
+                    )
+                if len(protos) > 1:
+                    raise ResolverError(
+                        f"prototype de '{key[1]}' déclaré plusieurs fois avec la même signature"
+                    )
+                if defs and protos:
+                    rep = defs[0]
+                else:
+                    rep = same[0]
+                representatives.append(rep)
+            self.groups[key] = representatives
+
         self._resolve_classes()
 
     def _resolve_classes(self):
@@ -1216,6 +1257,8 @@ class Resolver:
                 m.mangled_name=f"{cls.name}_{m.name}"
 
     def resolve(self) -> Dict[FuncKey, List[FunctionDecl]]:
+        # Les noms C sont calculés par signature logique, puis propagés à
+        # toutes les déclarations correspondantes (prototype et définition).
         for (namespace, name), fns in self.groups.items():
             if name in LIBC_FUNCTION_NAMES and any(not fn.is_extern for fn in fns):
                 raise ResolverError(f"le nom de fonction '{name}' est réservé par la libc et ne peut pas être utilisé en Jaguar")
@@ -1230,6 +1273,15 @@ class Resolver:
                     fn.mangled_name = f"{prefix}{name}_{suffix}"
                 else:
                     fn.mangled_name = f"{prefix}{name}"
+
+        # Même nom C pour les prototypes et leurs définitions.
+        for item in self._all_functions:
+            if item.mangled_name is not None:
+                continue
+            key = (item.namespace, item.name)
+            sig = tuple(p.type for p in item.params)
+            rep = next(fn for fn in self.groups[key] if tuple(p.type for p in fn.params) == sig)
+            item.mangled_name = rep.mangled_name
         return self.groups
 
 
@@ -2162,6 +2214,9 @@ class CodeGen:
         if isinstance(item, ClassDecl):
             return self.gen_class(item)
         if isinstance(item, FunctionDecl):
+            if item.is_prototype:
+                params_str = ", ".join(("const " if p.is_const else "") + f"{c_type(p.type)} {p.name}" for p in item.params)
+                return f"{c_type(item.ret_type)} {item.mangled_name}({params_str});"
             return self.gen_function(item)
         if isinstance(item, VarDecl):
             return self.gen_global_var(item)

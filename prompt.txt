@@ -1,5 +1,3 @@
--gestion du build system (avec une nouvelle syntaxe)
-
 -utiliser des fonctions C (convertion automatique des headers C et compilation des fichiers C)
 
 -Je te propose d'ecrire un nouveau fichier qui s'appellera jbg.py (pour jaguar bindgen), Il transformera un fichier .h API C en 

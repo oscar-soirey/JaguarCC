@@ -158,12 +158,14 @@ static void _j_sys_print_dynamic(void *data, const char *type) {
 
 #define PI 3.14
 
-i32 add(i32 a, i32 b) {
-    return a + b;
-}
+i32 add(i32 a, i32 b);
 
 int main(int argc, char *argv[]) {
     string *param = string_from_cstr((argc > 1) ? argv[1] : "");
     _j_sys_print_i32(add(1, 2));
     return 0;
+}
+
+i32 add(i32 a, i32 b) {
+    return a + b;
 }
