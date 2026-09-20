@@ -9,3 +9,12 @@
 -passer a un while classique finalement, et remplacer le while sans condition par le mot clé loop
 
 -ajoute des trucs utiles, genre using namespace ...; using GL_FLOAT = float;
+
+-outil de gestion de packages comme pip avec python
+
+
+Bugs connus:
+
+-string non déclaré dans le C si on utilise pas manuellement un string, (donc sys:print bug si un string n'a pas été appellé avant)
+-le .c généré est conservé si la compilation gcc echoue (meme sans la directive keep_c)
+-les .jah ne sont pas supportées par le build system

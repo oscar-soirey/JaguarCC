@@ -1,4 +1,7 @@
+using utils;
+
 void main()
 {
-  sys:print("hello");
+  string a;
+  sys:print(math:add(b=10, a=4));
 }
