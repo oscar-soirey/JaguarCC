@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="fr">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Jaguar — un langage qui devient du C</title>
+<title>Jaguar — a language that becomes C</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -331,15 +331,15 @@
       </svg>
       Jaguar
     </a>
-    <nav class="tabs" role="tablist" aria-label="Navigation principale">
-      <button class="tab-btn" role="tab" aria-selected="true" data-tab="accueil">Accueil</button>
-      <button class="tab-btn" role="tab" aria-selected="false" data-tab="langage">Le langage</button>
-      <button class="tab-btn" role="tab" aria-selected="false" data-tab="outils">Outils</button>
+    <nav class="tabs" role="tablist" aria-label="Main navigation">
+      <button class="tab-btn" role="tab" aria-selected="true" data-tab="accueil">Home</button>
+      <button class="tab-btn" role="tab" aria-selected="false" data-tab="langage">The language</button>
+      <button class="tab-btn" role="tab" aria-selected="false" data-tab="outils">Tools</button>
       <button class="tab-btn" role="tab" aria-selected="false" data-tab="documentation">Documentation</button>
       <button class="tab-btn" role="tab" aria-selected="false" data-tab="releases">Releases</button>
     </nav>
     <div class="nav-right">
-      <a class="icon-btn" href="https://github.com/oscar-soirey/JaguarCC" target="_blank" rel="noopener" aria-label="Voir sur GitHub" title="GitHub">
+      <a class="icon-btn" href="https://github.com/oscar-soirey/JaguarCC" target="_blank" rel="noopener" aria-label="View on GitHub" title="GitHub">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5C5.73.5.98 5.24.98 11.52c0 5.02 3.26 9.28 7.78 10.78.57.1.78-.25.78-.55 0-.27-.01-1.17-.02-2.12-3.16.69-3.83-1.34-3.83-1.34-.52-1.31-1.26-1.66-1.26-1.66-1.03-.7.08-.69.08-.69 1.14.08 1.74 1.17 1.74 1.17 1.01 1.73 2.65 1.23 3.3.94.1-.73.4-1.23.72-1.51-2.52-.29-5.17-1.26-5.17-5.6 0-1.24.44-2.25 1.17-3.04-.12-.29-.51-1.45.11-3.02 0 0 .96-.31 3.14 1.16.91-.25 1.89-.38 2.86-.38.97 0 1.95.13 2.86.38 2.18-1.47 3.14-1.16 3.14-1.16.62 1.57.23 2.73.11 3.02.73.79 1.17 1.8 1.17 3.04 0 4.35-2.66 5.31-5.19 5.59.41.35.77 1.04.77 2.11 0 1.52-.01 2.75-.01 3.12 0 .3.2.66.79.55 4.51-1.51 7.77-5.76 7.77-10.78C23.02 5.24 18.27.5 12 .5Z"/></svg>
       </a>
     </div>
@@ -353,12 +353,12 @@
     <div class="hero">
       <div class="wrap hero-inner">
         <div>
-          <span class="eyebrow-tag"><span class="dot"></span>Langage compilé</span>
-          <h1>Un langage compilé, avec son propre outillage.</h1>
-          <p class="lead">Jaguar est un langage compilé, à la syntaxe proche du C : types explicites, classes, namespaces et collections simples — avec un runtime qui garde la gestion mémoire hors de portée du code. Un compilateur, un build system et un bindgen forment sa chaîne d'outils.</p>
+          <span class="eyebrow-tag"><span class="dot"></span>Compiled language</span>
+          <h1>A compiled language, with its own tooling.</h1>
+          <p class="lead">Jaguar is a compiled language with a syntax close to C: explicit types, classes, namespaces, and simple collections — with a runtime that keeps memory management out of reach of the code. A compiler, a build system, and a bindgen make up its toolchain.</p>
           <div class="hero-ctas">
-            <button class="btn btn-primary" data-tab-link="langage">Découvrir le langage</button>
-            <button class="btn btn-outline" data-tab-link="outils">Voir les outils</button>
+            <button class="btn btn-primary" data-tab-link="langage">Discover the language</button>
+            <button class="btn btn-outline" data-tab-link="outils">See the tools</button>
           </div>
         </div>
         <div class="jaguar-art" aria-hidden="true">
@@ -380,7 +380,7 @@
             <g>
               <circle cx="200" cy="52" r="20" fill="var(--bg-panel)" stroke="var(--grid)" stroke-width="1.4"/>
               <text x="200" y="56" font-family="'IBM Plex Mono', monospace" font-size="12" fill="var(--text)" text-anchor="middle">jcc</text>
-              <text x="200" y="24" font-family="'IBM Plex Mono', monospace" font-size="10" fill="var(--muted)" text-anchor="middle">compilateur</text>
+              <text x="200" y="24" font-family="'IBM Plex Mono', monospace" font-size="10" fill="var(--muted)" text-anchor="middle">compiler</text>
             </g>
             <g>
               <circle cx="92" cy="244" r="20" fill="var(--bg-panel)" stroke="var(--grid)" stroke-width="1.4"/>
@@ -399,34 +399,34 @@
 
     <div class="wrap section-pad">
       <div class="section-head">
-        <span class="eyebrow-tag">Ce que couvre le langage</span>
-        <h2>Une syntaxe familière, un runtime plus sûr.</h2>
-        <p>Jaguar reprend volontairement plusieurs idées du C tout en simplifiant certains aspects du quotidien.</p>
+        <span class="eyebrow-tag">What the language covers</span>
+        <h2>Familiar syntax, a safer runtime.</h2>
+        <p>Jaguar deliberately borrows several ideas from C while simplifying certain everyday aspects.</p>
       </div>
       <div class="grid">
         <div class="card">
-          <h3><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>Compilateur classique</h3>
-          <p><code class="inline" style="font-family:var(--font-mono)">jcc</code> compile vos programmes en exécutables natifs, avec un mode <code class="inline" style="font-family:var(--font-mono)">--c89</code> pour la portabilité.</p>
+          <h3><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>Classic compiler</h3>
+          <p><code class="inline" style="font-family:var(--font-mono)">jcc</code> compiles your programs into native executables, with a <code class="inline" style="font-family:var(--font-mono)">--c89</code> mode for portability.</p>
         </div>
         <div class="card">
-          <h3><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l9 5v10l-9 5-9-5V7l9-5z"/></svg>Types explicites</h3>
-          <p>Types C classiques et alias courts (<code class="inline" style="font-family:var(--font-mono)">i32</code>, <code class="inline" style="font-family:var(--font-mono)">f64</code>, <code class="inline" style="font-family:var(--font-mono)">u8</code>…), normalisés par le compilateur.</p>
+          <h3><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l9 5v10l-9 5-9-5V7l9-5z"/></svg>Explicit types</h3>
+          <p>Classic C types and short aliases (<code class="inline" style="font-family:var(--font-mono)">i32</code>, <code class="inline" style="font-family:var(--font-mono)">f64</code>, <code class="inline" style="font-family:var(--font-mono)">u8</code>…), normalized by the compiler.</p>
         </div>
         <div class="card">
-          <h3><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 3v18M3 12h18"/></svg>Classes & héritage</h3>
-          <p>Champs, méthodes, constructeurs/destructeurs, méthodes virtuelles, <code class="inline" style="font-family:var(--font-mono)">override</code> et contrôle d'accès (<code class="inline" style="font-family:var(--font-mono)">$</code> / <code class="inline" style="font-family:var(--font-mono)">%</code>).</p>
+          <h3><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 3v18M3 12h18"/></svg>Classes & inheritance</h3>
+          <p>Fields, methods, constructors/destructors, virtual methods, <code class="inline" style="font-family:var(--font-mono)">override</code>, and access control (<code class="inline" style="font-family:var(--font-mono)">$</code> / <code class="inline" style="font-family:var(--font-mono)">%</code>).</p>
         </div>
         <div class="card">
-          <h3><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16v6H4zM4 14h7v6H4zM14 14h6v6h-6z"/></svg>Surcharge & namespaces</h3>
-          <p>Plusieurs fonctions de même nom, arguments nommés, et un name mangling qui évite les collisions entre namespaces.</p>
+          <h3><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16v6H4zM4 14h7v6H4zM14 14h6v6h-6z"/></svg>Overloading & namespaces</h3>
+          <p>Several functions with the same name, named arguments, and name mangling that avoids collisions between namespaces.</p>
         </div>
         <div class="card">
-          <h3><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 4l-6 8 6 8M16 4l6 8-6 8"/></svg>Collections simples</h3>
-          <p><code class="inline" style="font-family:var(--font-mono)">list</code>, <code class="inline" style="font-family:var(--font-mono)">map</code>, <code class="inline" style="font-family:var(--font-mono)">pair</code>, <code class="inline" style="font-family:var(--font-mono)">container</code> et <code class="inline" style="font-family:var(--font-mono)">dynamic_list</code>, avec une syntaxe volontairement simple.</p>
+          <h3><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 4l-6 8 6 8M16 4l6 8-6 8"/></svg>Simple collections</h3>
+          <p><code class="inline" style="font-family:var(--font-mono)">list</code>, <code class="inline" style="font-family:var(--font-mono)">map</code>, <code class="inline" style="font-family:var(--font-mono)">pair</code>, <code class="inline" style="font-family:var(--font-mono)">container</code>, and <code class="inline" style="font-family:var(--font-mono)">dynamic_list</code>, with deliberately simple syntax.</p>
         </div>
         <div class="card">
-          <h3><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="8" cy="8" r="3"/><circle cx="17" cy="16" r="3"/><path d="M8 11v2a3 3 0 0 0 3 3h1"/></svg>Runtime maîtrisé</h3>
-          <p>Pas de <code class="inline" style="font-family:var(--font-mono)">malloc</code>/<code class="inline" style="font-family:var(--font-mono)">free</code> ni de pointeurs bruts exposés : le runtime gère strings, classes et containers.</p>
+          <h3><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="8" cy="8" r="3"/><circle cx="17" cy="16" r="3"/><path d="M8 11v2a3 3 0 0 0 3 3h1"/></svg>Controlled runtime</h3>
+          <p>No <code class="inline" style="font-family:var(--font-mono)">malloc</code>/<code class="inline" style="font-family:var(--font-mono)">free</code> or raw pointers exposed: the runtime manages strings, classes, and containers.</p>
         </div>
       </div>
     </div>
@@ -436,16 +436,16 @@
   <section id="langage" role="tabpanel" aria-labelledby="langage">
     <div class="wrap section-pad">
       <div class="section-head">
-        <span class="eyebrow-tag">Sous le capot</span>
-        <h2>Proche du C, avec ses propres règles.</h2>
-        <p>Jaguar assume quelques choix qui le distinguent volontairement du C classique.</p>
+        <span class="eyebrow-tag">Under the hood</span>
+        <h2>Close to C, with its own rules.</h2>
+        <p>Jaguar embraces a few choices that deliberately set it apart from classic C.</p>
       </div>
 
       <div class="feat-row">
         <div>
-          <span class="idx">Contrôle d'accès</span>
-          <h3>Privé par défaut, un symbole pour le reste</h3>
-          <p>Un membre de classe sans marqueur est privé. <code class="inline">$</code> le rend public, <code class="inline">%</code> le rend protégé — vérifié par le compilateur.</p>
+          <span class="idx">Access control</span>
+          <h3>Private by default, one symbol for the rest</h3>
+          <p>A class member without a marker is private. <code class="inline">$</code> makes it public, <code class="inline">%</code> makes it protected — checked by the compiler.</p>
         </div>
         <div class="code-block"><span class="kw">class</span> Player {
     <span class="fn">$</span><span class="ty">int</span> health = <span class="str">100</span>;
@@ -461,21 +461,21 @@
       <div class="feat-row">
         <div>
           <span class="idx">Ownership</span>
-          <h3><code class="inline">container&lt;T&gt;</code> possède sa donnée</h3>
-          <p>Un container détruit automatiquement l'objet qu'il possède. Pratique pour une classe allouée avec <code class="inline">new</code>, sans gérer sa libération à la main.</p>
+          <h3><code class="inline">container&lt;T&gt;</code> owns its data</h3>
+          <p>A container automatically destroys the object it owns. Handy for a class allocated with <code class="inline">new</code>, without managing its release by hand.</p>
         </div>
         <div class="code-block"><span class="ty">container</span>&lt;Player&gt; player = <span class="kw">new</span> Player(<span class="str">100</span>);
 player.get().damage(<span class="str">25</span>);
 
-<span class="cm">// forme courte pour un type simple</span>
+<span class="cm">// short form for a simple type</span>
 <span class="ty">container</span>&lt;<span class="ty">int</span>&gt; value =&gt; <span class="str">42</span>;</div>
       </div>
 
       <div class="feat-row">
         <div>
-          <span class="idx">Boucles</span>
-          <h3><code class="inline">while</code> sans condition, <code class="inline">for_loop</code> inclusif</h3>
-          <p>Le <code class="inline">while</code> Jaguar ne prend jamais de condition — on sort avec <code class="inline">break</code>. <code class="inline">for_loop</code> inclut sa borne finale.</p>
+          <span class="idx">Loops</span>
+          <h3>Conditionless <code class="inline">while</code>, inclusive <code class="inline">for_loop</code></h3>
+          <p>Jaguar's <code class="inline">while</code> never takes a condition — you exit with <code class="inline">break</code>. <code class="inline">for_loop</code> includes its final bound.</p>
         </div>
         <div class="code-block"><span class="kw">while</span> {
     <span class="kw">if</span> (health &lt;= <span class="str">0</span>) { <span class="kw">break</span>; }
@@ -483,15 +483,15 @@ player.get().damage(<span class="str">25</span>);
 }
 
 <span class="ty">int</span> i = for_loop(<span class="str">0</span>, <span class="str">10</span>) {
-    sys:print(i); <span class="cm">// 0..10, borne incluse</span>
+    sys:print(i); <span class="cm">// 0..10, bound included</span>
 }</div>
       </div>
 
       <div class="feat-row">
         <div>
-          <span class="idx">Appels de fonctions</span>
-          <h3>Arguments nommés et valeurs par défaut</h3>
-          <p>Un paramètre peut avoir une valeur par défaut, et être passé par nom dans n'importe quel ordre — tant qu'aucun positionnel ne suit un nommé.</p>
+          <span class="idx">Function calls</span>
+          <h3>Named arguments and default values</h3>
+          <p>A parameter can have a default value, and be passed by name in any order — as long as no positional argument follows a named one.</p>
         </div>
         <div class="code-block"><span class="ty">int</span> move(<span class="ty">int</span> x, <span class="ty">int</span> y, <span class="ty">int</span> speed = <span class="str">1</span>) {
     <span class="kw">return</span> x + y + speed;
@@ -503,13 +503,13 @@ move(x = <span class="str">10</span>, y = <span class="str">20</span>, speed = <
 
       <div class="feat-row">
         <div>
-          <span class="idx">Interop C</span>
-          <h3>Namespaces manglés, sorties explicites vers le C</h3>
-          <p>Une fonction dans un namespace est manglée pour éviter les collisions. <code class="inline">@extern</code> désactive ce mangling pour appeler du C natif.</p>
+          <span class="idx">C interop</span>
+          <h3>Mangled namespaces, explicit output to C</h3>
+          <p>A function inside a namespace is mangled to avoid collisions. <code class="inline">@extern</code> disables this mangling to call native C.</p>
         </div>
         <div class="code-block"><span class="kw">namespace</span> math {
     <span class="ty">int</span> add(<span class="ty">int</span> a, <span class="ty">int</span> b) { <span class="kw">return</span> a + b; }
-    <span class="cm">// devient math_add côté C</span>
+    <span class="cm">// becomes math_add on the C side</span>
 }
 
 <span class="fn">@extern</span>
@@ -517,11 +517,11 @@ move(x = <span class="str">10</span>, y = <span class="str">20</span>, speed = <
       </div>
 
       <div class="section-head" style="margin-top:50px;">
-        <span class="eyebrow-tag">Référence rapide</span>
-        <h2>Types principaux</h2>
+        <span class="eyebrow-tag">Quick reference</span>
+        <h2>Core types</h2>
       </div>
       <table class="ref-table">
-        <thead><tr><th>Jaguar</th><th>Alias</th><th>Type C approximatif</th></tr></thead>
+        <thead><tr><th>Jaguar</th><th>Alias</th><th>Approximate C type</th></tr></thead>
         <tbody>
           <tr><td><code>int</code></td><td><span class="mono">i32</span></td><td>int</td></tr>
           <tr><td><code>uint</code></td><td><span class="mono">u32</span></td><td>unsigned int</td></tr>
@@ -529,7 +529,7 @@ move(x = <span class="str">10</span>, y = <span class="str">20</span>, speed = <
           <tr><td><code>float</code> / <code>double</code></td><td><span class="mono">f32 / f64</span></td><td>float / double</td></tr>
           <tr><td><code>char</code> / <code>byte</code></td><td><span class="mono">i8 / u8</span></td><td>signed / unsigned char</td></tr>
           <tr><td><code>bool</code></td><td>—</td><td><span class="mono">_jBool</span></td></tr>
-          <tr><td><code>string</code></td><td>—</td><td>objet string Jaguar</td></tr>
+          <tr><td><code>string</code></td><td>—</td><td>Jaguar string object</td></tr>
         </tbody>
       </table>
     </div>
@@ -539,28 +539,28 @@ move(x = <span class="str">10</span>, y = <span class="str">20</span>, speed = <
   <section id="outils" role="tabpanel" aria-labelledby="outils">
     <div class="wrap section-pad">
       <div class="section-head">
-        <span class="eyebrow-tag">Chaîne d'outils</span>
-        <h2>Trois outils, un seul langage.</h2>
-        <p><code class="inline" style="font-family:var(--font-mono)">jcc</code> compile, <code class="inline" style="font-family:var(--font-mono)">jbs</code> orchestre les builds, <code class="inline" style="font-family:var(--font-mono)">jbg</code> importe des API C existantes.</p>
+        <span class="eyebrow-tag">Toolchain</span>
+        <h2>Three tools, one language.</h2>
+        <p><code class="inline" style="font-family:var(--font-mono)">jcc</code> compiles, <code class="inline" style="font-family:var(--font-mono)">jbs</code> orchestrates builds, <code class="inline" style="font-family:var(--font-mono)">jbg</code> imports existing C APIs.</p>
       </div>
 
       <div class="feat-row">
         <div>
-          <span class="idx">Compilateur</span>
-          <h3>jcc, le compilateur Jaguar</h3>
-          <p>jcc est un compilateur classique : il prend un programme Jaguar et produit un exécutable. En détail, il passe par une étape de transpilation vers le C avant d'appeler un compilateur C — une implémentation interne plutôt qu'une contrainte du langage.</p>
+          <span class="idx">Compiler</span>
+          <h3>jcc, the Jaguar compiler</h3>
+          <p>jcc is a classic compiler: it takes a Jaguar program and produces an executable. Under the hood, it goes through a transpilation step to C before calling a C compiler — an internal implementation detail rather than a constraint of the language.</p>
         </div>
         <div class="code-block"><span class="fn">jcc</span> main.ja -o game
 <span class="fn">jcc</span> main.ja --c89 -o game
-<span class="cm">// sans -o : le C généré est écrit sur la sortie standard</span>
+<span class="cm">// without -o: the generated C is written to standard output</span>
 <span class="fn">jcc</span> main.ja &gt; main.c</div>
       </div>
 
       <div class="feat-row">
         <div>
           <span class="idx">Build system</span>
-          <h3>jbs, l'orchestrateur de build</h3>
-          <p>jbs décrit un projet dans un fichier de configuration : options de compilation, macros globales, cibles à compiler et étapes de link.</p>
+          <h3>jbs, the build orchestrator</h3>
+          <p>jbs describes a project in a configuration file: compilation options, global macros, targets to build, and link steps.</p>
         </div>
         <div class="code-block"><span class="kw">version</span> 1.0
 
@@ -587,13 +587,13 @@ move(x = <span class="str">10</span>, y = <span class="str">20</span>, speed = <
       <div class="feat-row">
         <div>
           <span class="idx">Bindgen</span>
-          <h3>jbg, importer une API C</h3>
-          <p>jbg génère des déclarations Jaguar (des <code class="inline">@extern</code>) à partir d'une API C existante, pour appeler une bibliothèque C sans écrire les signatures à la main.</p>
+          <h3>jbg, importing a C API</h3>
+          <p>jbg generates Jaguar declarations (<code class="inline">@extern</code>) from an existing C API, to call a C library without writing the signatures by hand.</p>
         </div>
-        <div class="code-block"><span class="cm">// génère les bindings depuis un en-tête C</span>
+        <div class="code-block"><span class="cm">// generates bindings from a C header</span>
 <span class="fn">jbg</span> mylib.h -o mylib_bindings.ja
 
-<span class="cm">// utilisables directement depuis Jaguar</span>
+<span class="cm">// usable directly from Jaguar</span>
 <span class="fn">@extern</span>
 <span class="ty">int</span> mylib_init();</div>
       </div>
@@ -604,50 +604,50 @@ move(x = <span class="str">10</span>, y = <span class="str">20</span>, speed = <
   <section id="documentation" role="tabpanel" aria-labelledby="documentation">
     <div class="wrap section-pad">
       <div class="section-head">
-        <span class="eyebrow-tag">Aller plus loin</span>
-        <h2>La documentation complète vit sur son propre site.</h2>
-        <p>Compilation, syntaxe, classes, collections, bibliothèque standard <code class="inline" style="font-family:var(--font-mono)">jcc:*</code> — chaque section est détaillée à part.</p>
+        <span class="eyebrow-tag">Go further</span>
+        <h2>The full documentation lives on its own site.</h2>
+        <p>Compilation, syntax, classes, collections, the <code class="inline" style="font-family:var(--font-mono)">jcc:*</code> standard library — each section is covered in detail separately.</p>
       </div>
 
       <div class="doc-grid">
         <a class="doc-card" href="https://oscar-soirey.github.io/JaguarCC/" target="_blank" rel="noopener">
           <span class="num">01</span>
-          <h3>Compilation & syntaxe</h3>
-          <p>Le pipeline jcc.py, le mode --c89, commentaires, préprocesseur.</p>
+          <h3>Compilation & syntax</h3>
+          <p>The jcc.py pipeline, --c89 mode, comments, preprocessor.</p>
         </a>
         <a class="doc-card" href="https://oscar-soirey.github.io/JaguarCC/" target="_blank" rel="noopener">
           <span class="num">02</span>
-          <h3>Types, variables & opérateurs</h3>
-          <p>Types principaux, const, auto, littéraux, casts et priorités.</p>
+          <h3>Types, variables & operators</h3>
+          <p>Core types, const, auto, literals, casts, and precedence.</p>
         </a>
         <a class="doc-card" href="https://oscar-soirey.github.io/JaguarCC/" target="_blank" rel="noopener">
           <span class="num">03</span>
-          <h3>Fonctions</h3>
-          <p>Surcharge, paramètres par défaut, arguments nommés, @extern.</p>
+          <h3>Functions</h3>
+          <p>Overloading, default parameters, named arguments, @extern.</p>
         </a>
         <a class="doc-card" href="https://oscar-soirey.github.io/JaguarCC/" target="_blank" rel="noopener">
           <span class="num">04</span>
           <h3>Classes & structs</h3>
-          <p>Contrôle d'accès, héritage, méthodes virtuelles, constr/destr.</p>
+          <p>Access control, inheritance, virtual methods, constr/destr.</p>
         </a>
         <a class="doc-card" href="https://oscar-soirey.github.io/JaguarCC/" target="_blank" rel="noopener">
           <span class="num">05</span>
-          <h3>Collections & mémoire</h3>
-          <p>list, map, pair, container, dynamic_list, et gestion mémoire du runtime.</p>
+          <h3>Collections & memory</h3>
+          <p>list, map, pair, container, dynamic_list, and runtime memory management.</p>
         </a>
         <a class="doc-card" href="https://oscar-soirey.github.io/JaguarCC/" target="_blank" rel="noopener">
           <span class="num">06</span>
-          <h3>Outils : jcc, jbs, jbg</h3>
-          <p>Options du compilateur, configuration jbs, bindgen jbg et bibliothèque standard jcc:*.</p>
+          <h3>Tools: jcc, jbs, jbg</h3>
+          <p>Compiler options, jbs configuration, jbg bindgen, and the jcc:* standard library.</p>
         </a>
       </div>
 
       <div class="doc-callout">
         <div>
-          <h3>Documentation de référence</h3>
-          <p>La documentation complète du langage, telle qu'implémentée par jcc.py, est disponible sur le site dédié.</p>
+          <h3>Reference documentation</h3>
+          <p>The full language documentation, as implemented by jcc.py, is available on the dedicated site.</p>
         </div>
-        <a class="btn btn-primary" href="https://oscar-soirey.github.io/JaguarCC/" target="_blank" rel="noopener">Ouvrir la documentation</a>
+        <a class="btn btn-primary" href="https://oscar-soirey.github.io/JaguarCC/" target="_blank" rel="noopener">Open the documentation</a>
       </div>
     </div>
   </section>
@@ -656,47 +656,47 @@ move(x = <span class="str">10</span>, y = <span class="str">20</span>, speed = <
   <section id="releases" role="tabpanel" aria-labelledby="releases">
     <div class="wrap section-pad">
       <div class="section-head">
-        <span class="eyebrow-tag">Obtenir le compilateur</span>
-        <h2>Releases GitHub, en direct.</h2>
-        <p>Cette page interroge les releases du dépôt au chargement. En attendant un premier paquet, compiler depuis les sources reste la voie la plus simple.</p>
+        <span class="eyebrow-tag">Get the compiler</span>
+        <h2>GitHub releases, live.</h2>
+        <p>This page queries the repository's releases on load. Until a first package is out, compiling from source remains the simplest route.</p>
       </div>
 
       <div id="releases-list"></div>
       <div id="releases-empty" class="empty-state" style="display:none;">
         <div class="glyph">🐆</div>
-        <h3>Aucune release publiée pour le moment</h3>
-        <p>JaguarCC n'a pas encore de version packagée. Le dépôt reste la source de vérité — clonez-le et compilez, ou suivez-le pour être notifié à la première release.</p>
-        <a class="btn btn-primary" href="https://github.com/oscar-soirey/JaguarCC/releases" target="_blank" rel="noopener">Voir les releases sur GitHub</a>
+        <h3>No release published yet</h3>
+        <p>JaguarCC does not have a packaged version yet. The repository remains the source of truth — clone it and compile, or watch it to be notified of the first release.</p>
+        <a class="btn btn-primary" href="https://github.com/oscar-soirey/JaguarCC/releases" target="_blank" rel="noopener">View releases on GitHub</a>
       </div>
 
       <div class="build-steps">
         <div class="section-head" style="margin-bottom:20px;">
-          <h2 style="font-size:1.3rem;">Compiler et exécuter un programme</h2>
-          <p>Avec Python et GCC installés.</p>
+          <h2 style="font-size:1.3rem;">Compile and run a program</h2>
+          <p>With Python and GCC installed.</p>
         </div>
         <ol class="steps-list">
           <li>
             <div>
               <code>git clone https://github.com/oscar-soirey/JaguarCC.git</code>
-              <div class="step-note">Récupère le compilateur jcc.py et ses sources.</div>
+              <div class="step-note">Fetches the jcc.py compiler and its sources.</div>
             </div>
           </li>
           <li>
             <div>
               <code>python jcc.py main.ja -o game</code>
-              <div class="step-note">Génère <code>game.c</code>, puis appelle GCC pour produire l'exécutable <code>game</code>.</div>
+              <div class="step-note">Generates <code>game.c</code>, then calls GCC to produce the <code>game</code> executable.</div>
             </div>
           </li>
           <li>
             <div>
               <code>python jcc.py main.ja &gt; main.c</code>
-              <div class="step-note">Sans <code>-o</code>, seul le C généré est écrit sur la sortie standard.</div>
+              <div class="step-note">Without <code>-o</code>, only the generated C is written to standard output.</div>
             </div>
           </li>
           <li>
             <div>
               <code>python jcc.py main.ja --c89 -o game</code>
-              <div class="step-note">Génère un C compatible C89 — la sémantique Jaguar reste identique.</div>
+              <div class="step-note">Generates C89-compatible C — Jaguar semantics stay identical.</div>
             </div>
           </li>
         </ol>
@@ -708,7 +708,7 @@ move(x = <span class="str">10</span>, y = <span class="str">20</span>, speed = <
 
 <footer>
   <div class="wrap footer-inner">
-    <p>Jaguar — langage compilé vers C, par Oscar Soirey.</p>
+    <p>Jaguar — a language compiled to C, by Oscar Soirey.</p>
     <div class="footer-links">
       <a href="https://github.com/oscar-soirey/JaguarCC" target="_blank" rel="noopener">GitHub</a>
       <a href="https://oscar-soirey.github.io/JaguarCC/" target="_blank" rel="noopener">Documentation</a>
@@ -750,7 +750,7 @@ move(x = <span class="str">10</span>, y = <span class="str">20</span>, speed = <
       const releases = Array.isArray(data) ? data : [];
       if (releases.length === 0) { showEmpty(); return; }
 
-      const fmt = new Intl.DateTimeFormat('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' });
+      const fmt = new Intl.DateTimeFormat('en-US', { day: 'numeric', month: 'long', year: 'numeric' });
 
       releases.slice(0, 8).forEach(rel => {
         const card = document.createElement('div');
@@ -771,7 +771,7 @@ move(x = <span class="str">10</span>, y = <span class="str">20</span>, speed = <
         if (rel.prerelease) {
           const pre = document.createElement('span');
           pre.className = 'rtag';
-          pre.textContent = 'pré-release';
+          pre.textContent = 'pre-release';
           title.appendChild(pre);
         }
 
@@ -801,7 +801,7 @@ move(x = <span class="str">10</span>, y = <span class="str">20</span>, speed = <
           assets.className = 'rassets';
           const link = document.createElement('a');
           link.href = rel.html_url;
-          link.textContent = 'Voir sur GitHub';
+          link.textContent = 'View on GitHub';
           link.target = '_blank';
           link.rel = 'noopener';
           assets.appendChild(link);

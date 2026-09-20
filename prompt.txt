@@ -4,6 +4,8 @@
 
 -fichiers jah (jaguar headers), techniquement c'est la meme chose que .ja mais on dit que c'est un header quoi
 
--extension pour les IDE
+-extension pour Jetbrains et Visual Studio
+
+-passer a un while classique finalement, et remplacer le while sans condition par le mot clé loop
 
 -ajoute des trucs utiles, genre using namespace ...; using GL_FLOAT = float;

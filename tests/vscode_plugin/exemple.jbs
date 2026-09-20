@@ -1,0 +1,9 @@
+version 1.0
+
+out out
+
+mode debug
+
+compile Main {
+  main.ja
+}
