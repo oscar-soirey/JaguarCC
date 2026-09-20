@@ -170,7 +170,7 @@ INTEGER_TYPES = {"int", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64"}
 FLOAT_TYPES = {"float", "f32", "f64"}
 
 KEYWORDS = TYPE_KEYWORDS | {
-    "struct", "namespace", "class", "virtual", "override", "constr", "destr", "return", "true", "false", "nullptr", "const", "using", "loop",
+    "struct", "enum", "namespace", "class", "virtual", "override", "constr", "destr", "return", "true", "false", "nullptr", "const", "using", "as", "loop",
     "if", "else", "while", "break", "continue", "for_loop", "this", "auto", "signal", "new",
 }
 
@@ -317,6 +317,7 @@ class Param:
     name: str
     is_const: bool = False
     default: Optional[object] = None
+    pointee_const: bool = False
 
 
 @dataclass
@@ -333,6 +334,7 @@ class ClassField:
     init: Optional[object] = None
     is_const: bool = False
     is_exposed: bool = False
+    pointee_const: bool = False
 
 
 @dataclass
@@ -463,13 +465,12 @@ class ExprStmt:
 
 @dataclass
 class VarDecl:
-    """Déclaration de variable : `type nom;` ou `type nom = expr;`
-    Utilisé dans un bloc (variable locale) comme au niveau du fichier
-    (variable globale)."""
+    """Variable declaration with separate constness for the variable and pointee."""
     type: str
     name: str
     init: Optional[object] = None
     is_const: bool = False
+    pointee_const: bool = False
 
 
 @dataclass
@@ -543,13 +544,34 @@ class UsingNamespaceDecl:
 
 
 @dataclass
+class UsingSymbolDecl:
+    namespace: str
+    name: str
+    alias: str
+
+
+@dataclass
 class UsingImportDecl:
     name: str
 
 
 @dataclass
+class EnumDecl:
+    name: str
+    values: List[str]
+    namespace: Optional[str] = None
+
+
+@dataclass
 class UsingNamespaceStmt:
     namespace: str
+
+
+@dataclass
+class UsingSymbolStmt:
+    namespace: str
+    name: str
+    alias: str
 
 
 @dataclass
@@ -714,14 +736,27 @@ class Parser:
                     self.advance(); parts.append(self.expect("IDENT").value)
                 self.expect(";")
                 return UsingNamespaceDecl(":".join(parts))
-            name = self.expect("IDENT").value
+            first = self.expect("IDENT").value
+            if self.peek().kind == ":":
+                parts = [first]
+                while self.peek().kind == ":":
+                    self.advance(); parts.append(self.expect("IDENT").value)
+                namespace = ":".join(parts[:-1]); symbol = parts[-1]
+                alias = symbol
+                if self.peek().kind == "as":
+                    self.advance(); alias = self.expect("IDENT").value
+                self.expect(";")
+                return UsingSymbolDecl(namespace, symbol, alias)
             if self.peek().kind == ";":
                 self.advance()
-                return UsingImportDecl(name)
+                return UsingImportDecl(first)
             self.expect("=")
             target = self.parse_type()
             self.expect(";")
-            return TypeAliasDecl(name, target)
+            return TypeAliasDecl(first, target)
+
+        if tok.kind == "enum":
+            return self.parse_enum()
 
         if tok.kind == "struct":
             line = tok.line
@@ -815,6 +850,28 @@ class Parser:
             attrs.add(name_tok.value)
         return attrs
 
+    # -- enum --
+    def parse_enum(self) -> EnumDecl:
+        line = self.peek().line
+        self.expect("enum")
+        name = self.expect("IDENT").value
+        self.expect("{")
+        values = []
+        while self.peek().kind != "}":
+            values.append(self.expect("IDENT").value)
+            # Explicit enum values are deliberately not supported yet: enum
+            # members are sequential Jaguar values, keeping the feature safe
+            # and deterministic.
+            if self.peek().kind == ",":
+                self.advance()
+                if self.peek().kind == "}":
+                    break
+            elif self.peek().kind != "}":
+                raise ParseError(f"expected ',' or '}}' after enum value (line {self.peek().line})")
+        self.expect("}")
+        if self.peek().kind == ";": self.advance()
+        return self._mark_line(EnumDecl(name, values), line)
+
     # -- struct --
     def parse_struct(self) -> StructDecl:
         self.expect("struct")
@@ -872,9 +929,17 @@ class Parser:
 
             # Support both `void $foo()` et `void$ foo()` forms.
             field_const = False
+            field_pointee_const = False
             if self.peek().kind == "const":
                 self.advance(); field_const = True
             ret_type = self.parse_type()
+            if field_const and ret_type.endswith("*"):
+                field_const = False; field_pointee_const = True
+            if self.peek().kind == "const":
+                self.advance()
+                if not ret_type.endswith("*"):
+                    raise ParseError("'const' after a non-pointer field type is not valid")
+                field_const = True
             if self.peek().kind in ("$", "%"):
                 access = "public" if self.advance().kind == "$" else "protected"
             member_name = self.expect("IDENT").value
@@ -909,7 +974,7 @@ class Parser:
                     raise ParseError(
                         f"an @exposed variable must be public (line {self.peek().line})"
                     )
-                methods.append(None) if False else fields.append(ClassField(ret_type, member_name, access, init, field_const, exposed))
+                methods.append(None) if False else fields.append(ClassField(ret_type, member_name, access, init, field_const, exposed, field_pointee_const))
         self.expect("}")
         if self.peek().kind == ";":
             self.advance()
@@ -930,7 +995,11 @@ class Parser:
         items = []
         while self.peek().kind != "}":
             tok = self.peek()
-            if tok.kind == "struct":
+            if tok.kind == "enum":
+                enum = self.parse_enum()
+                enum.namespace = namespace
+                items.append(enum)
+            elif tok.kind == "struct":
                 items.append(self.parse_struct())
             elif tok.kind == "class":
                 items.append(self.parse_class())
@@ -978,16 +1047,23 @@ class Parser:
         raise ParseError(f"expected a type, found '{tok.kind}' on line {tok.line}")
 
     def parse_param(self) -> Param:
-        is_const = False
+        leading_const = False
         if self.peek().kind == "const":
-            self.advance(); is_const = True
+            self.advance(); leading_const = True
         t = self.parse_type()
+        pointee_const = leading_const and t.endswith("*")
+        is_const = leading_const and not pointee_const
+        if self.peek().kind == "const":
+            self.advance();
+            if not t.endswith("*"):
+                raise ParseError("'const' after a non-pointer parameter type is not valid")
+            is_const = True
         n = self.expect("IDENT")
         default = None
         if self.peek().kind == "=":
             self.advance()
             default = self.parse_expr()
-        return Param(t, n.value, is_const, default)
+        return Param(t, n.value, is_const, default, pointee_const)
 
     def _parse_function_impl(self, namespace: Optional[str] = None) -> FunctionDecl:
         attrs = self.parse_attributes()
@@ -1051,26 +1127,46 @@ class Parser:
 
     def _parse_var_decl_impl(self) -> VarDecl:
         type_tok = self.peek()
-        is_const = False
+        leading_const = False
         if self.peek().kind == "const":
-            self.advance(); is_const = True
+            self.advance(); leading_const = True
+        is_const = False
+        pointee_const = False
         is_auto = self.peek().kind == "auto"
         if is_auto:
             self.advance(); t = "auto"
+            if leading_const: is_const = True
         else:
             t = self.parse_type()
             if t == "void":
                 raise ParseError(f"a variable cannot have type 'void' (line {type_tok.line})")
+            if leading_const and t.endswith("*"):
+                pointee_const = True
+            else:
+                is_const = leading_const
+        if self.peek().kind == "const":
+            self.advance()
+            if not t.endswith("*"):
+                raise ParseError("'const' after a non-pointer variable type is not valid")
+            is_const = True
         name = self.expect("IDENT").value
         init = None
         if self.peek().kind == "=":
             self.advance(); init = self.parse_expr()
         elif self.peek().kind == "=>":
-            self.advance(); init = self.parse_expr()
+            self.advance()
+            value = self.parse_expr()
+            # `T* p => value` is Jaguar's safe allocation shorthand:
+            # allocate one T and initialize it. It is intentionally not an
+            # alias for assigning an arbitrary integer/null pointer.
+            if t.endswith("*"):
+                init = NewExpr(t.rstrip("*"), [value])
+            else:
+                init = value
         self.expect(";")
         if (is_auto or is_const) and init is None:
             raise ParseError(f"a variable '{'auto' if is_auto else 'const'}' '{name}' must be initialized (line {type_tok.line})")
-        return VarDecl(t, name, init, is_const)
+        return VarDecl(t, name, init, is_const, pointee_const)
 
     def parse_var_decl(self) -> VarDecl:
         line = self.peek().line
@@ -1154,11 +1250,21 @@ class Parser:
                     self.advance(); parts.append(self.expect("IDENT").value)
                 self.expect(";")
                 return self._mark_line(UsingNamespaceStmt(":".join(parts)), line)
-            name = self.expect("IDENT").value
+            first = self.expect("IDENT").value
+            if self.peek().kind == ":":
+                parts = [first]
+                while self.peek().kind == ":":
+                    self.advance(); parts.append(self.expect("IDENT").value)
+                namespace = ":".join(parts[:-1]); symbol = parts[-1]
+                alias = symbol
+                if self.peek().kind == "as":
+                    self.advance(); alias = self.expect("IDENT").value
+                self.expect(";")
+                return self._mark_line(UsingSymbolStmt(namespace, symbol, alias), line)
             self.expect("=")
             target = self.parse_type()
             self.expect(";")
-            return self._mark_line(TypeAliasStmt(name, target), line)
+            return self._mark_line(TypeAliasStmt(first, target), line)
         if tok.kind == "signal":
             self.advance()
             self.expect(":")
@@ -1402,6 +1508,9 @@ class Resolver:
         self.classes: Dict[str, ClassDecl] = {}
         self.type_aliases: Dict[str, str] = {}
         self.using_namespaces: list[str] = []
+        self.using_symbols: Dict[str, Tuple[str, str]] = {}
+        self.enums: Dict[str, EnumDecl] = {}
+        self.enum_values: Dict[Tuple[str, str], str] = {}
         for item in program.items:
             if isinstance(item, TypeAliasDecl):
                 if item.name in self.type_aliases:
@@ -1410,6 +1519,20 @@ class Resolver:
             elif isinstance(item, UsingNamespaceDecl):
                 if item.namespace not in self.using_namespaces:
                     self.using_namespaces.append(item.namespace)
+            elif isinstance(item, UsingSymbolDecl):
+                if item.alias in self.using_symbols and self.using_symbols[item.alias] != (item.namespace, item.name):
+                    raise ResolverError(f"using symbol '{item.alias}' is imported more than once with different targets")
+                self.using_symbols[item.alias] = (item.namespace, item.name)
+            elif isinstance(item, EnumDecl):
+                key = f"{item.namespace}:{item.name}" if item.namespace else item.name
+                if key in self.enums:
+                    raise ResolverError(f"enum '{key}' declared multiple times")
+                self.enums[key] = item
+                for value in item.values:
+                    vk=(item.namespace or "", value)
+                    if vk in self.enum_values:
+                        raise ResolverError(f"enum value '{value}' declared multiple times in namespace '{item.namespace or '<global>'}'")
+                    self.enum_values[vk]=key
         def resolve_alias(t, seen=None):
             seen = set() if seen is None else seen
             if not isinstance(t, str): return t
@@ -1420,6 +1543,14 @@ class Resolver:
                 raise ResolverError(f"circular type alias involving '{t}'")
             if t in self.type_aliases:
                 return resolve_alias(self.type_aliases[t], seen | {t})
+            imported = self.using_symbols.get(t)
+            if imported:
+                ns, name = imported
+                enum_key = f"{ns}:{name}"
+                if enum_key in self.enums:
+                    return f"{ns}_{name}"
+                if not ns and name in self.classes:
+                    return name
             if "<" in t and t.endswith(">"):
                 head=t[:t.index("<")]
                 inner=t[t.index("<")+1:-1]
@@ -1477,9 +1608,10 @@ class Resolver:
                 for x in e.items: rewrite_expr(x)
             elif isinstance(e, NamedArg): rewrite_expr(e.expr)
 
-        def rewrite_stmt(st, aliases=None, namespaces=None):
+        def rewrite_stmt(st, aliases=None, namespaces=None, symbols=None):
             aliases = dict(self.type_aliases if aliases is None else aliases)
             namespaces = list(self.using_namespaces if namespaces is None else namespaces)
+            symbols = dict(self.using_symbols) if symbols is None else symbols
             def resolve_local(t, seen=None):
                 seen = set() if seen is None else seen
                 if not isinstance(t, str): return t
@@ -1488,11 +1620,24 @@ class Resolver:
                     return resolve_local(base, seen) + "*" * (len(t)-len(base))
                 if t in seen: raise ResolverError(f"circular type alias involving '{t}'")
                 if t in aliases: return resolve_local(aliases[t], seen | {t})
+                imported = symbols.get(t)
+                if imported:
+                    ns, name = imported
+                    enum_key = f"{ns}:{name}"
+                    if enum_key in self.enums:
+                        return f"{ns}_{name}"
+                    if name in self.classes and not ns:
+                        return name
+                for ns in namespaces:
+                    enum_key=f"{ns}:{t}"
+                    if enum_key in self.enums:
+                        return f"{ns}_{t}"
                 return canonical_type(t)
             def annotate_expr(e):
                 if e is None: return
                 if isinstance(e, Call):
                     setattr(e, "_using_namespaces", list(namespaces))
+                    setattr(e, "_using_symbols", dict(symbols))
                     annotate_expr(e.callee)
                     for a in e.args: annotate_expr(a.expr if isinstance(a, NamedArg) else a)
                 elif isinstance(e, UnaryOp): annotate_expr(e.operand)
@@ -1509,6 +1654,9 @@ class Resolver:
             if isinstance(st, UsingNamespaceStmt):
                 if st.namespace not in namespaces: namespaces.append(st.namespace)
                 return aliases, namespaces
+            if isinstance(st, UsingSymbolStmt):
+                symbols[st.alias] = (st.namespace, st.name)
+                return aliases, namespaces
             if isinstance(st, TypeAliasStmt):
                 aliases[st.name] = resolve_local(st.target)
                 return aliases, namespaces
@@ -1517,11 +1665,11 @@ class Resolver:
             elif isinstance(st, ForLoopStmt):
                 st.var_type = resolve_local(st.var_type); annotate_expr(st.start); annotate_expr(st.end)
                 ca=dict(aliases); cn=list(namespaces)
-                for x in st.body.statements: ca, cn = rewrite_stmt(x, ca, cn)
+                for x in st.body.statements: ca, cn = rewrite_stmt(x, ca, cn, dict(symbols))
             elif isinstance(st, CollectionLoopStmt):
                 annotate_expr(st.collection)
                 ca=dict(aliases); cn=list(namespaces)
-                for x in st.body.statements: ca, cn = rewrite_stmt(x, ca, cn)
+                for x in st.body.statements: ca, cn = rewrite_stmt(x, ca, cn, dict(symbols))
             elif isinstance(st, AssignStmt): annotate_expr(st.expr)
             elif isinstance(st, PointerAssignStmt): annotate_expr(st.target); annotate_expr(st.expr)
             elif isinstance(st, MemberAssignStmt): annotate_expr(st.target); annotate_expr(st.expr)
@@ -1530,34 +1678,34 @@ class Resolver:
             elif isinstance(st, IfStmt):
                 annotate_expr(st.cond)
                 ca=dict(aliases); cn=list(namespaces)
-                for x in st.then_block.statements: ca, cn = rewrite_stmt(x, ca, cn)
-                if isinstance(st.else_branch, IfStmt): rewrite_stmt(st.else_branch, dict(aliases), list(namespaces))
+                for x in st.then_block.statements: ca, cn = rewrite_stmt(x, ca, cn, dict(symbols))
+                if isinstance(st.else_branch, IfStmt): rewrite_stmt(st.else_branch, dict(aliases), list(namespaces), dict(symbols))
                 elif isinstance(st.else_branch, Block):
                     ca=dict(aliases); cn=list(namespaces)
-                    for x in st.else_branch.statements: ca, cn = rewrite_stmt(x, ca, cn)
+                    for x in st.else_branch.statements: ca, cn = rewrite_stmt(x, ca, cn, dict(symbols))
             elif isinstance(st, WhileStmt):
                 annotate_expr(st.cond)
                 ca=dict(aliases); cn=list(namespaces)
-                for x in st.body.statements: ca, cn = rewrite_stmt(x, ca, cn)
+                for x in st.body.statements: ca, cn = rewrite_stmt(x, ca, cn, dict(symbols))
             elif isinstance(st, LoopStmt):
                 ca=dict(aliases); cn=list(namespaces)
-                for x in st.body.statements: ca, cn = rewrite_stmt(x, ca, cn)
+                for x in st.body.statements: ca, cn = rewrite_stmt(x, ca, cn, dict(symbols))
             elif isinstance(st, VariableChangeHandler):
                 ca=dict(aliases); cn=list(namespaces)
-                for x in st.body.statements: ca, cn = rewrite_stmt(x, ca, cn)
+                for x in st.body.statements: ca, cn = rewrite_stmt(x, ca, cn, dict(symbols))
             return aliases, namespaces
 
         for item in program.items:
             if isinstance(item, FunctionDecl):
-                aliases=dict(self.type_aliases); namespaces=list(self.using_namespaces)
-                for st in item.body.statements: aliases, namespaces = rewrite_stmt(st, aliases, namespaces)
+                aliases=dict(self.type_aliases); namespaces=list(self.using_namespaces); symbols=dict(self.using_symbols)
+                for st in item.body.statements: aliases, namespaces = rewrite_stmt(st, aliases, namespaces, symbols)
                 for p in item.params: rewrite_expr(p.default)
             elif isinstance(item, ClassDecl):
                 for f in item.fields: rewrite_type(f.type); rewrite_expr(f.init)
                 for m in item.methods:
                     for p in m.params: rewrite_expr(p.default)
-                    aliases=dict(self.type_aliases); namespaces=list(self.using_namespaces)
-                    for st in m.body.statements: aliases, namespaces = rewrite_stmt(st, aliases, namespaces)
+                    aliases=dict(self.type_aliases); namespaces=list(self.using_namespaces); symbols=dict(self.using_symbols)
+                    for st in m.body.statements: aliases, namespaces = rewrite_stmt(st, aliases, namespaces, symbols)
             elif isinstance(item, VarDecl):
                 rewrite_expr(item.init)
 
@@ -1589,7 +1737,9 @@ class Resolver:
             self.groups[key] = representatives
 
         setattr(program, "_using_namespaces", list(self.using_namespaces))
+        setattr(program, "_using_symbols", dict(self.using_symbols))
         setattr(program, "_type_aliases", dict(self.type_aliases))
+        setattr(program, "_enums", dict(self.enums))
         self._resolve_classes()
 
     def _resolve_classes(self):
@@ -2158,7 +2308,9 @@ class CodeGen:
         self.program = program
         self.groups = groups
         self.classes: Dict[str, ClassDecl] = {x.name:x for x in program.items if isinstance(x, ClassDecl)}
+        self.enums: Dict[str, EnumDecl] = {x.name:x for x in program.items if isinstance(x, EnumDecl) and not x.namespace}
         self.using_namespaces = list(getattr(program, "_using_namespaces", []))
+        self.using_symbols = dict(getattr(program, "_using_symbols", {}))
         self.forward_decls = [(x.kind, x.name) for x in program.items if isinstance(x, ForwardDecl)]
         if "string" not in self.classes:
             self.classes["string"] = _builtin_string_class()
@@ -2182,6 +2334,7 @@ class CodeGen:
         # variables globales : nom -> type Jaguar (pour l'inférence de
         # types dans la résolution de surcharge, et la validation)
         self.global_types: Dict[str, str] = {}
+        self.global_const: set[str] = set()
         fn_c_names = {
             fn.mangled_name for fns in groups.values() for fn in fns
         }
@@ -2199,6 +2352,27 @@ class CodeGen:
                         f"(in C) as a function"
                     )
                 self.global_types[item.name] = item.type
+                if item.is_const: self.global_const.add(item.name)
+
+    def _walk_expressions(self):
+        def exprs(e):
+            if e is None: return
+            yield e
+            if isinstance(e, (UnaryOp, CastExpr)): yield from exprs(e.operand)
+            elif isinstance(e, BinOp): yield from exprs(e.left); yield from exprs(e.right)
+            elif isinstance(e, NewExpr):
+                for a in e.args: yield from exprs(a.expr if isinstance(a, NamedArg) else a)
+            elif isinstance(e, MemberAccess): yield from exprs(e.obj)
+            elif isinstance(e, IndexAccess): yield from exprs(e.obj); yield from exprs(e.index)
+            elif isinstance(e, Call):
+                yield from exprs(e.callee)
+                for a in e.args: yield from exprs(a.expr if isinstance(a, NamedArg) else a)
+        for item in self.program.items:
+            if isinstance(item, FunctionDecl):
+                for st in _iter_stmts(item.body.statements):
+                    for attr in ("expr","cond","init","target","start","end","collection"):
+                        if hasattr(st, attr): yield from exprs(getattr(st, attr))
+            elif isinstance(item, VarDecl): yield from exprs(item.init)
 
     def gen(self) -> str:
         used_types = self._used_builtin_types()
@@ -2222,8 +2396,13 @@ class CodeGen:
         pair_lines = self._pair_typedefs()
 
         parts = []
-        if self.classes:
+        needs_new = any(isinstance(x, NewExpr) for x in self._walk_expressions())
+        if self.classes or needs_new:
             parts.append("#include <stdlib.h>")
+        if needs_new:
+            parts.append("#include <string.h>")
+            parts.append("#include <stdio.h>")
+            parts.append("static void *_j_alloc_value(size_t size, const void *src) { void *p = malloc(size); if (!p) { fprintf(stderr, \"Jaguar runtime error: allocation failed\\n\"); abort(); } memcpy(p, src, size); return p; }")
         # All named class/struct types get an early C forward declaration so
         # pointers and prototypes may refer to them before their definition.
         known_class_names = set(self.classes) - {"string"}
@@ -2240,6 +2419,14 @@ class CodeGen:
                 forward_lines.append(line)
         if forward_lines:
             parts.append("\n".join(forward_lines))
+        enum_lines = []
+        for en in [x for x in self.program.items if isinstance(x, EnumDecl)]:
+            cname = f"{en.namespace}_{en.name}" if en.namespace else en.name
+            enum_lines.append("typedef enum " + cname + " {")
+            enum_lines.extend(f"    {cname}_{v}{',' if i < len(en.values)-1 else ''}" for i,v in enumerate(en.values))
+            enum_lines.append(f"}} {cname};")
+        if enum_lines:
+            parts.append("\n".join(enum_lines))
         # Le runtime doit apparaître après les typedefs : fs:read retourne
         # `string`, donc son helper C a besoin de ce type.
         if typedef_lines:
@@ -2693,7 +2880,7 @@ class CodeGen:
         self._current_source_line = getattr(item, "_jaguar_line", 1)
         if isinstance(item, PreprocLine):
             return item.text
-        if isinstance(item, (ForwardDecl, TypeAliasDecl, UsingNamespaceDecl, UsingImportDecl)):
+        if isinstance(item, (ForwardDecl, TypeAliasDecl, UsingNamespaceDecl, UsingSymbolDecl, UsingImportDecl, EnumDecl)):
             return ""
         if isinstance(item, StructDecl):
             return self.gen_struct(item)
@@ -2701,7 +2888,7 @@ class CodeGen:
             return self.gen_class(item)
         if isinstance(item, FunctionDecl):
             if item.is_prototype:
-                params_str = ", ".join(("const " if p.is_const else "") + f"{c_type(p.type)} {p.name}" for p in item.params)
+                params_str = ", ".join(self._param_c_decl(p) for p in item.params)
                 return f"{c_type(item.ret_type)} {item.mangled_name}({params_str});"
             return self.gen_function(item)
         if isinstance(item, VarDecl):
@@ -2761,7 +2948,7 @@ class CodeGen:
                 f"constants): function calls and references to another variable are not allowed"
                 f""
             )
-        return f"{'const ' if v.is_const else ''}{ctype} {v.name} = {self.gen_expr(v.init, {})};"
+        return f"{self._var_c_decl(v)} = {self.gen_expr(v.init, {})};"
 
     def gen_struct(self, s: StructDecl) -> str:
         lines = [f"struct {s.name} {{"]
@@ -2794,7 +2981,16 @@ class CodeGen:
         if cls.base: lines.append(f"    {cls.base} _base;")
         if any(getattr(f, "is_exposed", False) for _, f in self._class_all_fields(cls)):
             lines.append("    _jReflectMap _reflect_map;")
-        for f in cls.fields: lines.append(f"    {'const ' if f.is_const else ''}{c_type(f.type)} {f.name};")
+        for f in cls.fields:
+            if f.pointee_const and f.type.endswith("*"):
+                decl="const " + c_type(f.type[:-1]) + " *"
+            elif f.is_const and f.type.endswith("*"):
+                decl=c_type(f.type) + " const"
+            elif f.is_const:
+                decl="const " + c_type(f.type)
+            else:
+                decl=c_type(f.type)
+            lines.append(f"    {decl} {f.name};")
         lines.append("};")
         lines.append(f"struct {cls.name}_vtable {{")
         # Keep reflection metadata first so every class vtable has the same
@@ -2942,15 +3138,40 @@ class CodeGen:
     def _is_special_main(fn: FunctionDecl) -> bool:
         return fn.namespace is None and fn.name == "main"
 
+    def _param_c_decl(self, p: Param) -> str:
+        if p.type.endswith("*") and p.pointee_const:
+            base = "const " + c_type(p.type[:-1]) + " *"
+        elif p.type.endswith("*") and p.is_const:
+            base = c_type(p.type) + " const"
+        elif p.is_const:
+            base = "const " + c_type(p.type)
+        else:
+            base = c_type(p.type)
+        return f"{base} {p.name}"
+
+    def _var_c_decl(self, v: VarDecl) -> str:
+        if v.type.endswith("*") and v.pointee_const:
+            base = "const " + c_type(v.type[:-1]) + " *"
+        elif v.type.endswith("*") and v.is_const:
+            base = c_type(v.type) + " const"
+        elif v.is_const:
+            base = "const " + c_type(v.type)
+        else:
+            base = c_type(v.type)
+        return f"{base} {v.name}"
+
     def gen_function(self, fn: FunctionDecl) -> str:
         self._current_source_line = getattr(fn, "_jaguar_line", 1)
         if self._is_special_main(fn):
             return self._gen_main(fn)
 
         self._change_handlers = {}
-        params_str = ", ".join(("const " if p.is_const else "") + f"{c_type(p.type)} {p.name}" for p in fn.params)
+        params_str = ", ".join(self._param_c_decl(p) for p in fn.params)
         header = f"{c_type(fn.ret_type)} {fn.mangled_name}({params_str})"
         local_types = {p.name: p.type for p in fn.params}
+        self._readonly_vars = {p.name for p in fn.params if p.is_const}
+        self._pointee_const_vars = {p.name for p in fn.params if p.pointee_const}
+        self._current_return_type = fn.ret_type
         return f"{header} {self.gen_block(fn.body, local_types)}"
 
     def _gen_main(self, fn: FunctionDecl) -> str:
@@ -2974,6 +3195,9 @@ class CodeGen:
         # _in_main : tout `return;` (même dans un if / une boucle imbriquée)
         # devient `return 0;`
         self._change_handlers = {}
+        self._readonly_vars = set()
+        self._pointee_const_vars = set()
+        self._current_return_type = fn.ret_type
         self._in_main = True
         body_lines = self._gen_body_lines(fn.body.statements, local_types)
         self._in_main = False
@@ -3041,8 +3265,14 @@ class CodeGen:
                         if parts[1]=="string": out.extend([f"if ({name}.second) {{ string_destr({name}.second); free({name}.second); }}"])
                 else: out.append(f"_j_container_destroy(&{name});")
             else:
-                out.append(f"if ({name}) {type_name}_destr({name});")
-                out.append(f"free({name});")
+                if isinstance(type_name, str) and type_name.endswith("*"):
+                    base = type_name[:-1]
+                    if base in self.classes:
+                        out.append(f"if ({name}) {base}_destr({name});")
+                    out.append(f"if ({name}) free({name});")
+                else:
+                    out.append(f"if ({name}) {type_name}_destr({name});")
+                    out.append(f"free({name});")
         return out
 
     def _all_active_cleanup_lines(self) -> List[str]:
@@ -3066,7 +3296,7 @@ class CodeGen:
         self._scope_owned.append(owned)
 
         for s in statements:
-            if isinstance(s, (UsingNamespaceStmt, TypeAliasStmt)):
+            if isinstance(s, (UsingNamespaceStmt, UsingSymbolStmt, TypeAliasStmt)):
                 continue
             self._current_source_line = getattr(s, "_jaguar_line", self._current_source_line)
             if isinstance(s, VarDecl):
@@ -3099,6 +3329,11 @@ class CodeGen:
                 # `auto` is resolved from its initializer.
                 if s.type == "auto":
                     s.type = self._resolve_auto_type(s.init, local_types)
+                if s.init is not None and s.type != "auto":
+                    init_type = self._check_expression_types(s.init, local_types)
+                    self._target_pointee_const = s.pointee_const
+                    self._check_assignable(s.type, init_type, f"initializer of variable '{s.name}'", s.init)
+                    self._target_pointee_const = False
                 if self._generic_parts(s.type):
                     init = None
                 elif s.init is not None and s.type != "auto" and s.type in self.classes and isinstance(s.init, Call) and isinstance(s.init.callee, NamespacedIdent) and s.init.callee.namespace == "factory" and s.init.callee.name == "construct":
@@ -3120,28 +3355,31 @@ class CodeGen:
                     owned.append((s.name,s.type))
                     continue
                 local_types[s.name] = s.type
+                if not hasattr(self, "_pointee_const_vars"): self._pointee_const_vars = set()
+                if s.pointee_const: self._pointee_const_vars.add(s.name)
                 if self._is_owned_class_type(s.type):
+                    owned.append((s.name, s.type))
+                elif s.init is not None and isinstance(s.init, NewExpr) and s.type.endswith("*"):
                     owned.append((s.name, s.type))
                 ctype = c_type(s.type)
                 is_class = s.type in self.classes
                 if is_class: ctype = s.type + " *"
 
-                const_prefix = "const " if s.is_const else ""
+                cdecl = self._var_c_decl(s)
                 if s.is_const:
                     self._readonly_vars.add(s.name)
                 if not self.c89:
-                    # ordre du source conservé, initialiseur compris
                     if init is not None:
-                        stmt_lines.append(f"{const_prefix}{ctype} {s.name} = {init};")
+                        stmt_lines.append(f"{cdecl} = {init};")
                     else:
-                        stmt_lines.append(f"{const_prefix}{ctype} {s.name};")
+                        stmt_lines.append(f"{cdecl};")
                 elif in_prefix:
                     if init is not None:
-                        decl_lines.append(f"{const_prefix}{ctype} {s.name} = {init};")
+                        decl_lines.append(f"{cdecl} = {init};")
                     else:
-                        decl_lines.append(f"{const_prefix}{ctype} {s.name};")
+                        decl_lines.append(f"{cdecl};")
                 else:
-                    decl_lines.append(f"{const_prefix}{ctype} {s.name};")
+                    decl_lines.append(f"{cdecl};")
                     if init is not None:
                         stmt_lines.append(f"{s.name} = {init};")
                 continue
@@ -3196,6 +3434,79 @@ class CodeGen:
         lines.append("}")
         return lines
 
+    def _expr_pointee_const(self, e):
+        if isinstance(e, Ident):
+            return e.name in getattr(self, "_pointee_const_vars", set())
+        if isinstance(e, UnaryOp) and e.op == "&" and isinstance(e.operand, Ident):
+            return e.operand.name in getattr(self, "_readonly_vars", set())
+        return False
+
+    def _check_assignable(self, target_type, source_type, context="assignment", source_expr=None):
+        target_type = canonical_type(target_type) if isinstance(target_type, str) else target_type
+        if isinstance(source_type, tuple):
+            source_type = source_type[1] if source_type[0] != "literal" else source_type
+        if source_type is None:
+            raise CodeGenError(f"cannot assign an expression of unknown type to '{target_type}' ({context})")
+        if isinstance(source_type, tuple) and source_type[0] == "literal":
+            category = source_type[1]
+            if category == "int" and target_type in INTEGER_TYPES | FLOAT_TYPES: return
+            if category == "float" and target_type in FLOAT_TYPES: return
+            if category == "bool" and target_type == "bool": return
+            raise CodeGenError(f"type mismatch: literal of type '{category}' cannot initialize '{target_type}' ({context})")
+        if source_type == "nullptr":
+            if isinstance(target_type, str) and target_type.endswith("*"): return
+            raise CodeGenError(f"cannot assign 'nullptr' to non-pointer type '{target_type}' ({context})")
+        if target_type == source_type: return
+        if target_type == "bool":
+            raise CodeGenError(f"cannot assign '{source_type}' to 'bool' ({context}); an explicit cast is required")
+        if isinstance(target_type, str) and target_type.endswith("*"):
+            if isinstance(source_type, str) and source_type.endswith("*") and source_type == target_type:
+                if source_expr is not None and self._expr_pointee_const(source_expr) and not getattr(self, "_target_pointee_const", False):
+                    raise CodeGenError(f"cannot discard constness when assigning to '{target_type}' ({context}); use a pointer-to-const destination")
+                return
+            raise CodeGenError(f"cannot assign '{source_type}' to pointer type '{target_type}' ({context}); use an explicit cast if this is intentional")
+        if target_type in INTEGER_TYPES and source_type in INTEGER_TYPES: return
+        if target_type in FLOAT_TYPES and source_type in INTEGER_TYPES | FLOAT_TYPES: return
+        if target_type == "string" and source_type == "string": return
+        if target_type in self.classes and source_type == target_type: return
+        if target_type in getattr(self, "enums", {}) and source_type == target_type: return
+        raise CodeGenError(f"type mismatch: cannot assign '{source_type}' to '{target_type}' ({context})")
+
+    def _check_expression_types(self, e, local_types):
+        if e is None: return None
+        def numeric(t):
+            if isinstance(t, tuple) and t[0] == "literal":
+                return t[1] in ("int", "float")
+            return t in INTEGER_TYPES | FLOAT_TYPES
+        if isinstance(e, BinOp):
+            lt=self.infer_type(e.left,local_types); rt=self.infer_type(e.right,local_types)
+            if e.op in ("+","-","*","/","%"):
+                if lt == "string" or rt == "string":
+                    raise CodeGenError(f"operator '{e.op}' is not defined for 'string' operands")
+                if not (numeric(lt) and numeric(rt)):
+                    raise CodeGenError(f"operator '{e.op}' requires numeric operands, got '{lt}' and '{rt}'")
+            elif e.op in _BOOL_RESULT_OPS:
+                if lt is None or rt is None:
+                    raise CodeGenError(f"operator '{e.op}' cannot be checked because an operand has unknown type")
+                if e.op in ("<",">","<=",">=") and not (numeric(lt) and numeric(rt)):
+                    raise CodeGenError(f"operator '{e.op}' requires numeric operands, got '{lt}' and '{rt}'")
+            self._check_expression_types(e.left,local_types); self._check_expression_types(e.right,local_types)
+        elif isinstance(e, UnaryOp):
+            t=self.infer_type(e.operand,local_types)
+            if e.op == "!" and t != "bool": raise CodeGenError(f"operator '!' requires 'bool', got '{t}'")
+            if e.op in ("-","+") and not numeric(t): raise CodeGenError(f"unary '{e.op}' requires a numeric operand, got '{t}'")
+            if e.op == "*" and not (isinstance(t,str) and t.endswith("*")): raise CodeGenError(f"cannot dereference '{t}'; a pointer is required")
+            self._check_expression_types(e.operand,local_types)
+        elif isinstance(e, Call):
+            self.infer_type(e,local_types)
+            for a in e.args: self._check_expression_types(a.expr if isinstance(a,NamedArg) else a,local_types)
+        elif isinstance(e, MemberAccess): self.infer_type(e,local_types); self._check_expression_types(e.obj,local_types)
+        elif isinstance(e, IndexAccess): self.infer_type(e,local_types); self._check_expression_types(e.obj,local_types); self._check_expression_types(e.index,local_types)
+        elif isinstance(e, CastExpr): self._check_expression_types(e.operand,local_types)
+        elif isinstance(e, NewExpr):
+            for a in e.args: self._check_expression_types(a.expr if isinstance(a,NamedArg) else a,local_types)
+        return self.infer_type(e,local_types)
+
     def gen_stmt(self, s, local_types: dict) -> List[str]:
         """Lignes C d'une instruction. Une instruction simple donne une
         seule ligne ; if / while / for_loop en donnent plusieurs, dont les
@@ -3203,7 +3514,11 @@ class CodeGen:
         if isinstance(s, ReturnStmt):
             cleanup = self._all_active_cleanup_lines()
             if s.expr is None:
+                if self._current_return_type not in ("void", "int") and not self._in_main:
+                    raise CodeGenError(f"non-void function must return a value of type '{self._current_return_type}'")
                 return cleanup + ["return 0;" if self._in_main else "return;"]
+            expr_type=self._check_expression_types(s.expr, local_types)
+            self._check_assignable(self._current_return_type, expr_type, "return statement")
             expr = self.gen_expr(s.expr, local_types)
             return cleanup + [f"return {expr};"]
         if isinstance(s, VariableChangeHandler):
@@ -3227,27 +3542,52 @@ class CodeGen:
                 elif t in INTEGER_TYPES: call = f'_j_reflect_set_member((void*){obj},{name}->data,"{t}",(long long)({expr}),(unsigned long long)({expr}),0.0,0,0)'
                 else: call = f'_j_reflect_set_member((void*){obj},{name}->data,"{t}",0,0,0.0,0,(void*)({expr}))'
                 return [call + ";"]
+            if isinstance(s.target.obj, Ident) and s.target.obj.name in getattr(self, "_pointee_const_vars", set()):
+                raise CodeGenError(f"cannot modify member '{s.target.name}' through const pointer '{s.target.obj.name}'")
             ot = self.infer_type(s.target.obj, local_types)
+            if isinstance(ot, str) and ot.endswith("*"): ot = ot[:-1]
             owner, member = self._find_class_member(ot, s.target.name, "field") if ot in self.classes else (None, None)
             if member is not None and getattr(member, "is_const", False):
                 raise CodeGenError(f"const member '{s.target.name}' cannot be modified")
+            if member is not None and getattr(member, "pointee_const", False):
+                # The field itself may be reassigned, but its pointee cannot be modified.
+                pass
             if self._current_class_method_const and isinstance(s.target.obj, Ident) and s.target.obj.name == "this":
                 raise CodeGenError(f"a const method cannot modify member '{s.target.name}'")
+            target_type = self.infer_type(s.target, local_types)
+            value_type = self._check_expression_types(s.expr, local_types)
+            self._check_assignable(target_type, value_type, f"assignment to member '{s.target.name}'")
             target = self.gen_member_access(s.target, local_types)
             return [f"{target} = {self.gen_expr(s.expr, local_types)};"]
         if isinstance(s, PointerAssignStmt):
+            if isinstance(s.target, UnaryOp) and s.target.op == "*":
+                operand=s.target.operand
+                if isinstance(operand, Ident) and operand.name in getattr(self, "_pointee_const_vars", set()):
+                    raise CodeGenError(f"cannot modify through const pointer '{operand.name}'")
+                if isinstance(operand, MemberAccess):
+                    ot=self.infer_type(operand.obj, local_types)
+                    if isinstance(ot,str) and ot.endswith("*"): ot=ot[:-1]
+                    _, mf=self._find_class_member(ot, operand.name, "field") if ot in self.classes else (None,None)
+                    if mf is not None and getattr(mf,"pointee_const",False):
+                        raise CodeGenError(f"cannot modify through const pointer member '{operand.name}'")
             target_type = self.infer_type(s.target, local_types)
             if target_type is None:
                 raise CodeGenError("cannot determine the type of the pointer target")
+            value_type=self._check_expression_types(s.expr,local_types)
+            self._check_assignable(target_type, value_type, "pointer dereference assignment")
             return [f"{self.gen_expr(s.target, local_types)} = {self.gen_expr(s.expr, local_types)};"]
         if isinstance(s, AssignStmt):
             if s.name not in local_types and s.name not in self.global_types:
                 raise CodeGenError(
                     f"assignment to '{s.name}': variable is not declared"
                 )
-            if s.name in self._readonly_vars:
+            if s.name in self._readonly_vars or s.name in self.global_const:
                 raise CodeGenError(f"const/read-only variable '{s.name}' cannot be modified")
             target_type = local_types.get(s.name, self.global_types.get(s.name))
+            value_type = self._check_expression_types(s.expr, local_types)
+            self._target_pointee_const = s.name in getattr(self, "_pointee_const_vars", set())
+            self._check_assignable(target_type, value_type, f"assignment to '{s.name}'", s.expr)
+            self._target_pointee_const = False
             if isinstance(target_type, str) and target_type.endswith("*"):
                 value_type = self.infer_type(s.expr, local_types)
                 if value_type != "nullptr" and not (isinstance(value_type, str) and value_type.endswith("*")):
@@ -3269,8 +3609,17 @@ class CodeGen:
         if isinstance(s, ExprStmt):
             return [f"{self.gen_expr(s.expr, local_types)};"]
         if isinstance(s, IfStmt):
+            ct=self._check_expression_types(s.cond, local_types)
+            # Jaguar permits pointers in boolean contexts: a non-null pointer
+            # is true and nullptr is false.  This is intentional and mirrors
+            # C pointer truthiness without allowing arbitrary integers.
+            if ct != "bool" and not (isinstance(ct, str) and ct.endswith("*")):
+                raise CodeGenError(f"if condition must have type 'bool' or a pointer, got '{ct}'")
             return self._gen_if(s, local_types)
         if isinstance(s, WhileStmt):
+            ct=self._check_expression_types(s.cond, local_types)
+            if ct != "bool" and not (isinstance(ct, str) and ct.endswith("*")):
+                raise CodeGenError(f"while condition must have type 'bool' or a pointer, got '{ct}'")
             return self._gen_while(s, local_types)
         if isinstance(s, LoopStmt):
             return self._gen_loop(s, local_types)
@@ -3524,6 +3873,11 @@ class CodeGen:
 
         candidates = self.groups.get(key)
         if not candidates and isinstance(call.callee, Ident):
+            symbol_imports = getattr(call, "_using_symbols", {})
+            imported = symbol_imports.get(call.callee.name)
+            if imported:
+                candidates = self.groups.get(imported, [])
+                name = imported[1]
             namespace_matches = []
             for ns in getattr(call, "_using_namespaces", self.using_namespaces):
                 fns = self.groups.get((ns, call.callee.name), [])
@@ -3539,6 +3893,9 @@ class CodeGen:
         for fn in candidates:
             try: ordered = self._ordered_call_args(call.args, fn.params, f"'{name}'")
             except CodeGenError: continue
+            for arg, param in zip(ordered, fn.params):
+                at=self.infer_type(arg.expr if isinstance(arg,NamedArg) else arg, local_types)
+                self._check_assignable(param.type, at, f"argument '{param.name}' of function '{name}'")
             prepared.append((fn, ordered))
         if len(candidates) == 1:
             self._ordered_call_args(call.args, candidates[0].params, f"'{name}'")
@@ -3587,7 +3944,20 @@ class CodeGen:
                 if m is not None:
                     self._check_member_access(mowner, m, e.name)
                     return m.ret_type
-            return local_types.get(e.name) or self.global_types.get(e.name) or (e.name if e.name in self.classes else None)
+            t = local_types.get(e.name) or self.global_types.get(e.name) or (e.name if e.name in self.classes else None)
+            if t is not None: return t
+            symbols = getattr(self.program, "_using_symbols", {})
+            imported = symbols.get(e.name)
+            if imported:
+                ns, name = imported
+                for key, en in getattr(self.program, "_enums", {}).items():
+                    if key == f"{ns}:{en.name}" and name in en.values:
+                        return f"{ns}_{en.name}" if ns else en.name
+            for ns in getattr(self.program, "_using_namespaces", []):
+                for key, en in getattr(self.program, "_enums", {}).items():
+                    if key == f"{ns}:{en.name}" and e.name in en.values:
+                        return f"{ns}_{en.name}"
+            return None
         if isinstance(e, IndexAccess):
             ot=self.infer_type(e.obj, local_types); gp=self._generic_parts(ot)
             if not gp: raise CodeGenError(f"'[]' cannot be used on '{ot}'")
@@ -3620,9 +3990,15 @@ class CodeGen:
             if m: return m.ret_type
             return None
         if isinstance(e, NamespacedIdent):
+            enums = getattr(self.program, "_enums", {})
+            for key, en in enums.items():
+                if (en.namespace == e.namespace and e.name in en.values) or (en.name == e.namespace and e.name in en.values):
+                    return en.name if not en.namespace else f"{en.namespace}_{en.name}"
             return None
         if isinstance(e, CastExpr):
             return e.target_type
+        if isinstance(e, NewExpr):
+            return e.type + "*"
         if isinstance(e, UnaryOp):
             if e.op == "!":
                 return "bool"
@@ -3857,10 +4233,17 @@ class CodeGen:
         if isinstance(e, NewExpr):
             if e.type in self.classes:
                 cls=self.classes[e.type]; ctor=next((m for m in cls.methods if m.is_constructor),None)
-                ordered=self._ordered_call_args(e.args,ctor.params if ctor else [],f"constructeur '{e.type}'") if ctor else []
+                ordered=self._ordered_call_args(e.args,ctor.params if ctor else [],f"constructor '{e.type}'") if ctor else []
                 return f"{e.type}_ctor(" + ", ".join(self.gen_expr(a,local_types) for a in ordered) + ")"
-            if len(e.args)!=1: raise CodeGenError(f"new {e.type}(...) expects a value")
-            return self.gen_expr(e.args[0].expr if isinstance(e.args[0],NamedArg) else e.args[0],local_types)
+            if e.type in BUILTIN_TYPEDEFS or e.type in INTEGER_TYPES or e.type in FLOAT_TYPES or e.type == "bool":
+                if len(e.args) != 1:
+                    raise CodeGenError(f"new {e.type}(value) expects exactly one initializer")
+                value=e.args[0].expr if isinstance(e.args[0],NamedArg) else e.args[0]
+                vt=self.infer_type(value,local_types)
+                self._check_assignable(e.type, vt, f"initializer of new {e.type}")
+                n=self._tmp_id; self._tmp_id+=1
+                return f"(({c_type(e.type)}*)({self.gen_expr(value,local_types)}))" if False else f"((({c_type(e.type)}*)_j_alloc_value(sizeof({c_type(e.type)}), &( {c_type(e.type)} ){{ {self.gen_expr(value,local_types)} }})))"
+            raise CodeGenError(f"cannot allocate value of unknown type '{e.type}' with new")
         if isinstance(e, ListLiteral):
             raise CodeGenError("a {...} literal must be used as a list/map initializer")
         if isinstance(e, IndexAccess):
@@ -3890,10 +4273,26 @@ class CodeGen:
                 if m:
                     self._check_member_access(mowner, m, e.name)
                     return f"{self._current_class.name}_{e.name}(self" + (", " if m.params else "") + ", ".join(p.name for p in m.params) + ")"
+            symbols = getattr(self.program, "_using_symbols", {})
+            imported = symbols.get(e.name)
+            if imported:
+                ns, name = imported
+                for key, en in getattr(self.program, "_enums", {}).items():
+                    if key == f"{ns}:{en.name}" and name in en.values:
+                        return f"{ns}_{en.name}_{name}" if ns else f"{en.name}_{name}"
+            for ns in getattr(self.program, "_using_namespaces", []):
+                for key, en in getattr(self.program, "_enums", {}).items():
+                    if key == f"{ns}:{en.name}" and e.name in en.values:
+                        return f"{ns}_{en.name}_{e.name}"
             return e.name
         if isinstance(e, MemberAccess):
             return self.gen_member_access(e, local_types)
         if isinstance(e, NamespacedIdent):
+            enums = getattr(self.program, "_enums", {})
+            for key, en in enums.items():
+                if (en.namespace == e.namespace and e.name in en.values) or (en.name == e.namespace and e.name in en.values):
+                    cname = f"{en.namespace}_{en.name}" if en.namespace else en.name
+                    return f"{cname}_{e.name}"
             if e.namespace == "factory" and e.name == "construct":
                 return "_j_factory_construct"
             if self._current_class and e.namespace in self.classes:
@@ -4118,11 +4517,7 @@ class CodeGen:
                 if target is not None:
                     callee_str = target.mangled_name
                 else:
-                    # cible inconnue dans ce fichier : mangling de repli
-                    if isinstance(e.callee, NamespacedIdent):
-                        callee_str = self.default_mangle(e.callee.name, e.callee.namespace)
-                    else:
-                        callee_str = e.callee.name
+                    raise CodeGenError(f"unknown function '{e.callee.namespace + ':' if isinstance(e.callee, NamespacedIdent) else ''}{e.callee.name}'")
             if system is not None and any(isinstance(a, NamedArg) for a in e.args):
                 raise CodeGenError("named parameters are not available for built-in jcc/sys functions")
             if system is not None:

@@ -17,11 +17,18 @@ using namespace sys;
 
 void main() {
     int x = 0;
+    int* p= nullptr;
 
-    if (p)
-    {
-        sys:print("yes p");
+    sys:print(*p);
+
+    if(p) {
+        sys:print(*p);
     }
+    else {
+        sys:print(*p);
+    }
+
+
 
     while (x < 3) {
         x = x + 1;

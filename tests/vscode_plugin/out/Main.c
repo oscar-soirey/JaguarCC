@@ -178,8 +178,12 @@ i32 math_twice(i32 x) {
 
 int main(void) {
     i32 x = 0;
+    i32 * p = ((void*)0);
+    _j_sys_print_i32((*p));
     if (p) {
-        _j_sys_print_string(string_from_cstr("yes p"));
+        _j_sys_print_i32((*p));
+    } else {
+        _j_sys_print_i32((*p));
     }
     while (x < 3) {
         x = x + 1;
