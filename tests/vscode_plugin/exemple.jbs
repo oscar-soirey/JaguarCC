@@ -2,11 +2,11 @@ version 1.0
 
 out out
 
-keep_c
-
 mode debug
+
+keep_c
 
 compile Main {
   main.ja
-  utils.ja
+  utils.jah
 }

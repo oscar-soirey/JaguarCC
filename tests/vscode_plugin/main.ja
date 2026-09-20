@@ -1,7 +1,47 @@
-using utils;
+using GL_FLOAT = float;
+using namespace math;
 
-void main()
-{
-  string a;
-  sys:print(math:add(b=10, a=4));
+class Foo;
+struct Bar;
+
+@extern
+GL_FLOAT gl_test(Bar* value);
+
+namespace math {
+    int twice(int x) {
+        return x * 2;
+    }
+}
+
+using namespace sys;
+
+void main() {
+    int x = 0;
+
+    if (p)
+    {
+        sys:print("yes p");
+    }
+
+    while (x < 3) {
+        x = x + 1;
+    }
+
+    loop {
+        break;
+    }
+
+    int* px = &x;
+    *px = 7;
+
+    int y = twice(x);
+    sys:print(y);
+
+    int* a;
+    *a = 5;
+
+    int b=8;
+    a = &b;
+
+    sys:print(*a);
 }

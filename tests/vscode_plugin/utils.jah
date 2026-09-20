@@ -2,8 +2,6 @@ namespace math {
   
   int add(int a, int b)
   {
-    sys:print(a);
-    sys:print(b);
     return a+b;
   }
 

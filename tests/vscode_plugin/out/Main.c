@@ -1,7 +1,11 @@
 #include <stdlib.h>
 
+typedef struct Foo Foo;
+typedef struct Bar Bar;
+
 typedef unsigned char _jBool;
 typedef int i32;
+typedef float f32;
 typedef struct _jString string;
 struct _jString { char *data; size_t length; };
 
@@ -152,20 +156,49 @@ static void _j_sys_print_dynamic(void *data, const char *type) {
     if (!strcmp(type, "u32")) { printf("%u\n", *((unsigned int*)data)); return; }
     if (!strcmp(type, "i64")) { printf("%lld\n", *((long long*)data)); return; }
     if (!strcmp(type, "u64")) { printf("%llu\n", *((unsigned long long*)data)); return; }
-    fprintf(stderr, "Jaguar runtime error: impossible d'imprimer une valeur dynamic_list de type '%s'\n", type);
+    fprintf(stderr, "Jaguar runtime error: cannot print a dynamic_list value of type '%s'\n", type);
     abort();
 }
 
-i32 math_add(i32 a, i32 b) {
-    _j_sys_print_i32(a);
-    _j_sys_print_i32(b);
-    return a + b;
+
+
+
+
+
+
+
+
+f32 gl_test(Bar * value);
+
+i32 math_twice(i32 x) {
+    return x * 2;
 }
 
+
+
 int main(void) {
-    string * a;
-    _j_sys_print_i32(math_add(4, 10));
-    if (a) string_destr(a);
-    free(a);
+    i32 x = 0;
+    if (p) {
+        _j_sys_print_string(string_from_cstr("yes p"));
+    }
+    while (x < 3) {
+        x = x + 1;
+    }
+    while (1) {
+        break;
+    }
+    i32 * px = (&x);
+    (*px) = 7;
+    i32 y = math_twice(x);
+    _j_sys_print_i32(y);
+    i32 * a;
+    (*a) = 5;
+    i32 b = 8;
+    a = (&b);
+    _j_sys_print_i32((*a));
     return 0;
+}
+
+i32 math_add(i32 a, i32 b) {
+    return a + b;
 }

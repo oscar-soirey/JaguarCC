@@ -81,7 +81,7 @@ TARGET_RE = re.compile(
     r"\b(compile_static|compile_shared|compile)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{"
 )
 LINK_RE = re.compile(r"\blink\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{")
-USING_RE = re.compile(r"^\s*using\s+([A-Za-z_][A-Za-z0-9_]*)\s*;\s*(?://.*)?$")
+USING_RE = re.compile(r"^\s*using\s+(?!namespace\b)([A-Za-z_][A-Za-z0-9_]*)\s*;\s*(?://.*)?$")
 
 
 def strip_jbs_comments(text: str) -> str:
@@ -95,15 +95,15 @@ def parse_jbs(text: str) -> JBSConfig:
 
     version_match = re.search(r"^\s*version\s+([^\s]+)\s*$", clean, re.MULTILINE)
     if not version_match:
-        raise JBSError("version JBS manquante (attendu: 'version 1.0')")
+        raise JBSError("missing JBS version (expected: 'version 1.0')")
     version = version_match.group(1)
     if version != "1.0":
-        raise JBSError(f"version JBS non supportée: {version} (seule 1.0 est supportée)")
+        raise JBSError(f"unsupported JBS version: {version} (only 1.0 is supported)")
 
     output_dir: str | None = None
     out_matches = re.findall(r"^\s*out\s+([^\s{}]+)\s*$", clean, re.MULTILINE)
     if len(out_matches) > 1:
-        raise JBSError("directive 'out' définie plusieurs fois")
+        raise JBSError("'out' directive defined multiple times")
     if out_matches:
         output_dir = out_matches[0]
 
@@ -120,7 +120,7 @@ def parse_jbs(text: str) -> JBSConfig:
     for match in re.finditer(r"^\s*include\s+([^\s{}]+)\s*$", clean, re.MULTILINE):
         include_dirs.append(match.group(1))
     if len(include_dirs) != len(set(include_dirs)):
-        raise JBSError("directive 'include' définie plusieurs fois pour le même chemin")
+        raise JBSError("'include' directive defined multiple times for the same path")
 
     targets: list[BuildTarget] = []
 
@@ -149,7 +149,7 @@ def parse_jbs(text: str) -> JBSConfig:
                     depth -= 1
                 i += 1
             if depth != 0:
-                raise JBSError(f"bloc {kind} '{name}' non fermé")
+                raise JBSError(f"{kind} block '{name}' is not closed")
 
             body = clean[brace_start + 1:i - 1]
             entries = []
@@ -167,29 +167,29 @@ def parse_jbs(text: str) -> JBSConfig:
 
     if not target_blocks:
         raise JBSError(
-            "aucun bloc 'compile <nom> { ... }', "
-            "'compile_static <nom> { ... }' ou "
-            "'compile_shared <nom> { ... }' trouvé"
+            "no 'compile <name> { ... }', "
+            "'compile_static <name> { ... }' or "
+            "'compile_shared <name> { ... }' block found"
         )
 
     link_map: dict[str, list[str]] = {}
     for name, _, entries in link_blocks:
         if name in link_map:
-            raise JBSError(f"bloc link '{name}' défini plusieurs fois")
+            raise JBSError(f"link block '{name}' defined multiple times")
         link_map[name] = entries
 
     for name, kind, entries in target_blocks:
         files: list[str] = []
         for line in entries:
-            if not line.endswith(".ja"):
+            if Path(line).suffix.lower() not in (".ja", ".jah"):
                 raise JBSError(
-                    f"entrée invalide dans {kind} {name}: '{line}' "
-                    f"(attendu: un fichier .ja)"
+                    f"invalid entry in {kind} {name}: '{line}' "
+                    f"(expected: a .ja or .jah file)"
                 )
             files.append(line)
 
         if not files:
-            raise JBSError(f"le bloc {kind} '{name}' ne contient aucun fichier .ja")
+            raise JBSError(f"{kind} block '{name}' contains no .ja or .jah files")
 
         targets.append(BuildTarget(name, files, kind, link_map.get(name, [])))
 
@@ -203,12 +203,12 @@ def find_ja(base_dir: Path, requested: str, include_dirs: list[Path] | None = No
 
     for candidate in candidates:
         path = candidate.resolve()
-        if path.suffix != ".ja":
-            path = path.with_suffix(".ja")
-        if path.is_file():
-            return path
+        variants = [path] if path.suffix.lower() in (".ja", ".jah") else [path.with_suffix(".ja"), path.with_suffix(".jah")]
+        for variant in variants:
+            if variant.is_file():
+                return variant
 
-    raise JBSError(f"fichier Jaguar introuvable: {requested}")
+    raise JBSError(f"Jaguar file not found: {requested}")
 
 
 def expand_using(source_path: Path, source_text: str, loaded: set[Path], stack: list[Path], include_dirs: list[Path] | None = None) -> str:
@@ -222,7 +222,7 @@ def expand_using(source_path: Path, source_text: str, loaded: set[Path], stack: 
     source_path = source_path.resolve()
     if source_path in stack:
         cycle = " -> ".join(p.name for p in stack + [source_path])
-        raise JBSError(f"cycle de using détecté: {cycle}")
+        raise JBSError(f"using cycle detected: {cycle}")
 
     stack.append(source_path)
     output: list[str] = []
@@ -246,6 +246,17 @@ def expand_using(source_path: Path, source_text: str, loaded: set[Path], stack: 
 
     stack.pop()
     return "".join(output)
+
+
+def toolchain_bin(jbs_path: Path) -> Path:
+    # The bundled toolchain is part of the Jaguar distribution. It is resolved
+    # relative to this Python file, never through PATH.
+    return Path(__file__).resolve().parent / "toolchain" / "mingw64" / "bin"
+
+
+def toolchain_exe(name: str) -> Path:
+    suffix = ".exe" if os.name == "nt" else ""
+    return Path(__file__).resolve().parent / "toolchain" / "mingw64" / "bin" / (name + suffix)
 
 
 def build_target(
@@ -305,7 +316,7 @@ def build_target(
         # First stage: Jaguar -> C.
         # For executable targets, jcc can compile directly. For library
         # targets, jcc must ONLY emit C because there is no main/WinMain.
-        print(f"JBS: compilation de '{target.name}' ({target.kind})")
+        print(f"JBS: compiling '{target.name}' ({target.kind})")
         print("JBS: Jaguar -> C")
 
         # JCC ne fait ici que Jaguar -> C. Le lien final est toujours fait
@@ -325,11 +336,11 @@ def build_target(
             return result.returncode
 
         if not c_path.is_file():
-            raise JBSError(f"jcc n'a pas généré le fichier C attendu: {c_path}")
+            raise JBSError(f"jcc did not generate the expected C file: {c_path}")
 
         # Second stage: C -> requested artifact.
         if target.kind == "compile":
-            gcc_cmd = ["gcc", str(c_path), "-o", str(output_path)]
+            gcc_cmd = [str(toolchain_exe("gcc")), str(c_path), "-o", str(output_path)]
             for lib in target.links or []:
                 gcc_cmd.append(resolve_link_arg(lib, output_base, base_dir))
 
@@ -337,17 +348,27 @@ def build_target(
             obj_path = output_base / f"{target.name}.o"
             archive_path = output_base / f"lib{target.name}.a"
 
-            gcc_cmd = ["gcc", "-c", str(c_path), "-o", str(obj_path)]
+            gcc_cmd = [str(toolchain_exe("gcc")), "-c", str(c_path), "-o", str(obj_path)]
             if c89:
                 gcc_cmd.insert(1, "-std=c89")
 
-            print("JBS: C -> objet")
+            print("JBS: C -> object")
             result = subprocess.run(gcc_cmd, cwd=str(base_dir), check=False)
             if result.returncode != 0:
+                if not keep_c:
+                    try: c_path.unlink()
+                    except OSError: pass
                 return result.returncode
 
-            ar_cmd = ["ar", "rcs", str(archive_path), str(obj_path)]
-            print("JBS: objet -> bibliothèque statique")
+            ar_exe = toolchain_exe("ar")
+            if not ar_exe.is_file():
+                if not keep_c:
+                    try: c_path.unlink()
+                    except OSError: pass
+                raise JBSError(f"ar toolchain not found: {ar_exe}")
+
+            ar_cmd = [str(toolchain_exe("ar")), "rcs", str(archive_path), str(obj_path)]
+            print("JBS: object -> static library")
             result = subprocess.run(ar_cmd, cwd=str(base_dir), check=False)
 
             try:
@@ -364,7 +385,7 @@ def build_target(
                 except OSError:
                     pass
 
-            print(f"JBS: bibliothèque statique -> '{archive_path}'")
+            print(f"JBS: static library -> '{archive_path}'")
             return 0
 
         elif target.kind == "compile_shared":
@@ -372,7 +393,7 @@ def build_target(
                 dll_path = output_base / f"{target.name}.dll"
                 import_lib = output_base / f"{target.name}.dll.a"
                 gcc_cmd = [
-                    "gcc",
+                    str(toolchain_exe("gcc")),
                     "-shared",
                     str(c_path),
                     "-o",
@@ -381,29 +402,35 @@ def build_target(
                 ]
             else:
                 shared_path = output_base / f"lib{target.name}.so"
-                gcc_cmd = ["gcc", "-shared", "-fPIC", str(c_path), "-o", str(shared_path)]
+                gcc_cmd = [str(toolchain_exe("gcc")), "-shared", "-fPIC", str(c_path), "-o", str(shared_path)]
 
             for lib in target.links or []:
                 gcc_cmd.append(resolve_link_arg(lib, output_base, base_dir))
 
         else:
-            raise JBSError(f"type de target inconnu: {target.kind}")
+            raise JBSError(f"unknown target type: {target.kind}")
 
-        print("JBS: C -> sortie finale")
+        print("JBS: C -> final output")
+        gcc_exe = toolchain_exe("gcc")
+        if not gcc_exe.is_file():
+            if not keep_c:
+                try: c_path.unlink()
+                except OSError: pass
+            raise JBSError(f"GCC toolchain not found: {gcc_exe}")
         result = subprocess.run(gcc_cmd, cwd=str(base_dir), check=False)
 
         if result.returncode == 0:
-            print(f"JBS: sortie -> '{output_path}'")
+            print(f"JBS: output -> '{output_path}'")
 
-        if not keep_c and result.returncode == 0:
+        if not keep_c:
             try:
                 c_path.unlink()
-                print(f"JBS: suppression de '{c_path.name}'")
+                print(f"JBS: removed '{c_path.name}'")
             except FileNotFoundError:
                 pass
             except OSError as e:
                 print(
-                    f"JBS: impossible de supprimer '{c_path.name}': {e}",
+                    f"JBS: failed to remove '{c_path.name}': {e}",
                     file=sys.stderr,
                 )
 
@@ -476,7 +503,7 @@ def resolve_link_arg(value: str, output_base: Path, base_dir: Path) -> str:
 def main(argv: list[str]) -> int:
     args = argv[1:]
     if not args:
-        print("Usage: python jbs.py projet.jbs [-o sortie] [--target nom]", file=sys.stderr)
+        print("Usage: python jbs.py project.jbs [-o output] [--target name]", file=sys.stderr)
         return 1
 
     jbs_file: str | None = None
@@ -488,36 +515,36 @@ def main(argv: list[str]) -> int:
         arg = args[i]
         if arg == "-o":
             if i + 1 >= len(args):
-                print("Erreur JBS: -o attend un nom de sortie", file=sys.stderr)
+                print("JBS Error: -o expects an output name", file=sys.stderr)
                 return 1
             output = args[i + 1]
             i += 2
         elif arg == "--target":
             if i + 1 >= len(args):
-                print("Erreur JBS: --target attend un nom de target", file=sys.stderr)
+                print("JBS Error: --target expects a target name", file=sys.stderr)
                 return 1
             target_name = args[i + 1]
             i += 2
         elif arg.startswith("-"):
-            print(f"Erreur JBS: option inconnue: {arg}", file=sys.stderr)
+            print(f"JBS Error: unknown option: {arg}", file=sys.stderr)
             return 1
         elif jbs_file is None:
             jbs_file = arg
             i += 1
         else:
-            print(f"Erreur JBS: argument inattendu: {arg}", file=sys.stderr)
+            print(f"JBS Error: unexpected argument: {arg}", file=sys.stderr)
             return 1
 
     if jbs_file is None:
-        print("Erreur JBS: aucun fichier .jbs fourni", file=sys.stderr)
+        print("JBS Error: no .jbs file provided", file=sys.stderr)
         return 1
 
     jbs_path = Path(jbs_file).resolve()
     if not jbs_path.is_file():
-        print(f"Erreur JBS: fichier introuvable: {jbs_file}", file=sys.stderr)
+        print(f"JBS Error: file not found: {jbs_file}", file=sys.stderr)
         return 1
     if jbs_path.suffix != ".jbs":
-        print("Erreur JBS: le fichier projet doit avoir l'extension .jbs", file=sys.stderr)
+        print("JBS Error: project file must have the .jbs extension", file=sys.stderr)
         return 1
 
     try:
@@ -530,7 +557,7 @@ def main(argv: list[str]) -> int:
         if target_name is not None:
             matches = [t for t in targets if t.name == target_name]
             if not matches:
-                raise JBSError(f"target introuvable: {target_name}")
+                raise JBSError(f"target not found: {target_name}")
             targets_to_build = [matches[0]]
         else:
             # Sans --target, on construit tous les targets dans l'ordre du
@@ -540,7 +567,7 @@ def main(argv: list[str]) -> int:
 
         jcc_path = Path(__file__).resolve().with_name("jcc.py")
         if not jcc_path.is_file():
-            raise JBSError(f"jcc.py introuvable à côté de jbs.py: {jcc_path}")
+            raise JBSError(f"jcc.py not found next to jbs.py: {jcc_path}")
 
         for target in targets_to_build:
             result = build_target(
@@ -557,7 +584,7 @@ def main(argv: list[str]) -> int:
                 return result
         return 0
     except (OSError, JBSError) as e:
-        print(f"Erreur JBS: {e}", file=sys.stderr)
+        print(f"JBS Error: {e}", file=sys.stderr)
         return 1
 
 

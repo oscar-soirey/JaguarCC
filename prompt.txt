@@ -1,20 +1,22 @@
--utiliser des fonctions C (convertion automatique des headers C et compilation des fichiers C)
-
--messages d'erreur en anglais, et avec la ligne de l'erreur
-
--fichiers jah (jaguar headers), techniquement c'est la meme chose que .ja mais on dit que c'est un header quoi
-
 -extension pour Jetbrains et Visual Studio
-
--passer a un while classique finalement, et remplacer le while sans condition par le mot clé loop
-
--ajoute des trucs utiles, genre using namespace ...; using GL_FLOAT = float;
 
 -outil de gestion de packages comme pip avec python
 
 
-Bugs connus:
 
--string non déclaré dans le C si on utilise pas manuellement un string, (donc sys:print bug si un string n'a pas été appellé avant)
--le .c généré est conservé si la compilation gcc echoue (meme sans la directive keep_c)
--les .jah ne sont pas supportées par le build system
+
+-utiliser des fonctions C (convertion automatique des headers C et compilation des fichiers C)
+
+-optional
+
+-defer keyword
+
+
+
+
+-extension vscode : Compile & run compile bien mais ne run pas (il faut run le exe généré dans le bon dossier out (géré par jbs)). si aucun exe généré, alors build et s'arreter
+
+
+
+Bugs connus:
+-pas de coloration sur mode debug dans les fichiers .jbs
