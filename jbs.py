@@ -3,9 +3,10 @@
 """
 jbs.py — Jaguar Build System
 
-Format JBS 1.0 :
+Format JBS 1.1 :
 
-version 1.0
+jbs 1.0
+version 1.2.0
 
 compile example {
     add.ja
@@ -14,7 +15,8 @@ compile example {
 
 Directives disponibles en JBS 1.0 :
 
-    version 1.0
+    jbs 1.0
+    version 1.2.0
     out build
     c89
     keep_c
@@ -25,6 +27,18 @@ Directives disponibles en JBS 1.0 :
     compile_static MyLib { ... }
     compile_shared MyLib { ... }
     link game { MyLib libOther.a -lSDL2 }
+    shell "scripts/build.sh"
+    python scripts/generate.py --release
+    crimson find SDL2
+
+`jbs` is the JBS format version. `version` is the project's semantic version.
+It is exported as `JBS_VERSION` to directives and written into generated C.
+
+`shell` executes a shell command, `python` executes a Python script with the
+same interpreter as JBS, and `crimson` invokes Jaguar Package Manager.
+Directives execute in source order.
+
+JBS supports both `//` and multiline `/* ... */` comments.
 
 `c89` demande à jcc de générer du C89 strict. `include` ajoute un répertoire
 de recherche pour les `using`, en plus du dossier du fichier `.jbs`.
@@ -47,6 +61,8 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import shutil
+import shlex
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -73,6 +89,15 @@ class BuildTarget:
 
 
 @dataclass
+class JBSCommand:
+    kind: str
+    value: str
+    line: int
+    column: int
+    end_column: int
+
+
+@dataclass
 class JBSConfig:
     version: str
     output_dir: str | None
@@ -81,9 +106,13 @@ class JBSConfig:
     include_dirs: list[str]
     defines: list[str]
     targets: list[BuildTarget]
+    commands: list[JBSCommand]
 
 
-VERSION_RE = re.compile(r"^\s*version\s+([0-9]+(?:\.[0-9]+)+)\s*$")
+JBS_FORMAT_RE = re.compile(r"^\s*jbs\s+([0-9]+(?:\.[0-9]+)+)\s*$", re.MULTILINE)
+LEGACY_FORMAT_RE = re.compile(r"^\s*version\s+1\.0\s*$", re.MULTILINE)
+VERSION_RE = re.compile(r"^\s*version\s+([0-9]+)\.([0-9]+)\.([0-9]+)\s*$", re.MULTILINE)
+COMMAND_RE = re.compile(r'^\s*(shell|python|crimson)\s+(?:"((?:\\\\.|[^"])*)"|(.*?))\s*$', re.MULTILINE)
 TARGET_RE = re.compile(
     r"\b(compile_static|compile_shared|compile)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{"
 )
@@ -92,9 +121,11 @@ USING_RE = re.compile(r"^\s*using\s+(?!namespace\b)([A-Za-z_][A-Za-z0-9_]*)\s*;\
 
 
 def strip_jbs_comments(text: str) -> str:
-    # Preserve character offsets so diagnostics can point to the exact source
-    # location even after comments have been removed from the grammar input.
-    return re.sub(r"//[^\n]*", lambda m: " " * len(m.group(0)), text)
+    # Preserve offsets and line numbers while removing both comment styles.
+    def replace_comment(match):
+        value = match.group(0)
+        return "".join("\n" if c == "\n" else " " for c in value)
+    return re.sub(r"//[^\n]*|/\\*[\\s\\S]*?\\*/", replace_comment, text)
 
 
 def _source_position(text: str, offset: int, length: int = 1):
@@ -107,18 +138,31 @@ def _source_position(text: str, offset: int, length: int = 1):
 def parse_jbs(text: str) -> JBSConfig:
     clean = strip_jbs_comments(text)
 
-    version_match = re.search(r"^\s*version\s+([^\s]+)\s*$", clean, re.MULTILINE)
-    if not version_match:
-        first = re.search(r"^\s*\S.*$", clean, re.MULTILINE)
-        if first:
-            line, col, end = _source_position(text, first.start(0), len(first.group(0).strip()))
-        else:
-            line, col, end = 1, 0, 1
-        raise JBSError("missing JBS version (expected: 'version 1.0')", line=line, column=col, end_column=end)
-    version = version_match.group(1)
-    if version != "1.0":
-        line, col, end = _source_position(text, version_match.start(1), len(version))
-        raise JBSError(f"unsupported JBS version: {version} (only 1.0 is supported)", line=line, column=col, end_column=end)
+    jbs_match = JBS_FORMAT_RE.search(clean)
+    legacy_format_match = LEGACY_FORMAT_RE.search(clean)
+    if jbs_match and jbs_match.group(1) != "1.0":
+        line, col, end = _source_position(text, jbs_match.start(1), len(jbs_match.group(1)))
+        raise JBSError(
+            f"unsupported JBS format version: {jbs_match.group(1)} (only 1.0 is supported)",
+            line=line, column=col, end_column=end,
+        )
+
+    version_matches = list(VERSION_RE.finditer(clean))
+    # Old JBS 1.0 files used `version 1.0` as the format marker. Keep them
+    # valid while the new three-component form is reserved for project versions.
+    if legacy_format_match and not jbs_match and not version_matches:
+        version = "0.0.0"
+    else:
+        version = "0.0.0"
+    if len(version_matches) > 1:
+        m = version_matches[1]
+        line, col, end = _source_position(text, m.start(0), len(m.group(0).strip()))
+        raise JBSError("'version' directive defined multiple times", line=line, column=col, end_column=end)
+
+    version = "0.0.0"
+    if version_matches:
+        m = version_matches[0]
+        version = f"{m.group(1)}.{m.group(2)}.{m.group(3)}"
 
     output_dir: str | None = None
     out_matches = list(re.finditer(r"^\s*out\s+([^\s{}]+)\s*$", clean, re.MULTILINE))
@@ -147,6 +191,21 @@ def parse_jbs(text: str) -> JBSConfig:
         duplicate = next(m for m in include_matches if m.group(1) in seen or seen.add(m.group(1)))
         line, col, end = _source_position(text, duplicate.start(1), len(duplicate.group(1)))
         raise JBSError("'include' directive defined multiple times for the same path", line=line, column=col, end_column=end)
+
+    commands: list[JBSCommand] = []
+    for match in COMMAND_RE.finditer(clean):
+        kind = match.group(1)
+        value = match.group(2) if match.group(2) is not None else (match.group(3) or "").strip()
+        if match.group(2) is not None:
+            try:
+                value = bytes(value, "utf-8").decode("unicode_escape")
+            except UnicodeDecodeError:
+                pass
+        if not value:
+            line, col, end = _source_position(text, match.start(0), len(match.group(0).strip()))
+            raise JBSError(f"{kind} directive requires an argument", line=line, column=col, end_column=end)
+        line, col, end = _source_position(text, match.start(1), len(match.group(0).strip()))
+        commands.append(JBSCommand(kind, value, line, col, end))
 
     targets: list[BuildTarget] = []
 
@@ -235,7 +294,7 @@ def parse_jbs(text: str) -> JBSConfig:
 
         targets.append(BuildTarget(name, files, kind, link_map.get(name, []), entry_locations, decl_loc))
 
-    return JBSConfig(version, output_dir, c89, keep_c, include_dirs, defines, targets)
+    return JBSConfig(version, output_dir, c89, keep_c, include_dirs, defines, targets, commands)
 
 
 def find_ja(base_dir: Path, requested: str, include_dirs: list[Path] | None = None, origin=None) -> Path:
@@ -298,12 +357,58 @@ def expand_using(source_path: Path, source_text: str, loaded: set[Path], stack: 
 def toolchain_bin(jbs_path: Path) -> Path:
     # The bundled toolchain is part of the Jaguar distribution. It is resolved
     # relative to this Python file, never through PATH.
-    return Path(__file__).resolve().parent / "toolchain" / "mingw64" / "bin"
+    return Path(__file__).resolve().parent / "toolchain" / "bin"
 
 
 def toolchain_exe(name: str) -> Path:
     suffix = ".exe" if os.name == "nt" else ""
-    return Path(__file__).resolve().parent / "toolchain" / "mingw64" / "bin" / (name + suffix)
+    return Path(__file__).resolve().parent / "toolchain" / "bin" / (name + suffix)
+
+
+def find_crimson() -> list[str]:
+    """Find Crimson either on PATH or next to jbs.py."""
+    for name in ("crimson", "crimson.exe"):
+        found = shutil.which(name)
+        if found:
+            return [found]
+    local = Path(__file__).resolve().with_name("crimson.py")
+    if local.is_file():
+        return [sys.executable, str(local)]
+    raise JBSError(
+        "Crimson package manager not found. Put 'crimson' on PATH or place crimson.py next to jbs.py."
+    )
+
+
+def run_jbs_commands(commands: list[JBSCommand], base_dir: Path, version: str) -> int:
+    """Execute shell/python/crimson directives in source order."""
+    env = os.environ.copy()
+    env["JBS_VERSION"] = version
+    env["JBS_PROJECT_DIR"] = str(base_dir)
+
+    for command in commands:
+        print(f"JBS: {command.kind} -> {command.value}")
+        try:
+            if command.kind == "shell":
+                result = subprocess.run(command.value, cwd=str(base_dir), env=env, shell=True, check=False)
+            elif command.kind == "python":
+                parts = shlex.split(command.value, posix=(os.name != "nt"))
+                if not parts:
+                    raise JBSError("python directive requires a script", line=command.line, column=command.column, end_column=command.end_column)
+                result = subprocess.run([sys.executable, *parts], cwd=str(base_dir), env=env, check=False)
+            elif command.kind == "crimson":
+                parts = shlex.split(command.value, posix=(os.name != "nt"))
+                if not parts:
+                    raise JBSError("crimson directive requires arguments", line=command.line, column=command.column, end_column=command.end_column)
+                result = subprocess.run([*find_crimson(), *parts], cwd=str(base_dir), env=env, check=False)
+            else:
+                raise JBSError(f"unknown JBS directive: {command.kind}")
+        except ValueError as e:
+            raise JBSError(str(e), line=command.line, column=command.column, end_column=command.end_column)
+
+        if result.returncode != 0:
+            print(f"JBS Error: {command.kind} directive failed with exit code {result.returncode}", file=sys.stderr)
+            return result.returncode
+    return 0
 
 
 def build_target(
@@ -315,6 +420,7 @@ def build_target(
     keep_c: bool = False,
     include_dirs: list[Path] | None = None,
     defines: list[str] | None = None,
+    jbs_version: str = "0.0.0",
 ) -> int:
     base_dir = jbs_path.parent.resolve()
 
@@ -323,6 +429,7 @@ def build_target(
         "// ============================================================\n",
         "// Fichier généré par Jaguar Build System (JBS 1.0)\n",
         f"// Target: {target.name}\n",
+        f"// Project version: {jbs_version}\n",
         "// ============================================================\n\n",
     ]
     for define in defines or []:
@@ -605,6 +712,10 @@ def main(argv: list[str]) -> int:
         include_dirs = [(jbs_path.parent / d).resolve() for d in config.include_dirs]
         targets = config.targets
 
+        command_result = run_jbs_commands(config.commands, jbs_path.parent.resolve(), config.version)
+        if command_result != 0:
+            return command_result
+
         if target_name is not None:
             matches = [t for t in targets if t.name == target_name]
             if not matches:
@@ -630,6 +741,7 @@ def main(argv: list[str]) -> int:
                 keep_c=config.keep_c,
                 include_dirs=include_dirs,
                 defines=config.defines,
+                jbs_version=config.version,
             )
             if result != 0:
                 return result

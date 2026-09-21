@@ -14,22 +14,19 @@ class Animal {
     }
 }
 
-class Dog, Animal {
-    string name;
+namespace h {
+    class Dog, Animal {
+        string name;
 
-    constr(string n = "Rex") {
-        name = n;
-    }
-
-    int $readAge() {
-        return getAge();
+        constr(int a) {
+            //name = (string)a;  //jcc ne detecte pas d'erreur
+        }
     }
 }
 
 void main() {
-    Dog* d => Dog("Buddy");
+    h:Dog* d => h:Dog("Buddy");
 
     sys:print(d.getAge());
     d.setAge(12);
-    sys:print(d.readAge());
 }

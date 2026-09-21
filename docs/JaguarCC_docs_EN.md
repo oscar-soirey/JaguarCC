@@ -12,7 +12,8 @@
 ## 1. Overview
 
 **Jaguar** is a compiled language that is translated to C by **JaguarCC
-(`jcc.py`)**, then compiled with GCC.
+(`jcc.py`)**. Direct JCC compilation uses the GCC toolchain bundled with
+the Jaguar distribution.
 
 The pipeline is:
 
@@ -3336,6 +3337,88 @@ server.
 
 ------------------------------------------------------------------------
 
+## 84.18 `signal:` change handlers
+
+`signal:` attaches a change handler to a variable in the current function
+scope:
+
+``` jaguar
+void update() {
+    int health = 100;
+
+    signal:health {
+        sys:print("health changed");
+    }
+
+    health = 75;
+}
+```
+
+The named variable must already exist in the current local/global scope.
+Only one handler for a given variable is allowed in the same function.
+
+The handler is triggered by an assignment that changes the value. For
+`string`, JCC compares the string contents rather than only comparing the
+string handle.
+
+The handler is not itself a standalone function declaration; it is part of
+the surrounding function's generated code.
+
+`signal:` is therefore a Jaguar-specific change-notification construct and
+should not be confused with OS signals or C signal handlers.
+
+------------------------------------------------------------------------
+
+## 84.19 Collection iteration helpers
+
+In addition to indexing and the collection methods documented above, JCC
+supports dedicated iteration forms:
+
+``` jaguar
+auto value = loop_list(numbers) {
+    sys:print(value);
+}
+
+auto entry = loop_map(scores) {
+    sys:print(entry.first);
+    sys:print(entry.second);
+}
+```
+
+`loop_list(collection)` requires a `list<T>` and exposes an element of type
+`T`.
+
+`loop_map(collection)` requires a `map<K,V>` and exposes a
+`pair<K,V>` containing the key in `first` and the value in `second`.
+
+The collection itself is treated as read-only for the duration of the
+loop. The loop variable is scoped to the loop body.
+
+These constructs are separate from the numeric `for_loop`.
+
+------------------------------------------------------------------------
+
+## 84.20 `new` and ownership-sensitive values
+
+JCC supports explicit construction with:
+
+``` jaguar
+auto player = new Player(100);
+```
+
+`new` is also used with ownership-oriented collection types:
+
+``` jaguar
+container<Player> player = new Player(100);
+```
+
+For `container<T>`, the generated runtime owns the contained value and
+destroys it when the container is released. Class construction therefore
+uses the class constructor/destructor machinery rather than exposing raw
+`malloc`/`free` to Jaguar source.
+
+------------------------------------------------------------------------
+
 # 85. Quick reference
 
 ## Types
@@ -3373,10 +3456,14 @@ dynamic_list
 ``` text
 if / else
 while
+loop
 for_loop
 break
 continue
 return
+signal:name { ... }
+loop_list()
+loop_map()
 ```
 
 ## Classes
@@ -3391,6 +3478,7 @@ this
 $
 %
 const
+new
 ```
 
 ## Namespaces
@@ -3573,6 +3661,8 @@ implementation are:
 -   the ban on modifying a collection during `loop_list` / `loop_map`;
 -   `container<T>`;
 -   `dynamic_list`;
+-   `signal:` variable-change handlers;
+-   `loop_list()` / `loop_map()` collection iteration;
 -   the `@register` / `@exposed` / `factory:construct` system;
 -   the `sys:*` functions;
 -   the `jcc:*` library;
@@ -3586,19 +3676,53 @@ For any feature not described here, refer to the actual behavior of
 
 # 88. JBS quick reference
 
+JBS (`jbs.py`) currently uses format version `1.0`. A project can identify
+the format explicitly with:
+
+``` jbs
+jbs 1.0
+version 1.2.0
+```
+
+The supported project directives are:
+
 ``` text
-version 1.0
-out
-include
-define
+jbs 1.0
+version X.Y.Z
+out <directory>
+include <directory>
+define NAME
+define NAME VALUE
 c89
 keep_c
 
-compile
-compile_static
-compile_shared
-link
+compile <target> { ... }
+compile_static <target> { ... }
+compile_shared <target> { ... }
+link <target> { ... }
+
+shell <command>
+python <script and arguments>
+crimson <arguments>
 ```
+
+`compile` produces a normal executable target, while
+`compile_static` and `compile_shared` produce library targets.
+
+`link <target> { ... }` adds libraries/objects/linker arguments to a target.
+
+The command directives are executed in source order:
+
+- `shell` executes a shell command;
+- `python` executes a Python script with the same Python interpreter used by
+  JBS;
+- `crimson` invokes the Crimson package manager.
+
+JBS accepts both `//` and `/* ... */` comments.
+
+`using name;` imports `name.ja` or `name.jah`. Imports are recursive, and
+already included files are not inserted twice. `include` adds additional
+directories searched for these imports.
 
 CLI:
 
@@ -3608,7 +3732,7 @@ python jbs.py project.jbs -o build
 python jbs.py project.jbs --target Main
 ```
 
-JBS expands `using` imports, uses JCC for Jaguar → C, and then uses the
+JBS expands `using` imports, invokes JCC for Jaguar → C, and then uses the
 bundled GCC toolchain for final compilation and linking.
 
 ------------------------------------------------------------------------
@@ -4017,6 +4141,85 @@ jbs.py
 
 JBG is therefore a binding generator, JCC is the compiler, and JBS is
 the project build orchestrator.
+
+------------------------------------------------------------------------
+
+## 91.4 `jlanguage_server.py` --- Jaguar Language Server
+
+The standalone Jaguar language server provides editor/LSP support without
+adding a runtime dependency to Jaguar projects.
+
+It loads `jcc.py` when available and uses JCC's own lexer/parser for
+semantic indexing. While a file is incomplete during editing, it falls back
+to a tolerant source scan so completion and symbol information can continue
+to work.
+
+The current language-server index recognizes, among other things:
+
+``` text
+types
+keywords
+variables
+classes
+structs
+unions
+enums
+functions
+namespaces
+string methods
+collection methods
+jcc:* built-ins
+```
+
+This means the language server should be treated as an editor-facing view of
+the current compiler implementation rather than as a separate language
+specification.
+
+------------------------------------------------------------------------
+
+## 91.5 `crimson.py` --- Crimson package manager
+
+Crimson is a standalone package manager for Jaguar packages hosted on
+GitHub. It currently looks for repositories named:
+
+``` text
+jaguar-<package>
+```
+
+A package repository contains a `.crimson` TOML manifest with a `[package]`
+section and an optional `[dependencies]` table.
+
+Basic commands:
+
+``` bash
+crimson install myapi
+crimson install myapi -v 0.3.4
+crimson update myapi
+crimson remove myapi
+crimson uninstall myapi
+crimson list
+crimson ls
+crimson search myapi
+crimson info myapi
+crimson --version
+```
+
+Package versions use Python/PEP 440-compatible version handling. Crimson
+also supports the shorthand constraints:
+
+``` text
+^2.1.0
+^0.3.4
+~1.4.0
+```
+
+A bare version is treated as an exact version.
+
+The optional environment variable `CRIMSON_GITHUB_TOKEN` can be used to
+increase GitHub API rate limits.
+
+Crimson installs packages below its `packages/` directory and detects
+circular dependencies during installation.
 
 ------------------------------------------------------------------------
 

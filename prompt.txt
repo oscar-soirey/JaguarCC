@@ -24,20 +24,9 @@ Salut, je dfeveloppe mon compilateur vers du C, Analyse tous ces fichiers et je 
 -convertir une api complete, pas juste un single file
 
 
--messages d'erreurs plus clair
--essayer de plus souvent devancer gcc en detection d'erreurs
-
-
--crimson (le package manager de jaguar)
-
--ajouter des directives a jbs et un systeme de version réelement utile
-directectives : executer un script shell, script python, trouver un package dans jaguar package manager (crimson), etc...
-
--commentaires multiligne en jbs
-
-
 
 
 
 
 Bugs connus:
+build et build & run ouvrent a chaque fois un nouveau terminal vscode

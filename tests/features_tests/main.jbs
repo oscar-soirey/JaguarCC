@@ -1,16 +1,37 @@
+//jaguar build system version
+jbs 1.0
+
+//project version
 version 1.0
 
+//out directory
 out out
 
+//keep generated c code
 keep_c
 
+//execute python file
+python sayhello.py
 
+//generate c89 compatible code
+c89
+
+//select the build mode
+mode relwithdebinfo
+
+//include targets to using jaguar directive
+include third-party/
+
+//install crimson package
+/*crimson install apitest*/
+
+//compile files to exe
 compile _01 {
-  //02_function_pointers.ja
+  02_function_pointers.ja
   //03_namespace_struct_union.ja
   //04_classes_constructors_methods.ja
   //05_decorators_register.ja
   //06_big_stress.ja
   //07_implicit_member_assignment.ja
-  08_class_without_explicit_constructor.ja
+  //08_class_without_explicit_constructor.ja
 }
