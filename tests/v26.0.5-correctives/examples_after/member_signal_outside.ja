@@ -1,0 +1,9 @@
+class Counter {
+    $int value;
+}
+
+void main(string param) {
+    signal: Counter:value {
+        sys:print("must fail");
+    }
+}

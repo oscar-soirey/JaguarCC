@@ -1,0 +1,16 @@
+class Counter {
+    $int value;
+    $void run() {
+        signal: value {
+            sys:print("changed");
+        }
+        value = 1;
+        value = 1;
+        value = 2;
+    }
+}
+
+void main(string param) {
+    Counter* c => Counter();
+    c->run();
+}

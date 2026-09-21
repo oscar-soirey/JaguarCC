@@ -1,0 +1,5 @@
+void @annouce(string label):func {
+  sys:print(label);
+  func();
+  sys:print("after");
+}

@@ -1,0 +1,7 @@
+void worker(int value) {
+    sys:print(value);
+}
+
+void main(string param) {
+    void* handle = thread:start(worker);
+}

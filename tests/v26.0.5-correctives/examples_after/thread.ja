@@ -1,0 +1,11 @@
+void worker() {
+    sys:print("worker");
+}
+
+void main(string param) {
+    void* handle = thread:start(worker);
+    thread:join(handle);
+    thread:yield();
+    thread:sleep(1);
+    sys:print("main");
+}

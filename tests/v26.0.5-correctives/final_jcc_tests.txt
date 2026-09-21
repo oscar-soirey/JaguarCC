@@ -1,0 +1,20 @@
+BASELINE_COMPARE
+{"file": "basic.ja", "before": {"rc": 0, "stdout": "x is smaller\n", "stderr": "", "stage": "run"}, "after": {"rc": 0, "stdout": "x is smaller\n", "stderr": "", "stage": "run"}, "same_result": true}
+{"file": "c89.ja", "before": {"rc": 0, "stdout": "4\n2\n", "stderr": "", "stage": "run"}, "after": {"rc": 0, "stdout": "4\n2\n", "stderr": "", "stage": "run"}, "same_result": true}
+{"file": "class.ja", "before": {"rc": 0, "stdout": "-3\n", "stderr": "", "stage": "run"}, "after": {"rc": 0, "stdout": "-3\n", "stderr": "", "stage": "run"}, "same_result": true}
+{"file": "collections.ja", "before": {"rc": 0, "stdout": "3\n20\n", "stderr": "", "stage": "run"}, "after": {"rc": 0, "stdout": "3\n20\n", "stderr": "", "stage": "run"}, "same_result": true}
+{"file": "forloop.ja", "before": {"rc": 0, "stdout": "10\n", "stderr": "", "stage": "run"}, "after": {"rc": 0, "stdout": "10\n", "stderr": "", "stage": "run"}, "same_result": true}
+{"file": "if_not.ja", "before": {"rc": 0, "stdout": "not\n", "stderr": "", "stage": "run"}, "after": {"rc": 0, "stdout": "not\n", "stderr": "", "stage": "run"}, "same_result": true}
+{"file": "namespace.ja", "before": {"rc": 0, "stdout": "", "stderr": "", "stage": "run"}, "after": {"rc": 0, "stdout": "", "stderr": "", "stage": "run"}, "same_result": true}
+{"file": "overload.ja", "before": {"rc": 0, "stdout": "10\n3.14\n", "stderr": "", "stage": "run"}, "after": {"rc": 0, "stdout": "10\n3.14\n", "stderr": "", "stage": "run"}, "same_result": true}
+{"file": "pointer.ja", "before": {"rc": 0, "stdout": "42\n", "stderr": "", "stage": "run"}, "after": {"rc": 0, "stdout": "42\n", "stderr": "", "stage": "run"}, "same_result": true}
+{"file": "signal_local.ja", "before": {"rc": 0, "stdout": "changed\n", "stderr": "", "stage": "run"}, "after": {"rc": 0, "stdout": "changed\n", "stderr": "", "stage": "run"}, "same_result": true}
+NEW_VALID
+{"file": "decorator.ja", "result": {"rc": 0, "stdout": "before\ninside\nafter\n", "stderr": "", "stage": "run"}}
+{"file": "member_signal.ja", "result": {"rc": 0, "stdout": "changed\nchanged\n", "stderr": "", "stage": "run"}}
+{"file": "operator_eq.ja", "result": {"rc": 0, "stdout": "1\n", "stderr": "", "stage": "run"}}
+{"file": "thread.ja", "result": {"rc": 0, "stdout": "worker\nmain\n", "stderr": "", "stage": "run"}}
+NEW_INVALID
+{"file": "member_signal_outside.ja", "result": {"rc": 1, "stdout": "", "stderr": "Jaguar Error: /tmp/jaguar-test-x70zwrvz/member_signal_outside.ja:6:20: signal on a class member is only valid inside the class; use `signal: field`\n", "stage": "jcc"}}
+{"file": "operator_bad_arity.ja", "result": {"rc": 1, "stdout": "", "stderr": "Jaguar Error: /tmp/jaguar-test-nbknjpzt/operator_bad_arity.ja:5:14: operator '==' requires exactly 2 parameters\n", "stage": "jcc"}}
+{"file": "thread_wrong.ja", "result": {"rc": 1, "stdout": "", "stderr": "Jaguar Error: /tmp/jaguar-test-g1917pyu/thread_wrong.ja:6:20: 'thread:start' expects a function pointer of type 'fn() -> void'\n", "stage": "jcc"}}

@@ -1,0 +1,6 @@
+void main(string param) {
+    int value = 41;
+    int* ptr = &value;
+    *ptr = 42;
+    sys:print(value);
+}

@@ -1,0 +1,7 @@
+void main(string param) {
+    int value = 0;
+    signal: value {
+        sys:print("changed");
+    }
+    value = 1;
+}

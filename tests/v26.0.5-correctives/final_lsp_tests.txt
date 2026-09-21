@@ -1,0 +1,3 @@
+JCC_loaded= True
+operator_in_keywords= False
+thread_completion= ['detach', 'join', 'sleep', 'start', 'yield']

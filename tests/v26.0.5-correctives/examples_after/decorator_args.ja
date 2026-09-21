@@ -1,0 +1,13 @@
+void @around(string tag):func {
+    sys:print(tag);
+    func();
+}
+
+@around("wrap")
+void hello(int value) {
+    sys:print(value);
+}
+
+void main(string param) {
+    hello(7);
+}

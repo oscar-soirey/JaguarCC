@@ -1,0 +1,4 @@
+void main(string param) {
+    int operator = 5;
+    sys:print(operator);
+}

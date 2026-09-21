@@ -1,0 +1,14 @@
+struct V { int value; }
+V operator+(V a, V b) {
+    V r = V();
+    r.value = a.value + b.value;
+    return r;
+}
+void main(string param) {
+    V* a => V();
+    V* b => V();
+    a->value = 2;
+    b->value = 3;
+    V c = *a + *b;
+    sys:print(c.value);
+}

@@ -1,0 +1,11 @@
+void StartThreadOp()
+{
+  sys:print("hello from another thread!");
+}
+
+void main()
+{
+  void* handle = thread:start(StartThreadOp);
+  thread:join(handle);
+  thread:detach(handle);
+}

@@ -1,0 +1,14 @@
+class Player {
+    $int health;
+    $void take_damage(int amount) {
+        health = health - amount;
+    }
+    $int get_health() {
+        return health;
+    }
+}
+void main(string param) {
+    Player* player => Player();
+    player->take_damage(3);
+    sys:print(player->get_health());
+}

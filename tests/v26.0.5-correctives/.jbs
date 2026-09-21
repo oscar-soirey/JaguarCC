@@ -1,0 +1,7 @@
+version 1.0
+
+out out
+
+compile Main {
+  main.ja
+}

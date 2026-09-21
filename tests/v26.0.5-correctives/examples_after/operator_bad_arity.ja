@@ -1,0 +1,14 @@
+struct MyStruct {
+    int value;
+}
+
+bool operator==(MyStruct a) {
+    return true;
+}
+
+void main(string param) {
+    MyStruct* a => MyStruct();
+    MyStruct* b => MyStruct();
+    bool same = *a == *b;
+    sys:print(same);
+}

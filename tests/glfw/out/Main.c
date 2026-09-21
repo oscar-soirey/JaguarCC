@@ -909,8 +909,7 @@ static GLFWimage _j_struct_GLFWimage_default(void) { GLFWimage value; memset(&va
 static GLFWimage *_j_struct_GLFWimage_new(void) { GLFWimage *value = (GLFWimage*)calloc(1, sizeof(GLFWimage)); if (!value) abort(); return value; }
 
 struct GLFWgamepadstate {
-    uint8_t buttons[15];
-    float axes[6];
+    uint8_t _jbg_opaque;
 };
 static GLFWgamepadstate _j_struct_GLFWgamepadstate_default(void) { GLFWgamepadstate value; memset(&value, 0, sizeof(value)); return value; }
 static GLFWgamepadstate *_j_struct_GLFWgamepadstate_new(void) { GLFWgamepadstate *value = (GLFWgamepadstate*)calloc(1, sizeof(GLFWgamepadstate)); if (!value) abort(); return value; }
@@ -1164,9 +1163,13 @@ int32_t glfwVulkanSupported(void);
 
 int8_t * * glfwGetRequiredInstanceExtensions(uint32_t * count);
 
+void mafonction(void) {
+}
+
 int main(int _j_main_argc, char *_j_main_argv[]) {
     string *param = string_from_cstr((_j_main_argc > 1) ? _j_main_argv[1] : "");
     int32_t ok = glfwInit();
+    mafonction();
     GLFWwindow * win = glfwCreateWindow(800, 600, ((int8_t*)("Ma fenetre")), ((void*)0), ((void*)0));
     while (glfwWindowShouldClose(win) == 0) {
         glfwPollEvents();

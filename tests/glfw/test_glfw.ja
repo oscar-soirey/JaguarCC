@@ -1,8 +1,16 @@
 using glfw3;
 
+//ma fonction
+void mafonction()
+{
+    
+}
+
 void main(string param) 
 {
     int ok = glfwInit();
+
+    mafonction();
 
     GLFWwindow* win = glfwCreateWindow(
         800,

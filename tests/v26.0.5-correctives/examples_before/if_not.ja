@@ -1,0 +1,6 @@
+void main(string param) {
+    bool condition = false;
+    if(!condition) {
+        sys:print("not");
+    }
+}

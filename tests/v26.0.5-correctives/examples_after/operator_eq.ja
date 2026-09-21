@@ -1,0 +1,22 @@
+struct MyStruct {
+    int value;
+}
+
+MyStruct operator==(MyStruct a, MyStruct b) {
+    MyStruct result = MyStruct();
+    if (a.value == b.value) {
+        result.value = 1;
+    } else {
+        result.value = 0;
+    }
+    return result;
+}
+
+void main(string param) {
+    MyStruct* a => MyStruct();
+    MyStruct* b => MyStruct();
+    a->value = 7;
+    b->value = 7;
+    MyStruct same = *a == *b;
+    sys:print(same.value);
+}

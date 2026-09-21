@@ -1,0 +1,7 @@
+void main(string param) {
+    int x = 10;
+    int y = 20;
+    if (x < y) {
+        sys:print("x is smaller");
+    }
+}

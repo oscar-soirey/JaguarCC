@@ -1,0 +1,15 @@
+class C {
+    $string value;
+    $void run() {
+        signal: value {
+            sys:print(value);
+        }
+        value = "a";
+        value = "a";
+        value = "b";
+    }
+}
+void main(string param) {
+    C* c => C();
+    c->run();
+}

@@ -661,8 +661,14 @@ def resolve_link_arg(value: str, output_base: Path, base_dir: Path) -> str:
 def main(argv: list[str]) -> int:
     args = argv[1:]
     if not args:
-        print("Usage: python jbs.py project.jbs [-o output] [--target name]", file=sys.stderr)
-        return 1
+        # A project file literally named `.jbs` is valid and can be auto-discovered
+        # when it is the only conventional project file in the current directory.
+        default_jbs = Path(".jbs").resolve()
+        if default_jbs.is_file():
+            args = [".jbs"]
+        else:
+            print("Usage: python jbs.py project.jbs [-o output] [--target name]", file=sys.stderr)
+            return 1
 
     jbs_file: str | None = None
     output: str | None = None
@@ -701,7 +707,7 @@ def main(argv: list[str]) -> int:
     if not jbs_path.is_file():
         print(f"JBS Error: file not found: {jbs_file}", file=sys.stderr)
         return 1
-    if jbs_path.suffix != ".jbs":
+    if jbs_path.suffix != ".jbs" and jbs_path.name != ".jbs":
         print("JBS Error: project file must have the .jbs extension", file=sys.stderr)
         return 1
 

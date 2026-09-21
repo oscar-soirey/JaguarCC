@@ -1,0 +1,7 @@
+void main(string param) {
+    int total = 0;
+    int i = for_loop(1, 4) {
+        total = total + i;
+    }
+    sys:print(total);
+}

@@ -1,18 +1,14 @@
 ##### Features:
 
-\-définir ses propres decorateurs avec void @nom\_du\_decorateur(parametres):func { avant(); func(); apres(); }
-
-\-signal sur une variable membre de classe
+//-signal sur une variable membre de classe
 
 \-convertir une api complete, pas juste un single file
 
-\-surcharge d'operateurs avec MyStruct operator==(MyStruct a, MyStruct b) { return ...; }
+//-surcharge d'operateurs avec MyStruct operator==(MyStruct a, MyStruct b) { return ...; }
 
-\-multithreading
+//-multithreading
 
-\-conserver les commentaires des api aux bindgen
-
-\-syntaxe if(!condition)
+//-syntaxe if(!condition)
 
 \-operateur + sur les strings
 
@@ -77,6 +73,8 @@
 \-jbs doit gerer c -> jaguar, mais aussi jaguar -> c
 
 \-extension pour Jetbrains et Visual Studio
+
+\-en mode debug, ecrire toutes les operations réalisées au runtime, et donc ne pas generer le meme code c en debug et en release
 
 
 

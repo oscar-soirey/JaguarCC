@@ -214,6 +214,17 @@ KEYWORDS = TYPE_KEYWORDS | {
     "if", "else", "while", "break", "continue", "for_loop", "this", "auto", "signal", "new",
 }
 
+_OPERATOR_FUNCTION_TOKENS = {"+", "-", "*", "/", "%", "==", "!=", "<", ">", "<=", ">="}
+_OPERATOR_C_SUFFIX = {
+    "+": "add", "-": "sub", "*": "mul", "/": "div", "%": "mod",
+    "==": "eq", "!=": "neq", "<": "lt", ">": "gt", "<=": "le", ">=": "ge",
+}
+
+def _operator_c_name(name: str) -> str:
+    if isinstance(name, str) and name.startswith("operator") and name[8:] in _OPERATOR_C_SUFFIX:
+        return "operator_" + _OPERATOR_C_SUFFIX[name[8:]]
+    return name
+
 # tokens à trois caractères (testés avant les tokens à deux caractères)
 THREE_CHAR_TOKENS = {"..."}
 
@@ -576,6 +587,12 @@ class VariableChangeHandler:
 
 
 @dataclass
+class DecoratorUse:
+    name: str
+    args: list
+
+
+@dataclass
 class MemberAssignStmt:
     target: MemberAccess
     expr: object
@@ -584,6 +601,14 @@ class MemberAssignStmt:
 @dataclass
 class Block:
     statements: list
+
+
+@dataclass
+class DecoratorDecl:
+    name: str
+    params: List[Param]
+    body: Block
+    namespace: Optional[str] = None
 
 
 @dataclass
@@ -706,6 +731,8 @@ class FunctionDecl:
     # rempli par le Resolver (nom final choisi pour le C généré)
     mangled_name: Optional[str] = None
     is_variadic: bool = False
+    decorators: List[DecoratorUse] = field(default_factory=list)
+    implementation_name: Optional[str] = None
 
 
 @dataclass
@@ -909,6 +936,9 @@ class Parser:
             return self.parse_namespace()
 
         if tok.kind == "@":
+            if self._is_decorator_use_ahead():
+                uses = self.parse_decorator_uses()
+                return self.parse_function(decorator_uses=uses)
             save = self.pos
             attrs = self.parse_attributes()
             if self.peek().kind == "class":
@@ -924,6 +954,9 @@ class Parser:
             self._parse_error(
                 f"attributes (@...) can only be applied to functions, classes, or global variables (line {tok.line})", tok
             )
+
+        if (tok.kind in TYPE_KEYWORDS or tok.kind == "IDENT") and self._is_decorator_decl_ahead():
+            return self.parse_decorator_decl()
 
         if tok.kind in TYPE_KEYWORDS or tok.kind in ("const", "IDENT"):
             # Un IDENT suivi de ':' ou '(' est un appel isolé au niveau
@@ -944,6 +977,8 @@ class Parser:
         """Detect a function declaration, including pointer return types."""
         i = 0
         while self.peek(i).kind == "@":
+            if self.peek(i + 2).kind == "(":
+                break
             i += 2
         if self.peek(i).kind == "const":
             i += 1
@@ -966,7 +1001,51 @@ class Parser:
                 i += 1
         while self.peek(i).kind == "*":
             i += 1
+        if (self.peek(i).kind == "operator" or (self.peek(i).kind == "IDENT" and self.peek(i).value == "operator")):
+            return self.peek(i + 1).kind in _OPERATOR_FUNCTION_TOKENS and self.peek(i + 2).kind == "("
         return self.peek(i).kind == "IDENT" and self.peek(i + 1).kind == "("
+
+    def _is_decorator_use_ahead(self) -> bool:
+        return self.peek().kind == "@" and self.peek(1).kind == "IDENT" and self.peek(2).kind == "("
+
+    def parse_decorator_uses(self):
+        uses = []
+        while self._is_decorator_use_ahead():
+            at = self.advance()
+            name = self.advance().value
+            self.expect("(")
+            args = []
+            if self.peek().kind != ")":
+                args.append(self.parse_expr())
+                while self.peek().kind == ",":
+                    self.advance(); args.append(self.parse_expr())
+            self.expect(")")
+            uses.append(self._mark_token(DecoratorUse(name, args), at))
+        return uses
+
+    def _is_decorator_decl_ahead(self) -> bool:
+        i = 1 if self.peek().kind == "const" else 0
+        return (self.peek(i).kind in TYPE_KEYWORDS or self.peek(i).kind == "IDENT") and self.peek(i+1).kind == "@" and self.peek(i+2).kind == "IDENT" and self.peek(i+3).kind == "("
+
+    def parse_decorator_decl(self, namespace: Optional[str] = None):
+        tok = self.peek()
+        prefix_const = self.peek().kind == "const"
+        if prefix_const: self.advance()
+        ret = self.parse_type()
+        if prefix_const or ret != "void": self._parse_error("decorator declarations must use return type 'void'", tok)
+        self.expect("@")
+        name_tok = self.expect("IDENT")
+        self.expect("(")
+        params=[]
+        if self.peek().kind != ")":
+            params.append(self.parse_param())
+            while self.peek().kind == ",":
+                self.advance(); params.append(self.parse_param())
+        self.expect(")"); self.expect(":")
+        func_tok=self.expect("IDENT")
+        if func_tok.value != "func": self._parse_error("a decorator declaration must use ':func'", func_tok)
+        body=self.parse_block()
+        return self._mark_token(DecoratorDecl(name_tok.value, params, body, namespace), tok)
 
     # -- attributs (@extern, ...) --
     def parse_attributes(self) -> set:
@@ -1206,7 +1285,13 @@ class Parser:
                 items.append(self.parse_class(namespace=namespace))
             elif tok.kind == "namespace":
                 items.extend(self.parse_namespace(namespace))
+            elif (tok.kind in TYPE_KEYWORDS or tok.kind == "IDENT") and self._is_decorator_decl_ahead():
+                items.append(self.parse_decorator_decl(namespace=namespace))
             elif tok.kind == "@":
+                if self._is_decorator_use_ahead():
+                    uses = self.parse_decorator_uses()
+                    items.append(self.parse_function(namespace=namespace, decorator_uses=uses))
+                    continue
                 save = self.pos
                 attrs = self.parse_attributes()
                 if self.peek().kind == "class":
@@ -1325,7 +1410,7 @@ class Parser:
         setattr(param, "_jaguar_name_column", n.column); setattr(param, "_jaguar_name_end_column", n.end_column)
         return param
 
-    def _parse_function_impl(self, namespace: Optional[str] = None) -> FunctionDecl:
+    def _parse_function_impl(self, namespace: Optional[str] = None, decorator_uses=None) -> FunctionDecl:
         attrs = self.parse_attributes()
         is_extern = "extern" in attrs
 
@@ -1334,7 +1419,17 @@ class Parser:
             self.advance(); prefix_const = True
         ret_type = self.parse_type()
         ret_type_span = self._last_type_span
-        name_tok = self.expect("IDENT")
+        if (self.peek().kind == "operator" or (self.peek().kind == "IDENT" and self.peek().value == "operator")):
+            self.advance()
+            op_tok = self.peek()
+            if op_tok.kind not in _OPERATOR_FUNCTION_TOKENS:
+                self._parse_error("expected an operator token after 'operator'", op_tok)
+            self.advance()
+            name_tok = op_tok
+            function_name = "operator" + op_tok.value
+        else:
+            name_tok = self.expect("IDENT")
+            function_name = name_tok.value
         self.expect("(")
         params = []
         is_variadic = False
@@ -1355,20 +1450,20 @@ class Parser:
         if self.peek().kind == ";":
             self.advance()
             node = FunctionDecl(
-                ret_type, name_tok.value, params, Block([]), namespace,
-                is_extern, prefix_const or suffix_const, True, None, is_variadic
+                ret_type, function_name, params, Block([]), namespace,
+                is_extern, prefix_const or suffix_const, True, None, is_variadic, list(decorator_uses or []), None
             )
         else:
             body = self.parse_block()
-            node = FunctionDecl(ret_type, name_tok.value, params, body, namespace, is_extern, prefix_const or suffix_const, False, None, is_variadic)
+            node = FunctionDecl(ret_type, function_name, params, body, namespace, is_extern, prefix_const or suffix_const, False, None, is_variadic, list(decorator_uses or []), None)
         if ret_type_span:
             setattr(node, "_jaguar_type_column", ret_type_span[1]); setattr(node, "_jaguar_type_end_column", ret_type_span[2])
         setattr(node, "_jaguar_name_column", name_tok.column); setattr(node, "_jaguar_name_end_column", name_tok.end_column)
         return node
 
-    def parse_function(self, namespace: Optional[str] = None) -> FunctionDecl:
+    def parse_function(self, namespace: Optional[str] = None, decorator_uses=None) -> FunctionDecl:
         tok = self.peek()
-        node = self._parse_function_impl(namespace)
+        node = self._parse_function_impl(namespace, decorator_uses)
         self._mark_token(node, tok)
         # `_parse_function_impl` stores the return-type span/name span on the
         # declaration so semantic diagnostics can highlight the exact symbol.
@@ -1564,9 +1659,14 @@ class Parser:
         if tok.kind == "signal":
             self.advance()
             self.expect(":")
-            name = self.expect("IDENT").value
+            name_tok = self.expect("IDENT")
+            if self.peek().kind == ":":
+                # Qualified member signals such as `signal: MyClass:field` are
+                # deliberately rejected. A member signal is declared from the
+                # class method that owns the member, using `signal: field`.
+                self._parse_error("signal on a class member is only valid inside the class; use `signal: field`", self.peek())
             body = self.parse_block()
-            return VariableChangeHandler(name, body)
+            return self._mark_token(VariableChangeHandler(name_tok.value, body), tok)
         if tok.kind == "return":
             self.advance()
             if self.peek().kind == ";":
@@ -1848,6 +1948,7 @@ class Resolver:
         self.program = program
         raw_groups: Dict[FuncKey, List[FunctionDecl]] = {}
         self._all_functions: List[FunctionDecl] = []
+        self.decorators: Dict[tuple, DecoratorDecl] = {}
         self.groups: Dict[FuncKey, List[FunctionDecl]] = {}
         self.classes: Dict[str, ClassDecl] = {}
         self.type_aliases: Dict[str, str] = {}
@@ -1954,6 +2055,11 @@ class Resolver:
                 key = (item.namespace, item.name)
                 raw_groups.setdefault(key, []).append(item)
                 self._all_functions.append(item)
+            elif isinstance(item, DecoratorDecl):
+                key = (item.namespace, item.name)
+                if key in self.decorators:
+                    self._resolver_error(f"decorator '{item.name}' declared multiple times", item)
+                self.decorators[key] = item
             elif isinstance(item, ClassDecl):
                 if item.name in self.classes:
                     self._resolver_error(f"class '{item.name}' declared multiple times", item)
@@ -2158,6 +2264,11 @@ class Resolver:
                 validate_type(item.ret_type, item, item.namespace)
                 for p in item.params: validate_type(p.type, p, item.namespace); validate_expr(p.default, item.namespace)
                 for st in item.body.statements: validate_stmt(st, item.namespace)
+                for use in item.decorators:
+                    for a in use.args: validate_expr(a, item.namespace)
+            elif isinstance(item, DecoratorDecl):
+                for p in item.params: validate_type(p.type, p, item.namespace); validate_expr(p.default, item.namespace)
+                for st in item.body.statements: validate_stmt(st, item.namespace)
             elif isinstance(item, StructDecl):
                 for f in item.fields: validate_type(f.type, f, item.namespace)
             elif isinstance(item, UnionDecl):
@@ -2179,6 +2290,8 @@ class Resolver:
         for item in program.items:
             if isinstance(item, FunctionDecl):
                 item.ret_type = rewrite_type(item.ret_type, item.namespace)
+                for p in item.params: p.type = rewrite_type(p.type, item.namespace)
+            elif isinstance(item, DecoratorDecl):
                 for p in item.params: p.type = rewrite_type(p.type, item.namespace)
             elif isinstance(item, StructDecl):
                 for f in item.fields: f.type = rewrite_type(f.type, item.namespace)
@@ -2302,6 +2415,12 @@ class Resolver:
                 aliases=dict(self.type_aliases); namespaces=list(self.using_namespaces); symbols=dict(self.using_symbols)
                 for st in item.body.statements: aliases, namespaces = rewrite_stmt(st, aliases, namespaces, symbols, item.namespace)
                 for p in item.params: rewrite_expr(p.default)
+                for use in item.decorators:
+                    for a in use.args: rewrite_expr(a)
+            elif isinstance(item, DecoratorDecl):
+                aliases=dict(self.type_aliases); namespaces=list(self.using_namespaces); symbols=dict(self.using_symbols)
+                for st in item.body.statements: aliases, namespaces = rewrite_stmt(st, aliases, namespaces, symbols, item.namespace)
+                for p in item.params: rewrite_expr(p.default)
             elif isinstance(item, ClassDecl):
                 for f in item.fields: f.type = rewrite_type(f.type, item.namespace); rewrite_expr(f.init)
                 for m in item.methods:
@@ -2342,6 +2461,7 @@ class Resolver:
 
         setattr(program, "_using_namespaces", list(self.using_namespaces))
         setattr(program, "_using_symbols", dict(self.using_symbols))
+        setattr(program, "_decorators", dict(self.decorators))
         setattr(program, "_type_aliases", dict(self.type_aliases))
         setattr(program, "_enums", dict(self.enums))
         self._resolve_classes()
@@ -2454,6 +2574,10 @@ class Resolver:
         # Les noms C sont calculés par signature logique, puis propagés à
         # toutes les déclarations correspondantes (prototype et définition).
         for (namespace, name), fns in self.groups.items():
+            if name.startswith("operator") and name[8:] in _OPERATOR_FUNCTION_TOKENS:
+                invalid = next((fn for fn in fns if len(fn.params) != 2), None)
+                if invalid is not None:
+                    self._resolver_error(f"operator '{name[8:]}' requires exactly 2 parameters", invalid)
             if name in LIBC_FUNCTION_NAMES and any(not fn.is_extern for fn in fns):
                 offending = next(fn for fn in fns if not fn.is_extern)
                 self._resolver_error(f"function name '{name}' is reserved by libc and cannot be used in Jaguar", offending)
@@ -2469,6 +2593,7 @@ class Resolver:
                     fn.mangled_name = fn.name
                     continue
                 prefix = f"{namespace.replace(':', '_')}_" if namespace else ""
+                c_name_base = _operator_c_name(name)
                 if overloaded:
                     if fn.params:
                         suffix = "_".join(
@@ -2481,9 +2606,15 @@ class Resolver:
                         )
                     else:
                         suffix = "void"
-                    fn.mangled_name = f"{prefix}{name}_{suffix}"
+                    fn.mangled_name = f"{prefix}{c_name_base}_{suffix}"
                 else:
-                    fn.mangled_name = f"{prefix}{name}"
+                    fn.mangled_name = f"{prefix}{c_name_base}"
+                if fn.decorators:
+                    if fn.is_prototype or fn.is_extern:
+                        self._resolver_error(f"decorator cannot be applied to prototype or extern function '{name}'", fn)
+                    if fn.ret_type != "void":
+                        self._resolver_error(f"decorator can only be applied to void function '{name}'", fn)
+                    fn.implementation_name = f"{fn.mangled_name}__decor_impl"
 
         # Même nom C pour les prototypes et leurs définitions.
         for item in self._all_functions:
@@ -2525,6 +2656,11 @@ class CodeGenError(Exception):
 # Le deuxième argument de sys:execute est le répertoire de travail.
 
 SYSTEM_BUILTINS = {
+    ("thread", "start"): ("_j_thread_start", 1, "void*"),
+    ("thread", "join"): ("_j_thread_join", 1, "void"),
+    ("thread", "detach"): ("_j_thread_detach", 1, "void"),
+    ("thread", "sleep"): ("_j_thread_sleep", 1, "void"),
+    ("thread", "yield"): ("_j_thread_yield", 0, "void"),
     ("sys", "print"): ("_j_sys_print", 1, "void"),
     ("sys:console", "set_color"): ("_j_sys_console_set_color", 1, "void"),
     ("sys:console", "reset_color"): ("_j_sys_console_reset_color", 0, "void"),
@@ -2712,6 +2848,34 @@ def _system_runtime(used, used_string=False):
             "static void _j_sys_enable_ansi(void) { }",
             "#endif",
             "",
+        ]
+
+    if ("thread", "start") in used or any(k[0] == "thread" for k in used):
+        lines += [
+            "",
+            "#ifdef _WIN32",
+            "#include <windows.h>",
+            "typedef struct _jThreadStartCtx { void (*fn)(void); } _jThreadStartCtx;",
+            "typedef struct _jThreadHandle { HANDLE handle; } _jThreadHandle;",
+            "static DWORD WINAPI _j_thread_entry(LPVOID raw) { _jThreadStartCtx *ctx=(_jThreadStartCtx*)raw; void (*fn)(void)=ctx?ctx->fn:0; if(ctx)free(ctx); if(fn)fn(); return 0; }",
+            "static void *_j_thread_start(void (*fn)(void)) { _jThreadHandle *h; _jThreadStartCtx *ctx; DWORD id; if(!fn)return 0; h=(_jThreadHandle*)malloc(sizeof(*h)); ctx=(_jThreadStartCtx*)malloc(sizeof(*ctx)); if(!h||!ctx){free(h);free(ctx);return 0;} ctx->fn=fn; h->handle=CreateThread(0,0,_j_thread_entry,ctx,0,&id); if(!h->handle){free(ctx);free(h);return 0;} return h; }",
+            "static void _j_thread_join(void *raw) { _jThreadHandle *h=(_jThreadHandle*)raw; if(!h)return; WaitForSingleObject(h->handle,INFINITE); CloseHandle(h->handle); free(h); }",
+            "static void _j_thread_detach(void *raw) { _jThreadHandle *h=(_jThreadHandle*)raw; if(!h)return; CloseHandle(h->handle); free(h); }",
+            "static void _j_thread_sleep(i32 ms) { if(ms<0)ms=0; Sleep((DWORD)ms); }",
+            "static void _j_thread_yield(void) { SwitchToThread(); }",
+            "#else",
+            "#include <pthread.h>",
+            "#include <sched.h>",
+            "#include <time.h>",
+            "typedef struct _jThreadStartCtx { void (*fn)(void); } _jThreadStartCtx;",
+            "typedef struct _jThreadHandle { pthread_t thread; } _jThreadHandle;",
+            "static void *_j_thread_entry(void *raw) { _jThreadStartCtx *ctx=(_jThreadStartCtx*)raw; void (*fn)(void)=ctx?ctx->fn:0; if(ctx)free(ctx); if(fn)fn(); return 0; }",
+            "static void *_j_thread_start(void (*fn)(void)) { _jThreadHandle *h; _jThreadStartCtx *ctx; if(!fn)return 0; h=(_jThreadHandle*)malloc(sizeof(*h)); ctx=(_jThreadStartCtx*)malloc(sizeof(*ctx)); if(!h||!ctx){free(h);free(ctx);return 0;} ctx->fn=fn; if(pthread_create(&h->thread,0,_j_thread_entry,ctx)!=0){free(ctx);free(h);return 0;} return h; }",
+            "static void _j_thread_join(void *raw) { _jThreadHandle *h=(_jThreadHandle*)raw; if(!h)return; pthread_join(h->thread,0); free(h); }",
+            "static void _j_thread_detach(void *raw) { _jThreadHandle *h=(_jThreadHandle*)raw; if(!h)return; pthread_detach(h->thread); free(h); }",
+            "static void _j_thread_sleep(i32 ms) { struct timespec ts; if(ms<0)ms=0; ts.tv_sec=(time_t)(ms/1000); ts.tv_nsec=(long)((ms%1000)*1000000L); nanosleep(&ts,0); }",
+            "static void _j_thread_yield(void) { sched_yield(); }",
+            "#endif",
         ]
 
     if ("sys", "print") in used:
@@ -2941,8 +3105,6 @@ _BINOP_PREC = {
 }
 # opérateurs dont le résultat est un bool côté Jaguar
 _BOOL_RESULT_OPS = {"||", "&&", "==", "!=", "<", ">", "<=", ">="}
-
-
 def _literal(category: str):
     """Marqueur de type pour un littéral (pas encore de largeur figée) :
     un littéral entier correspond à n'importe quel type entier candidat,
@@ -3021,6 +3183,10 @@ class CodeGen:
         self._change_handlers: Dict[str, object] = {}
         self._in_change_handler = False
         self._current_source_line = 1
+        self.decorators: Dict[tuple, DecoratorDecl] = dict(getattr(program, "_decorators", {}))
+        self._decorator_call_target_name: Optional[str] = None
+        self._decorator_target_params: List[Param] = []
+        self._current_function_local_types: Dict[str, str] = {}
 
         # variables globales : nom -> type Jaguar (pour l'inférence de
         # types dans la résolution de surcharge, et la validation)
@@ -3250,6 +3416,8 @@ class CodeGen:
                 "#include <stdlib.h>",
                 "#include <string.h>",
             ]
+            if any(k[0] == "thread" for k in used_system):
+                header_lines += ["#ifdef _WIN32", "#include <windows.h>", "#else", "#include <pthread.h>", "#endif"]
             if any(t in used_types for t in ("i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64")):
                 header_lines.append("#include <stdint.h>")
             header_lines.extend(typedef_lines)
@@ -3799,7 +3967,7 @@ class CodeGen:
         self._current_source_line = getattr(item, "_jaguar_line", 1)
         if isinstance(item, PreprocLine):
             return item.text
-        if isinstance(item, (ForwardDecl, TypeAliasDecl, UsingNamespaceDecl, UsingSymbolDecl, UsingImportDecl, EnumDecl)):
+        if isinstance(item, (ForwardDecl, TypeAliasDecl, UsingNamespaceDecl, UsingSymbolDecl, UsingImportDecl, EnumDecl, DecoratorDecl)):
             return ""
         if isinstance(item, StructDecl):
             return self.gen_struct(item)
@@ -4559,6 +4727,47 @@ class CodeGen:
                 return True
         return False
 
+    def _find_decorator(self, name, namespace):
+        return self.decorators.get((namespace, name)) or self.decorators.get((None, name))
+
+    def _gen_decorator_wrapper(self, fn: FunctionDecl, public_name: str, target_name: str, use: DecoratorUse, index: int) -> str:
+        dec = self._find_decorator(use.name, fn.namespace)
+        if dec is None:
+            raise CodeGenError(f"unknown decorator '@{use.name}'")
+        fn_param_names = {p.name for p in fn.params}
+        if any(p.name in fn_param_names for p in dec.params):
+            raise CodeGenError(f"decorator '@{use.name}' parameter names must not collide with decorated function parameters")
+        target_types = {p.name: p.type for p in fn.params}
+        ordered = self._ordered_call_args(use.args, dec.params, f"decorator '@{use.name}'")
+        for arg, p in zip(ordered, dec.params):
+            self._check_assignable(p.type, self.infer_type(arg, target_types), f"argument '{p.name}' of decorator '@{use.name}'", arg)
+        wrapper_name = public_name if index == 0 else f"{public_name}__decor_{index}"
+        params_c = [self._param_c_decl(p) for p in fn.params]
+        header = self._function_return_c_decl("void", wrapper_name, params_c)
+        local_types = dict(target_types)
+        local_types.update({p.name: p.type for p in dec.params})
+        self._current_namespace = dec.namespace
+        self._current_source_line = getattr(use, "_jaguar_line", getattr(fn, "_jaguar_line", 1))
+        self._change_handlers = {}
+        self._readonly_vars = {p.name for p in fn.params if p.is_const} | {p.name for p in dec.params if p.is_const}
+        self._const_object_vars = {p.name for p in fn.params if p.is_const and p.type in self.classes}
+        self._pointee_const_vars = {p.name for p in fn.params if p.pointee_const}
+        self._current_return_type = "void"
+        self._current_function_local_types = local_types
+        self._decorator_call_target_name = target_name
+        self._decorator_target_params = list(fn.params)
+        try:
+            decls = [f"{self._decl_c_type(p.type)} {p.name} = {self.gen_expr(arg, target_types)};" for p, arg in zip(dec.params, ordered)]
+            body_lines = self._gen_body_lines(dec.body.statements, local_types)
+        finally:
+            self._decorator_call_target_name = None
+            self._decorator_target_params = []
+        lines = [f"{header} {{"]
+        lines.extend("    " + x for x in decls)
+        lines.extend("    " + x for x in body_lines)
+        lines.append("}")
+        return "\n".join(lines)
+
     def gen_function(self, fn: FunctionDecl) -> str:
         self._current_namespace = fn.namespace
         self._current_source_line = getattr(fn, "_jaguar_line", 1)
@@ -4568,25 +4777,37 @@ class CodeGen:
         self._change_handlers = {}
         if fn.is_variadic and not fn.is_prototype:
             raise CodeGenError("variadic Jaguar functions must currently be prototypes/@extern; Jaguar does not expose va_list yet")
+        if fn.decorators and (fn.is_prototype or fn.is_extern or fn.ret_type != "void"):
+            raise CodeGenError("decorators currently require a non-extern, non-prototype void function")
         params = [self._param_c_decl(p) for p in fn.params]
         if fn.is_variadic:
             params.append("...")
-        header = self._function_return_c_decl(fn.ret_type, fn.mangled_name, params)
+        public_name = fn.mangled_name
+        implementation_name = fn.implementation_name or public_name
+        header = self._function_return_c_decl(fn.ret_type, implementation_name, params)
         local_types = {p.name: p.type for p in fn.params}
+        self._current_function_local_types = local_types
         self._readonly_vars = {p.name for p in fn.params if p.is_const}
         self._const_object_vars = {p.name for p in fn.params if p.is_const and p.type in self.classes}
         self._pointee_const_vars = {p.name for p in fn.params if p.pointee_const}
         self._current_return_type = fn.ret_type
         body = self.gen_block(fn.body, local_types)
         if fn.ret_type != "void" and not self._block_guarantees_return(fn.body):
-            err = CodeGenError(
-                f"non-void function '{fn.name}' may exit without returning a value of type '{fn.ret_type}'"
-            )
+            err = CodeGenError(f"non-void function '{fn.name}' may exit without returning a value of type '{fn.ret_type}'")
             err._jaguar_line = getattr(fn, "_jaguar_line", 1)
             err._jaguar_column = getattr(fn, "_jaguar_column", 0)
             err._jaguar_end_column = getattr(fn, "_jaguar_end_column", err._jaguar_column + len(fn.name))
             raise err
-        return f"{header} {body}"
+        impl = f"{header} {body}"
+        if not fn.decorators:
+            return impl
+        target = implementation_name
+        wrappers=[]
+        for index in range(len(fn.decorators)-1, -1, -1):
+            wrapper_name = public_name if index == 0 else f"{public_name}__decor_{index}"
+            wrappers.append(self._gen_decorator_wrapper(fn, public_name, target, fn.decorators[index], index))
+            target = wrapper_name
+        return impl + "\n\n" + "\n\n".join(reversed(wrappers))
 
     def _gen_main(self, fn: FunctionDecl) -> str:
         if fn.ret_type != "void":
@@ -4933,7 +5154,8 @@ class CodeGen:
         for st in statements:
             if isinstance(st, VariableChangeHandler):
                 if st.name not in local_types and st.name not in self.global_types:
-                    raise CodeGenError(f"signal: variable '{st.name}' is not declared")
+                    if not (self._current_class and self._find_class_member(self._current_class.name, st.name, "field")[1] is not None):
+                        raise CodeGenError(f"signal: variable '{st.name}' is not a local variable or member of class '{self._current_class.name}'" if self._current_class else f"signal: variable '{st.name}' is not declared")
                 if st.name in handlers:
                     raise CodeGenError(f"signal: multiple handlers for variable '{st.name}' in the same function")
                 handlers[st.name] = st.body
@@ -4957,6 +5179,22 @@ class CodeGen:
         lines.extend("    " + x for x in body_lines)
         lines.append("}")
         return lines
+
+    def _gen_member_change_trigger(self, name, local_types, old_tmp, current_expr):
+        if self._in_change_handler or name not in self._change_handlers:
+            return []
+        body = self._change_handlers[name]
+        old_type = self.infer_type(MemberAccess(Ident("this"), name), local_types)
+        if old_type == "string":
+            cond = f"(({old_tmp} == 0 && {current_expr} != 0) || ({old_tmp} != 0 && {current_expr} == 0) || ({old_tmp} != 0 && {current_expr} != 0 && strcmp({old_tmp}->data, {current_expr}->data) != 0))"
+        else:
+            cond = f"({old_tmp} != {current_expr})"
+        self._in_change_handler = True
+        try:
+            body_lines = self._gen_body_lines(body.statements, local_types)
+        finally:
+            self._in_change_handler = False
+        return [f"if ({cond}) {{"] + ["    " + x for x in body_lines] + ["}"]
 
     def _expr_pointee_const(self, e):
         if isinstance(e, Ident):
@@ -5039,16 +5277,18 @@ class CodeGen:
             return t in INTEGER_TYPES | FLOAT_TYPES
         if isinstance(e, BinOp):
             lt=self.infer_type(e.left,local_types); rt=self.infer_type(e.right,local_types)
-            if e.op in ("+","-","*","/","%"):
-                if lt == "string" or rt == "string":
-                    raise CodeGenError(f"operator '{e.op}' is not defined for 'string' operands")
-                if not (numeric(lt) and numeric(rt)):
-                    raise CodeGenError(f"operator '{e.op}' requires numeric operands, got '{lt}' and '{rt}'")
-            elif e.op in _BOOL_RESULT_OPS:
-                if lt is None or rt is None:
-                    raise CodeGenError(f"operator '{e.op}' cannot be checked because an operand has unknown type")
-                if e.op in ("<",">","<=",">=") and not (numeric(lt) and numeric(rt)):
-                    raise CodeGenError(f"operator '{e.op}' requires numeric operands, got '{lt}' and '{rt}'")
+            custom=self._resolve_operator(e.op, lt, rt)
+            if custom is None:
+                if e.op in ("+","-","*","/","%"):
+                    if lt == "string" or rt == "string":
+                        raise CodeGenError(f"operator '{e.op}' is not defined for 'string' operands")
+                    if not (numeric(lt) and numeric(rt)):
+                        raise CodeGenError(f"operator '{e.op}' requires numeric operands, got '{lt}' and '{rt}'")
+                elif e.op in _BOOL_RESULT_OPS:
+                    if lt is None or rt is None:
+                        raise CodeGenError(f"operator '{e.op}' cannot be checked because an operand has unknown type")
+                    if e.op in ("<",">","<=",">=") and not (numeric(lt) and numeric(rt)):
+                        raise CodeGenError(f"operator '{e.op}' requires numeric operands, got '{lt}' and '{rt}'")
             self._check_expression_types(e.left,local_types); self._check_expression_types(e.right,local_types)
         elif isinstance(e, UnaryOp):
             t=self.infer_type(e.operand,local_types)
@@ -5096,7 +5336,8 @@ class CodeGen:
             return cleanup + [f"return {expr};"]
         if isinstance(s, VariableChangeHandler):
             if s.name not in local_types and s.name not in self.global_types:
-                raise CodeGenError(f"signal: variable '{s.name}' is not declared")
+                if not (self._current_class and self._find_class_member(self._current_class.name, s.name, "field")[1] is not None):
+                    raise CodeGenError(f"signal: variable '{s.name}' is not a local variable or member of class '{self._current_class.name}'" if self._current_class else f"signal: variable '{s.name}' is not declared")
             if s.name in self._change_handlers:
                 raise CodeGenError(f"signal: multiple handlers for variable '{s.name}' in the same scope")
             self._change_handlers[s.name] = s.body
@@ -5140,6 +5381,12 @@ class CodeGen:
             value_type = self._check_expression_types(s.expr, local_types)
             self._check_assignable(target_type, value_type, f"assignment to member '{s.target.name}'", s.target)
             target = self.gen_member_access(s.target, local_types)
+            if (not self._in_change_handler and isinstance(s.target.obj, Ident) and s.target.obj.name == "this" and s.target.name in self._change_handlers):
+                old_type = self.infer_type(s.target, local_types)
+                old_tmp = f"__j_old_{self._tmp_id}"
+                self._tmp_id += 1
+                old_c = c_type(old_type)
+                return [f"{old_c} {old_tmp} = {target};", f"{target} = {self.gen_expr(s.expr, local_types)};"] + self._gen_member_change_trigger(s.target.name, local_types, old_tmp, target)
             return [f"{target} = {self.gen_expr(s.expr, local_types)};"]
         if isinstance(s, PointerAssignStmt):
             if isinstance(s.target, UnaryOp) and s.target.op == "*":
@@ -5399,11 +5646,23 @@ class CodeGen:
                 raise CodeGenError(f"ambiguous system function '{callee.name}' imported from multiple namespaces")
         return None
 
-    def _validate_system_call(self, call):
+    def _validate_system_call(self, call, local_types=None):
         info = self._system_builtin(call.callee, call)
         if info is None:
             return None
         c_name, argc, ret_type = info
+        if isinstance(call.callee, NamespacedIdent) and call.callee.namespace == "thread" and local_types is not None:
+            vals = [a.expr if isinstance(a, NamedArg) else a for a in call.args]
+            if call.callee.name == "start" and (len(vals) != 1 or self.infer_type(vals[0], local_types) != "fn() -> void"):
+                raise CodeGenError("'thread:start' expects a function pointer of type 'fn() -> void'")
+            if call.callee.name in ("join", "detach") and len(vals) == 1:
+                if self.infer_type(vals[0], local_types) not in ("void*", "nullptr"):
+                    raise CodeGenError(f"'thread:{call.callee.name}' expects a thread handle")
+            if call.callee.name == "sleep" and len(vals) == 1:
+                t=self.infer_type(vals[0], local_types)
+                if isinstance(t,tuple): t="int" if t[1]=="int" else t
+                if t not in INTEGER_TYPES:
+                    raise CodeGenError("'thread:sleep' expects an integer millisecond count")
         if len(call.args) != argc:
             if argc == 0:
                 expected = "no arguments"
@@ -5595,6 +5854,24 @@ class CodeGen:
             )
         raise CodeGenError(f"ambiguous call to overloaded function '{name}'")
 
+    def _operator_candidates(self, op):
+        name = "operator" + op
+        candidates = list(self.groups.get((self._current_namespace, name), []))
+        for fn in self.groups.get((None, name), []):
+            if fn not in candidates: candidates.append(fn)
+        return candidates
+
+    def _resolve_operator(self, op, left_type, right_type):
+        if op not in _OPERATOR_FUNCTION_TOKENS or left_type is None or right_type is None:
+            return None
+        matches=[]
+        for fn in self._operator_candidates(op):
+            if len(fn.params) == 2 and _type_matches(fn.params[0].type, left_type) and _type_matches(fn.params[1].type, right_type):
+                matches.append(fn)
+        if len(matches) > 1:
+            raise CodeGenError(f"ambiguous overload for operator '{op}'")
+        return matches[0] if matches else None
+
     def infer_type(self, e, local_types: dict) -> Optional[str]:
         if isinstance(e, IntLit):
             return _literal("int")
@@ -5762,10 +6039,18 @@ class CodeGen:
                 raise CodeGenError("cannot dereference a non-pointer expression")
             return operand_type
         if isinstance(e, BinOp):
+            lt=self.infer_type(e.left, local_types); rt=self.infer_type(e.right, local_types)
+            custom=self._resolve_operator(e.op, lt, rt)
+            if custom is not None:
+                return custom.ret_type
             if e.op in _BOOL_RESULT_OPS:
                 return "bool"
-            return self.infer_type(e.left, local_types) or self.infer_type(e.right, local_types)
+            return lt or rt
         if isinstance(e, Call):
+            if isinstance(e.callee, Ident) and e.callee.name == "func" and self._decorator_call_target_name is not None:
+                if e.args:
+                    raise CodeGenError("decorator 'func()' does not accept explicit arguments")
+                return "void"
             if isinstance(e.callee, Ident) and e.callee.name in TYPE_KEYWORDS and e.callee.name not in self.classes and e.callee.name != "string":
                 raise CodeGenError(f"functional cast is not allowed: use C-style syntax `({e.callee.name})expression`")
             if self._is_reflection_call(e):
@@ -5930,7 +6215,7 @@ class CodeGen:
                 if m is not None:
                     self._check_member_access(owner, m, e.callee.name)
                     return m.ret_type
-            system = self._validate_system_call(e)
+            system = self._validate_system_call(e, local_types)
             if system is not None:
                 return system[2]
             target = self.resolve_call_target(e, local_types)
@@ -6361,11 +6646,19 @@ class CodeGen:
                 inner = f"({inner})"
             return f"{e.op}{inner}"
         if isinstance(e, BinOp):
+            custom=self._resolve_operator(e.op, self.infer_type(e.left,local_types), self.infer_type(e.right,local_types))
+            if custom is not None:
+                return f"{custom.mangled_name}({self.gen_expr(e.left,local_types)}, {self.gen_expr(e.right,local_types)})"
             prec = _BINOP_PREC[e.op]
             left = self._gen_operand(e.left, prec, local_types, is_right=False)
             right = self._gen_operand(e.right, prec, local_types, is_right=True)
             return f"{left} {e.op} {right}"
         if isinstance(e, Call):
+            if isinstance(e.callee, Ident) and e.callee.name == "func" and self._decorator_call_target_name is not None:
+                if e.args:
+                    raise CodeGenError("decorator 'func()' does not accept explicit arguments")
+                args = ", ".join(p.name for p in self._decorator_target_params)
+                return f"{self._decorator_call_target_name}({args})"
             # Reflection calls have a special dynamic receiver (`factory:construct()`
             # may only be known as `void*`), so they must be recognized before
             # asking for the type of the `MemberAccess` callee.
@@ -6642,8 +6935,15 @@ class CodeGen:
                     receiver = obj if owner.name == ot else self._base_object_ptr_expr(obj, self.classes[ot], owner)
                     return f"{m.mangled_name or (owner.name + '_' + m.name)}({receiver}" + (", "+args if args else "") + ")"
             target = None
-            system = self._validate_system_call(e)
+            system = self._validate_system_call(e, local_types)
             if system is not None:
+                if isinstance(e.callee, NamespacedIdent) and e.callee.namespace == "thread":
+                    args = [self.gen_expr(a.expr if isinstance(a, NamedArg) else a, local_types) for a in e.args]
+                    if e.callee.name == "start": return f"_j_thread_start({args[0]})"
+                    if e.callee.name == "join": return f"_j_thread_join({args[0]})"
+                    if e.callee.name == "detach": return f"_j_thread_detach({args[0]})"
+                    if e.callee.name == "sleep": return f"_j_thread_sleep((i32)({args[0]}))"
+                    if e.callee.name == "yield": return "_j_thread_yield()"
                 # sys:print accepte les types primitifs imprimables.
                 is_sys_print = (
                     e.callee.name == "print"
@@ -7046,6 +7346,8 @@ def main(argv):
             if c89:
                 gcc_args += ["-std=c89"]
             gcc_args += [str(c_path), str(runtime_c_path), "-o", out_path, "-lm"]
+            if "_j_thread_" in generated.get("runtime_c", "") and os.name != "nt":
+                gcc_args.append("-pthread")
             result = subprocess.run(
                 gcc_args,
                 check=False,

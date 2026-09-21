@@ -1,0 +1,11 @@
+before-explicit rc= 1
+stdout= ''
+stderr= 'JBS Error: project file must have the .jbs extension\n'
+after-explicit rc= 0
+stdout= "JBS: compiling 'demo' (compile)\nJBS: Jaguar -> C\nJBS: C -> final output\nJBS: output -> '/tmp/jbs-test-cqw6e30h/demo'\nJBS: removed 'demo.c'\n"
+stderr= ''
+after-auto rc= 0
+stdout= "JBS: compiling 'demo' (compile)\nJBS: Jaguar -> C\nJBS: C -> final output\nJBS: output -> '/tmp/jbs-test-cqw6e30h/demo'\nJBS: removed 'demo.c'\n"
+stderr= ''
+files= ['.jbs', 'demo', 'jbs.py', 'jbs_before.py', 'jcc.py', 'main.ja', 'toolchain']
+artifact demo 22128

@@ -30,7 +30,7 @@ SetupIconFile=C:\Users\User\Desktop\Jaguar\JaguarCC\docs\assets\logo.ico
 WizardImageFile=C:\Users\User\Desktop\Jaguar\JaguarCC\docs\assets\logo.bmp
 WizardSmallImageFile=C:\Users\User\Desktop\Jaguar\JaguarCC\docs\assets\logo.bmp
 SolidCompression=yes
-WizardStyle=modern stellar
+WizardStyle=modern dark
 ChangesEnvironment=yes
 [Registry]
 Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environment"; \

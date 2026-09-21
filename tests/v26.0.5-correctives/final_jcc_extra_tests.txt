@@ -1,0 +1,6 @@
+Additional final feature tests:
+VALID decorator_args.ja rc=0 stdout='wrap\n7' stderr=''
+VALID member_signal_string.ja rc=0 stdout='a\nb' stderr=''
+VALID operator_plus.ja rc=0 stdout='5' stderr=''
+VALID operator_identifier.ja rc=0 stdout='5' stderr=''
+VALID thread.ja c89=yes rc=0 stdout='worker\nmain' stderr=''

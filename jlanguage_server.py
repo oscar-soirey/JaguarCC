@@ -127,6 +127,14 @@ JCC_SIGNATURES = {
     "rename_file": ("bool", "string old_path, string new_path"), "env_get": ("string", "string name"),
 }
 
+THREAD_SIGNATURES = {
+    "start": ("void*", "fn() -> void function"),
+    "join": ("void", "void* handle"),
+    "detach": ("void", "void* handle"),
+    "sleep": ("void", "int milliseconds"),
+    "yield": ("void", ""),
+}
+
 TYPE_INFO = {
     "void": (0, "no storage; only valid as a return type"),
     "bool": (1, "1 byte"), "int": (4, "4 bytes on the current JaguarCC C ABI"),
@@ -367,9 +375,13 @@ class JaguarServer:
             if typ:
                 return {"isIncomplete":False,"items":[self.item(x) for x in idx.members_for_type(typ)]}
         # Namespace completion: foo: or foo:bar:
-        m=re.search(r"([A-Za-z_]\w*(?::[A-Za-z_]\w*)*):[A-Za-z_]\w*$", before)
+        m=re.search(r"([A-Za-z_]\w*(?::[A-Za-z_]\w*)*):(?:[A-Za-z_]\w*)?$", before)
         if m:
             ns=m.group(1); fs=[f for f in idx.functions if f.get("namespace") == ns]
+            if ns == "thread":
+                items=[{"label":name,"kind":3,"detail":f'{sig[0]} {name}({sig[1]})'} for name, sig in THREAD_SIGNATURES.items()]
+                items.extend({"label":f["name"],"kind":3,"detail":f'{f["type"]} {f["name"]}({f["args"]})'} for f in fs)
+                return {"isIncomplete":False,"items":items}
             return {"isIncomplete":False,"items":[{"label":f["name"],"kind":3,"detail":f'{f["type"]} {f["name"]}({f["args"]})'} for f in fs]}
         items=[]
         for t in BUILTIN_TYPES: items.append({"label":t,"kind":25,"detail":"Jaguar type"})
@@ -453,6 +465,10 @@ class JaguarServer:
             sig = JCC_SIGNATURES.get(word)
             if sig:
                 return {"kind": "function", "name": word, "type": sig[0], "args": sig[1], "namespace": "jcc", "jcc": True}
+        if namespace == "thread":
+            sig = THREAD_SIGNATURES.get(word)
+            if sig:
+                return {"kind": "function", "name": word, "type": sig[0], "args": sig[1], "namespace": "thread", "jcc": True}
         if word in idx.classes:
             c = idx.classes[word]
             return {"kind": "class", "name": word, "type": f"class {word}" + (f" : {c['base']}" if c.get('base') else ""), "detail": c}

@@ -1,0 +1,10 @@
+void print_value(i32 value) {
+    sys:print(value);
+}
+void print_value(f64 value) {
+    sys:print(value);
+}
+void main(string param) {
+    print_value(10);
+    print_value(3.14);
+}

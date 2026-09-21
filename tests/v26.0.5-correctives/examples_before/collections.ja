@@ -1,0 +1,5 @@
+void main(string param) {
+    list<int> values = {10, 20, 30};
+    sys:print(values.size());
+    sys:print(values.get(1));
+}

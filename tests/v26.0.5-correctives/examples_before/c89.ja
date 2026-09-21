@@ -1,0 +1,7 @@
+void main(string param) {
+    int x = 2;
+    x = x + 2;
+    int y = 2;
+    sys:print(x);
+    sys:print(y);
+}
