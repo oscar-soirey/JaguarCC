@@ -3761,8 +3761,8 @@ class CodeGen:
             return self.gen_class(item)
         if isinstance(item, FunctionDecl):
             if item.is_prototype:
-                params_str = ", ".join(self._param_c_decl(p) for p in item.params)
-                return f"{self._decl_c_type(item.ret_type)} {item.mangled_name}({params_str});"
+                params = [self._param_c_decl(p) for p in item.params]
+                return self._function_return_c_decl(item.ret_type, item.mangled_name, params) + ";"
             return self.gen_function(item)
         if isinstance(item, VarDecl):
             return self.gen_global_var(item)
@@ -4343,6 +4343,36 @@ class CodeGen:
         cparams = ", ".join(self._decl_c_type(x) for x in params) if params else "void"
         return f"{self._decl_c_type(ret)} (*{name})({cparams})"
 
+    def _function_return_c_decl(self, ret_type: str, name: str, params: list[str]) -> str:
+        """Build a C declaration for a Jaguar function returning a function pointer.
+
+        Jaguar represents a C function pointer type as `fn(...) -> R`. When that
+        type is itself the return type of another function, it cannot be emitted
+        with the ordinary `R name(args)` form because `fn(...) -> R` is not C
+        syntax. The C declarator must put the function name inside the pointer
+        declarator:
+
+            R (*name(args))(callback_args)
+
+        The resolver may expand a callback alias before CodeGen reaches this
+        point, so this helper intentionally works from the expanded Jaguar type.
+        """
+        parts = self._function_type_parts(ret_type)
+        if not parts:
+            cparams = ", ".join(params) if params else "void"
+            return f"{self._decl_c_type(ret_type)} {name}({cparams})"
+
+        returned_params, returned_ret = parts
+        returned_cparams = (
+            ", ".join(self._decl_c_type(x) for x in returned_params)
+            if returned_params else "void"
+        )
+        outer_cparams = ", ".join(params) if params else "void"
+        return (
+            f"{self._decl_c_type(returned_ret)} "
+            f"(*{name}({outer_cparams}))({returned_cparams})"
+        )
+
     def _pointee_c_type(self, t: str) -> str:
         """Lower one pointer pointee type without introducing an implicit
         class pointer twice. `A` is `A *` at ABI boundaries, but the pointee
@@ -4457,8 +4487,8 @@ class CodeGen:
             return self._gen_main(fn)
 
         self._change_handlers = {}
-        params_str = ", ".join(self._param_c_decl(p) for p in fn.params)
-        header = f"{self._decl_c_type(fn.ret_type)} {fn.mangled_name}({params_str})"
+        params = [self._param_c_decl(p) for p in fn.params]
+        header = self._function_return_c_decl(fn.ret_type, fn.mangled_name, params)
         local_types = {p.name: p.type for p in fn.params}
         self._readonly_vars = {p.name for p in fn.params if p.is_const}
         self._const_object_vars = {p.name for p in fn.params if p.is_const and p.type in self.classes}
@@ -4684,7 +4714,11 @@ class CodeGen:
                         init_desc = "an unknown expression"
                     else:
                         init_desc = init_type
-                    if init_type != "nullptr" and not (isinstance(init_type, str) and init_type.endswith("*")):
+                    if (
+                        init_type != "nullptr"
+                        and not (isinstance(init_type, str) and init_type.endswith("*"))
+                        and not (s.type == "i8*" and isinstance(s.init, StringLit))
+                    ):
                         raise CodeGenError(
                             f"pointer variable '{s.name}' must be initialized with a pointer expression or 'nullptr', not {init_desc}"
                         )
@@ -4713,7 +4747,10 @@ class CodeGen:
                     # `(int)h.GetMember(name)`.
                     init = self._gen_reflection_value(s.init, s.type, local_types)
                 else:
-                    init = self.gen_expr(s.init, local_types) if s.init is not None else None
+                    init = (
+                        self._gen_expr_for_expected_type(s.init, s.type, local_types)
+                        if s.init is not None else None
+                    )
                 if self._generic_parts(s.type):
                     local_types[s.name] = s.type
                     decl = f"{self._collection_c_type(s.type)} {s.name};"
@@ -4845,6 +4882,30 @@ class CodeGen:
             return e.operand.name in getattr(self, "_readonly_vars", set())
         return False
 
+    def _gen_expr_for_expected_type(self, expr, expected_type, local_types):
+        """Generate an expression with a narrow ABI-aware contextual conversion.
+
+        Jaguar `string` remains the native runtime string type.  The only
+        special case here is a string *literal* passed to a C character
+        pointer (`i8*`): the literal already has the C representation needed
+        by the ABI, so emit it directly instead of constructing a Jaguar
+        `string` object.
+
+        This deliberately does not make arbitrary `string` values convertible
+        to `i8*`, which would require exposing the runtime string storage and
+        would blur the distinction between Jaguar strings and C strings.
+        """
+        if isinstance(expr, StringLit) and canonical_type(expected_type) == "i8*":
+            return expr.value
+        return self.gen_expr(expr, local_types)
+
+    def _gen_ordered_call_args(self, ordered_args, params, local_types):
+        """Emit already-ordered call arguments using their parameter types."""
+        return ", ".join(
+            self._gen_expr_for_expected_type(arg, param.type, local_types)
+            for arg, param in zip(ordered_args, params)
+        )
+
     def _check_assignable(self, target_type, source_type, context="assignment", source_expr=None):
         target_type = canonical_type(target_type) if isinstance(target_type, str) else target_type
         if isinstance(source_type, tuple):
@@ -4860,6 +4921,12 @@ class CodeGen:
         if source_type == "nullptr":
             if isinstance(target_type, str) and target_type.endswith("*"): return
             raise CodeGenError(f"cannot assign 'nullptr' to non-pointer type '{target_type}' ({context})")
+        # A string literal is still a Jaguar `string` in normal expressions,
+        # but it can be passed directly to a C `char*`/`i8*` parameter.  This
+        # is a contextual ABI conversion, not a conversion of Jaguar string
+        # objects themselves.
+        if target_type == "i8*" and isinstance(source_expr, StringLit):
+            return
         if target_type == source_type: return
         if target_type == "bool":
             raise CodeGenError(f"cannot assign '{source_type}' to 'bool' ({context}); an explicit cast is required")
@@ -5386,7 +5453,8 @@ class CodeGen:
                 at = self.infer_type(arg.expr if isinstance(arg, NamedArg) else arg, local_types)
                 self._check_assignable(
                     param.type, at,
-                    f"argument '{param.name}' of function '{name}'"
+                    f"argument '{param.name}' of function '{name}'",
+                    arg.expr if isinstance(arg, NamedArg) else arg
                 )
             return fn
 
@@ -6248,7 +6316,10 @@ class CodeGen:
                     at = self.infer_type(arg, local_types)
                     self._check_assignable(param_type, at, "argument of function pointer call", arg)
                 callee = self.gen_expr(e.callee, local_types)
-                args = ", ".join(self.gen_expr(a, local_types) for a in e.args)
+                args = ", ".join(
+                    self._gen_expr_for_expected_type(a, param_type, local_types)
+                    for a, param_type in zip(e.args, params)
+                )
                 return f"{callee}({args})"
             if self._is_reflection_call(e):
                 self._validate_reflection_call(e, local_types)
@@ -6461,6 +6532,7 @@ class CodeGen:
                         return f"{obj}->_vptr->{self._vtable_method_name(m)}({self_arg}" + (", "+args if args else "") + ")"
                     receiver = obj if owner.name == ot else self._base_object_ptr_expr(obj, self.classes[ot], owner)
                     return f"{m.mangled_name or (owner.name + '_' + m.name)}({receiver}" + (", "+args if args else "") + ")"
+            target = None
             system = self._validate_system_call(e)
             if system is not None:
                 # sys:print accepte les types primitifs imprimables.
@@ -6502,7 +6574,10 @@ class CodeGen:
                 ordered_args=e.args
             else:
                 ordered_args=self._ordered_call_args(e.args, target.params, f"'{target.name}'") if target is not None else e.args
-            args = ", ".join(self.gen_expr(a, local_types) for a in ordered_args)
+            if target is not None:
+                args = self._gen_ordered_call_args(ordered_args, target.params, local_types)
+            else:
+                args = ", ".join(self.gen_expr(a, local_types) for a in ordered_args)
             return f"{callee_str}({args})"
         raise NotImplementedError(f"unsupported expression: {e!r}")
 

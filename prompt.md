@@ -1,0 +1,100 @@
+##### Features:
+
+\-définir ses propres decorateurs avec void @nom\_du\_decorateur(parametres):func { avant(); func(); apres(); }
+
+\-signal sur une variable membre de classe
+
+\-convertir une api complete, pas juste un single file
+
+\-surcharge d'operateurs avec MyStruct operator==(MyStruct a, MyStruct b) { return ...; }
+
+\-multithreading
+
+\-conserver les commentaires des api aux bindgen
+
+\-syntaxe if(!condition)
+
+\-operateur + sur les strings
+
+
+
+**Petites features sympa mais pas vraiment obligés:**
+
+\-faire un installateur custom pour installer python 3.14 si besoin, detecter si on a vscode, et installer l'extension si besoin.
+
+\-ecrire un livre sur le langage, avec des exemples, la doc complete, des guides, l'histoire du langage, le plan de devlopment et tout ce qu'il faut savoir quoi
+
+
+
+**Bugs connus:**
+
+\-La directive include include/ ne marche pas en jbs
+
+\-si le fichier jbs s'appelle juste .jbs, il le trouve pas, je veux que ca puisse marcher
+
+
+
+
+
+
+
+
+
+##### Stabilité:
+
+\-produire un IR intermediaire
+
+\-ecris la lib jcc en C (avec les vraies fonctions C), et utiliser Jaguar Bindgen pour l'api jcc
+
+\-diviser le compilateur en pleins de scripts dans un dossier script/ et garder le point d'entré à jcc.py
+
+
+
+
+
+
+
+
+
+##### Extension VS Code:
+
+\-ast visualiser dans vscode
+
+\-detecter les commentaires au dessus des fonctions, variables et autres les afficher formattés quand on survole l'item
+
+\-tout comme les path en .jbs sont hint, je veux aussi que ca me proprose les fichiers avec using dans les .ja (on trouve cherche à la racine du .ja et dans les include path donnés a include directive en jbs
+
+
+
+**Bugs connus:**
+
+\-build et build \& run ouvrent a chaque fois un nouveau terminal vscode, utiliser toujours le terminal courant si il est a la racine du projet
+
+
+
+
+
+
+
+##### Plus tard:
+
+\-jbs doit gerer c -> jaguar, mais aussi jaguar -> c
+
+\-extension pour Jetbrains et Visual Studio
+
+
+
+
+
+
+
+
+
+##### Petites corrections:
+
+\-icone jaguar dans l'installer au lieu de l'icone par defaut
+
+
+
+
+

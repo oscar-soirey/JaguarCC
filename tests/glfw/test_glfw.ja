@@ -1,0 +1,22 @@
+using glfw3_final;
+
+void main(string param) 
+{
+    int ok = glfwInit();
+
+    GLFWwindow* win = glfwCreateWindow(
+        800,
+        600,
+        "Ma fenetre",
+        nullptr,
+        nullptr
+    );
+
+    while (glfwWindowShouldClose(win) == false)
+    {
+        glfwPollEvents();
+    }
+
+    glfwDestroyWindow(win);
+    glfwTerminate();
+}

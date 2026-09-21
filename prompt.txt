@@ -26,6 +26,8 @@
 
 -produire un IR intermediaire
 
+-définir ses propres decorateurs avec void @nom_du_decorateur(parametres):func { avant(); func(); apres(); }
+
 
 
 

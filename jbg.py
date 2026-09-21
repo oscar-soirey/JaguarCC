@@ -36,7 +36,6 @@ except ImportError as exc:  # pragma: no cover
 
 _PREPROC_LINE = re.compile(r"^[ \t]*#.*?(?:\n|$)", re.M)
 
-
 def strip_c_comments(src: str) -> str:
     # Keep strings intact while removing C comments.  This is intentionally
     # small; pycparser handles the actual C grammar afterwards.
@@ -76,9 +75,233 @@ def strip_c_comments(src: str) -> str:
     return ''.join(out)
 
 
-def prepare_c(src: str) -> str:
+def _collect_object_macros(src: str) -> tuple[list[tuple[str, str]], set[str]]:
+    """Collect simple object-like macros and declaration-only annotation macros.
+
+    Annotation status is propagated through simple macro aliases so aliases
+    such as GLAPIENTRY -> APIENTRY are not emitted as API constants.
+    """
+    clean = strip_c_comments(src)
+    macros: list[tuple[str, str]] = []
+    annotations: set[str] = set()
+    lines = clean.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        m = re.match(r"^[ \t]*#[ \t]*define[ \t]+([A-Za-z_][A-Za-z0-9_]*)(.*)$", line)
+        if not m:
+            i += 1
+            continue
+
+        name = m.group(1)
+        remainder = m.group(2)
+        # A function-like macro has the opening '(' immediately after the
+        # macro name, with no whitespace.
+        if remainder.startswith("("):
+            i += 1
+            while i <= len(lines) and lines[i - 1].rstrip().endswith("\\"):
+                i += 1
+            continue
+
+        value_parts = [remainder.strip()]
+        while value_parts[-1].endswith("\\") and i + 1 < len(lines):
+            value_parts[-1] = value_parts[-1][:-1].rstrip()
+            i += 1
+            value_parts.append(lines[i].strip())
+
+        value = " ".join(value_parts).strip()
+        if value:
+            macros.append((name, value))
+
+        if (
+            not value
+            or "__declspec" in value
+            or "__attribute__" in value
+            or value in {"__stdcall", "__cdecl", "__fastcall", "__vectorcall"}
+        ):
+            annotations.add(name)
+
+        i += 1
+
+    # Propagate annotation status through simple aliases, e.g.
+    # `#define APIENTRY ...` followed by `#define GLAPIENTRY APIENTRY`.
+    # Such aliases are declaration syntax, not API constants.
+    macro_values = dict(macros)
+    changed = True
+    while changed:
+        changed = False
+        for name, value in macro_values.items():
+            if name in annotations:
+                continue
+            tokens = re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", value)
+            if len(tokens) == 1 and tokens[0] in annotations and value.strip() == tokens[0]:
+                annotations.add(name)
+                changed = True
+
+    return macros, annotations
+
+
+def _pp_eval(expr: str, defined_names: set[str]) -> bool:
+    """Evaluate the small #if expression subset used by C API headers."""
+    expr = expr.strip()
+    expr = re.sub(
+        r"\bdefined\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)",
+        lambda m: "1" if m.group(1) in defined_names else "0",
+        expr,
+    )
+    expr = re.sub(
+        r"\bdefined\s+([A-Za-z_][A-Za-z0-9_]*)",
+        lambda m: "1" if m.group(1) in defined_names else "0",
+        expr,
+    )
+    expr = expr.replace("&&", " and ").replace("||", " or ")
+    expr = re.sub(r"(?<![=!<>])!(?!=)", " not ", expr)
+    # Undefined identifiers evaluate as zero for preprocessor #if purposes.
+    expr = re.sub(
+        r"\b[A-Za-z_][A-Za-z0-9_]*\b",
+        lambda m: m.group(0) if m.group(0) in {"and", "or", "not"} else
+        ("1" if m.group(0) in defined_names else "0"),
+        expr,
+    )
+    try:
+        return bool(eval(expr, {"__builtins__": {}}, {}))
+    except Exception:
+        # Unknown/non-trivial expressions are conservatively disabled rather
+        # than leaked into pycparser where they can corrupt the AST.
+        return False
+
+
+def _strip_preprocessor(
+    src: str,
+    *,
+    predefined: Optional[set[str]] = None,
+) -> str:
+    """Remove/evaluate simple C preprocessor conditionals while preserving lines."""
+    defined_names = set(predefined or set())
+    out: list[str] = []
+
+    # Each frame stores (parent_active, current_active, branch_already_taken).
+    stack: list[tuple[bool, bool, bool]] = []
+    active = True
+
+    lines = src.splitlines(keepends=True)
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.lstrip()
+
+        if not stripped.startswith("#"):
+            out.append(line if active else ("\n" if line.endswith("\n") else ""))
+            i += 1
+            continue
+
+        # Gather a multiline directive, retaining one blank physical line per
+        # source line in the output.
+        directive_lines = [line]
+        while directive_lines[-1].rstrip().endswith("\\") and i + 1 < len(lines):
+            i += 1
+            directive_lines.append(lines[i])
+
+        directive = "".join(directive_lines)
+        directive = directive.replace("\\\n", " ").replace("\\\r\n", " ")
+        m = re.match(r"^[ \t]*#[ \t]*([A-Za-z_][A-Za-z0-9_]*)(?:[ \t]+(.*?))?[ \t]*$",
+                     directive.strip())
+        kind = m.group(1).lower() if m else ""
+        arg = (m.group(2) or "").strip() if m else ""
+
+        if kind == "if":
+            cond = _pp_eval(arg, defined_names) if active else False
+            frame = (active, active and cond, active and cond)
+            stack.append(frame)
+            active = frame[1]
+        elif kind == "ifdef":
+            cond = bool(re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", arg) and arg in defined_names)
+            frame = (active, active and cond, active and cond)
+            stack.append(frame)
+            active = frame[1]
+        elif kind == "ifndef":
+            cond = bool(re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", arg) and arg not in defined_names)
+            frame = (active, active and cond, active and cond)
+            stack.append(frame)
+            active = frame[1]
+        elif kind == "elif":
+            if stack:
+                parent, _, taken = stack[-1]
+                cond = _pp_eval(arg, defined_names) if parent and not taken else False
+                taken_now = taken or (parent and cond)
+                stack[-1] = (parent, parent and not taken and cond, taken_now)
+                active = stack[-1][1]
+        elif kind == "else":
+            if stack:
+                parent, _, taken = stack[-1]
+                stack[-1] = (parent, parent and not taken, True)
+                active = stack[-1][1]
+        elif kind == "endif":
+            if stack:
+                parent, _, _ = stack.pop()
+                active = parent
+        elif kind == "define":
+            if active:
+                mm = re.match(r"([A-Za-z_][A-Za-z0-9_]*)(.*)$", arg)
+                if mm:
+                    name, remainder = mm.group(1), mm.group(2)
+                    # Function-like macro if '(' is adjacent to the name.
+                    if not remainder.startswith("("):
+                        defined_names.add(name)
+        elif kind == "undef":
+            if active:
+                mm = re.match(r"([A-Za-z_][A-Za-z0-9_]*)", arg)
+                if mm:
+                    defined_names.discard(mm.group(1))
+        # All other directives (#include, #pragma, #error, #warning, etc.) are
+        # intentionally omitted from the pycparser input.
+
+        out.extend("\n" if l.endswith(("\n", "\r\n")) else "" for l in directive_lines)
+        i += 1
+
+    return "".join(out)
+
+
+def prepare_c(
+    src: str,
+    *,
+    predefined: Optional[set[str]] = None,
+) -> str:
+    _, annotation_macros = _collect_object_macros(src)
+
     src = strip_c_comments(src)
-    src = _PREPROC_LINE.sub(lambda m: "\n" * m.group(0).count("\n"), src)
+
+    # GLFW and many C library headers use an optional include tree guarded by
+    # macros. The parser has no reason to ingest OpenGL/Vulkan system headers;
+    # by default we select GLFW's no-GL/no-Vulkan branch.
+    pp_defines = set(predefined or set())
+    # GLFW includes OpenGL/Vulkan system headers by default. For GLFW itself,
+    # select the documented no-GL/no-Vulkan branch so JBG can operate on the
+    # standalone glfw3.h without needing the platform graphics headers.
+    # Do not impose this define on unrelated C headers.
+    if re.search(r"\bGLFW_INCLUDE_(?:VULKAN|NONE|GLCOREARB|GLU|ES[123])\b", src) or "_glfw3_h_" in src:
+        pp_defines.add("GLFW_INCLUDE_NONE")
+    src = _strip_preprocessor(src, predefined=pp_defines)
+
+    # pycparser parses C, not C++ linkage specifications. Handle the common
+    # top-level `extern "C" { ... }` wrapper without touching nested braces.
+    if re.search(r'(?m)^[ \t]*extern[ \t]+"C"[ \t]*\{[ \t]*$', src):
+        src = re.sub(
+            r'(?ms)^[ \t]*extern[ \t]+"C"[ \t]*\{\s*(.*)\s*\}[ \t]*\Z',
+            r"\1",
+            src,
+            count=1,
+        )
+
+    # Remove declaration-only ABI annotation macros (GLFWAPI,
+    # __declspec(...), __attribute__(...), calling convention keywords).
+    for name in sorted(annotation_macros, key=len, reverse=True):
+        src = re.sub(
+            rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])",
+            "",
+            src,
+        )
+
     # Seed common libc typedefs so standalone headers using size_t/int*_t can
     # be parsed without requiring the platform's full system headers.
     prelude = (
@@ -96,6 +319,7 @@ def prepare_c(src: str) -> str:
         "typedef unsigned long long uint64_t;\n"
     )
     return prelude + src
+
 
 
 # Number of lines injected by prepare_c(). These declarations exist only to
@@ -118,6 +342,35 @@ class JType:
     text: str
     valid: bool = True
     reason: str = ""
+
+
+# Keep this list synchronized with jcc.py's lexer.  C identifiers are not
+# required to avoid Jaguar keywords (for example GLFW has a parameter named
+# `string`), so emitted parameter/field names must be sanitized.
+JAGUAR_KEYWORDS = {
+    "void", "int", "float", "char", "uint", "short", "ushort", "long",
+    "ulong", "sbyte", "byte", "bool", "i8", "u8", "i16", "u16", "i32",
+    "u32", "i64", "u64", "f32", "f64", "string",
+    "dynamic_list", "list", "map", "container", "pair",
+    "struct", "union", "enum", "namespace", "class", "virtual", "override",
+    "constr", "destr", "return", "true", "false", "nullptr", "const",
+    "using", "as", "loop", "if", "else", "while", "break", "continue",
+    "for_loop", "this", "auto", "signal", "new",
+}
+
+
+def safe_jaguar_identifier(name: str, used: set[str]) -> str:
+    candidate = name or "arg"
+    if candidate in JAGUAR_KEYWORDS:
+        candidate += "_"
+    if candidate in used:
+        base = candidate
+        index = 2
+        while f"{base}_{index}" in used:
+            index += 1
+        candidate = f"{base}_{index}"
+    used.add(candidate)
+    return candidate
 
 
 C_BUILTINS = {
@@ -219,9 +472,23 @@ class TypeConverter:
             return JType(inner.text + "*")
 
         if isinstance(node, c_ast.ArrayDecl):
-            # jcc currently has no array type syntax in declarations. A pointer
-            # would change the ABI, so refuse rather than generating a lie.
-            return JType("", False, "C array types are not representable by current Jaguar declaration syntax")
+            # In a C function parameter (including a callback typedef), an
+            # array parameter is adjusted to a pointer by the C type system.
+            # Converting it to a pointer therefore preserves the ABI.
+            if parameter:
+                inner = self.convert(node.type, parameter=True, allow_c_string=False)
+                if not inner.valid:
+                    return inner
+                return JType(inner.text + "*")
+
+            # Jaguar currently has no fixed-array declaration syntax. Never
+            # replace a struct/global array with a pointer because that would
+            # change the object layout.
+            return JType(
+                "",
+                False,
+                "C array types are not representable in a non-parameter declaration by current Jaguar syntax",
+            )
 
         if isinstance(node, c_ast.FuncDecl):
             return self.function_type(node)
@@ -323,44 +590,74 @@ class BindGen:
 
     def convert_union(self, un: c_ast.Union, forced_name: Optional[str] = None):
         name = forced_name or un.name
-        if not name or name in self.generated_inline_types:
-            if not name: self.warn(un, "anonymous union without a field context is skipped")
+        if not name:
+            self.warn(un, "anonymous union without a field context is skipped")
             return
-        self.generated_inline_types.add(name)
+
         fields = []
+        unsupported = False
         for decl in un.decls or []:
             if not isinstance(decl, c_ast.Decl) or not decl.name:
                 self.warn(decl or un, "anonymous union member is not representable")
+                unsupported = True
                 continue
             jt = self._inline_named_type(decl.type, f"{name}_{decl.name}")
             if not jt.valid:
                 self.warn(decl, f"union field '{decl.name}': {jt.reason}")
+                unsupported = True
                 continue
-            fields.append((jt.text, decl.name))
+            field_name = safe_jaguar_identifier(decl.name, used_names)
+            fields.append((jt.text, field_name))
+
+        if unsupported:
+            self.emit(f"union {name};")
+            self.emit("")
+            self.warn(un, f"union '{name}' emitted as a forward declaration because its exact layout is not representable")
+            return
+
         self.emit(f"union {name} {{")
-        for typ, field in fields: self.emit(f"    {typ} {field};")
-        self.emit("}"); self.emit("")
+        for typ, field in fields:
+            self.emit(f"    {typ} {field};")
+        self.emit("}")
+        self.emit("")
 
     def convert_struct(self, st: c_ast.Struct, forced_name: Optional[str] = None):
         name = forced_name or st.name
         if not name:
             self.warn(st, "anonymous struct without a typedef name is skipped")
             return
+
         fields = []
+        used_names: set[str] = set()
+        unsupported = False
         for decl in st.decls or []:
             if not isinstance(decl, c_ast.Decl):
-                continue
-            if isinstance(decl.type, c_ast.FuncDecl):
-                self.warn(decl, f"struct field '{decl.name}' is a function; Jaguar struct fields cannot contain function members")
+                unsupported = True
                 continue
             if not decl.name:
                 self.warn(decl, "anonymous struct field is not representable")
+                unsupported = True
                 continue
             jt = self._inline_named_type(decl.type, f"{name}_{decl.name}")
             if not jt.valid:
                 self.warn(decl, f"field '{decl.name}': {jt.reason}")
+                unsupported = True
                 continue
             fields.append((jt.text, decl.name))
+
+        if unsupported:
+            # Emitting a partial struct would silently corrupt its C ABI layout.
+            # jcc currently cannot semantically resolve forward declarations,
+            # so use the same one-byte opaque placeholder as opaque typedefs.
+            # This is only ABI-safe for APIs that expose the type through
+            # pointers, which is how GLFW exposes GLFWgamepadstate.
+            self.emit(f"struct {name} {{")
+            self.emit("    u8 _jbg_opaque;")
+            self.emit("}")
+            self.emit("")
+            self.warn(st, f"struct '{name}' emitted as an opaque placeholder because its exact layout is not representable")
+            return
+
         self.emit(f"struct {name} {{")
         for typ, field in fields:
             self.emit(f"    {typ} {field};")
@@ -403,7 +700,15 @@ class BindGen:
                 self.convert_struct(st, name)
             elif st.name:
                 if name == st.name:
-                    self.emit(f"struct {st.name};")
+                    # Current jcc validation does not resolve forward-declared
+                    # structs when they are used through pointers/function types.
+                    # For opaque C handles such as GLFWwindow, emit a one-byte
+                    # placeholder struct: GLFW only exposes these types through
+                    # pointers, so pointer ABI remains exact while JCC has a
+                    # complete Jaguar type it can resolve.
+                    self.emit(f"struct {st.name} {{")
+                    self.emit("    u8 _jbg_opaque;")
+                    self.emit("}")
                 else:
                     self.typedef_targets[name] = st.name
                     self.emit(f"using {name} = {st.name};")
@@ -457,6 +762,7 @@ class BindGen:
             self.warn(decl, f"function '{decl.name}': {ret.reason}")
             return True
         params = []
+        used_names: set[str] = set()
         args = decl.type.args.params if decl.type.args and decl.type.args.params else []
         if len(args) == 1 and isinstance(args[0], c_ast.Typename):
             p = args[0]
@@ -471,6 +777,7 @@ class BindGen:
                 self.warn(p, f"parameter '{getattr(p, 'name', None) or f'arg{i}'}': {jt.reason}")
                 return True
             pname = getattr(p, "name", None) or f"arg{i}"
+            pname = safe_jaguar_identifier(pname, used_names)
             params.append((jt.text, pname))
         self.emit(f"@extern {ret.text} {decl.name}({', '.join(f'{t} {n}' for t, n in params)});")
         return True
@@ -495,7 +802,8 @@ class BindGen:
         if decl.name:
             jt = self.tc.decl_type(decl)
             if jt.valid:
-                self.emit(f"@extern {jt.text} {decl.name};")
+                safe_name = safe_jaguar_identifier(decl.name, set())
+                self.emit(f"@extern {jt.text} {safe_name};")
             else:
                 self.warn(decl, f"global '{decl.name}': {jt.reason}")
 
@@ -568,11 +876,22 @@ def _recover_known_invalid_decls(src: str) -> tuple[str, list[str]]:
     return pattern.sub(repl, src), warnings
 
 
-def generate(src: str) -> tuple[str, list[str]]:
+def generate(
+    src: str,
+    *,
+    predefined: Optional[set[str]] = None,
+) -> tuple[str, list[str]]:
     # Preserve simple object-like API constants. They are valid Jaguar
     # preprocessor lines and retain the original C macro semantics.
-    macros = re.findall(r"(?m)^\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)\s+([^\r\n]+?)\s*$", src)
-    prepared = prepare_c(src)
+    macros, annotation_macros = _collect_object_macros(src)
+    macros = [
+        (name, value)
+        for name, value in macros
+        if name not in annotation_macros
+        and not name.startswith("_glfw3_")
+        and not name.endswith("_DEFINED")
+    ]
+    prepared = prepare_c(src, predefined=predefined)
     recovered, recovery_warnings = _recover_known_invalid_decls(prepared)
     parser = c_parser.CParser()
     try:
@@ -596,12 +915,24 @@ def main(argv=None) -> int:
     ap.add_argument("-o", "--output", metavar="FILE", help="output .jah file (default: same basename as input)")
     ap.add_argument("--stdout", action="store_true", help="write the generated .jah to stdout instead of creating a file")
     ap.add_argument("--strict", action="store_true", help="fail if any C declaration cannot be represented by current jcc syntax")
+    ap.add_argument(
+        "-D", "--define",
+        action="append",
+        default=[],
+        metavar="NAME[=VALUE]",
+        help="define a preprocessor symbol while preparing the C header (repeatable)",
+    )
     args = ap.parse_args(argv)
 
     src_path = Path(args.c)
     try:
         src = src_path.read_text(encoding="utf-8")
-        text, warnings = generate(src)
+        predefined = {
+            item.split("=", 1)[0].strip()
+            for item in args.define
+            if item.split("=", 1)[0].strip()
+        }
+        text, warnings = generate(src, predefined=predefined)
     except Exception as exc:
         print(f"jbg: error: {exc}", file=sys.stderr)
         return 1

@@ -1,0 +1,15 @@
+version 1.0
+
+out out 
+
+keep_c
+
+include include/
+
+compile Main {
+  test_glfw.ja
+}
+
+link Main {
+  libs/libglfw3dll.a
+}
