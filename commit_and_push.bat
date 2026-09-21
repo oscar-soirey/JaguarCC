@@ -8,3 +8,4 @@ git commit -m "%COMMIT_MSG%"
 git push
 
 endlocal
+pause
