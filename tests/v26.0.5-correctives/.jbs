@@ -3,5 +3,5 @@ version 1.0
 out out
 
 compile Main {
-  main.ja
+  new/operator_bad_equality.ja
 }

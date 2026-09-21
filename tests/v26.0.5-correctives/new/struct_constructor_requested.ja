@@ -1,0 +1,10 @@
+struct v2 {
+  int a;
+  int b;
+}
+void main()
+{
+  v2 a = v2(3,5);
+  sys:print(a.a);
+  sys:print(a.b);
+}

@@ -1,0 +1,18 @@
+class Counter {
+    $int value;
+
+    signal: value {
+        sys:print("changed");
+    }
+
+    $void run() {
+        value = 1;
+        value = 1;
+        value = 2;
+    }
+}
+
+void main() {
+    Counter c = Counter();
+    c.run();
+}

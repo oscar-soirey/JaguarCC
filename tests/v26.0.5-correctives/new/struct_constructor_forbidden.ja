@@ -1,0 +1,7 @@
+struct v2 {
+  int a;
+  constr() {
+  }
+}
+void main() {
+}

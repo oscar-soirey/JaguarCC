@@ -450,6 +450,9 @@ class ClassDecl:
     methods: List[ClassMethod]
     is_registered: bool = False
     namespace: Optional[str] = None
+    # Class-level signal handlers. These are declarations in the class body,
+    # not statements inside a member function.
+    signals: List["VariableChangeHandler"] = field(default_factory=list)
 
 
 # --- expressions ---
@@ -1155,8 +1158,24 @@ class Parser:
             base = base_tok.value
             base_span = (base_tok.line, base_tok.column, base_tok.end_column)
         self.expect("{")
-        fields, methods = [], []
+        fields, methods, signals = [], [], []
         while self.peek().kind != "}":
+            # A class-level signal is declared directly in the class body:
+            # `signal: value { ... }`. It is intentionally distinct from the
+            # existing function-local signal statement.
+            if self.peek().kind == "signal":
+                signal_tok = self.advance()
+                self.expect(":")
+                name_tok = self.expect("IDENT")
+                if self.peek().kind == ":":
+                    self._parse_error("class-level signal expects a member name, not a qualified name", self.peek())
+                body = self.parse_block()
+                signal = self._mark_token(VariableChangeHandler(name_tok.value, body), signal_tok)
+                setattr(signal, "_jaguar_name_column", name_tok.column)
+                setattr(signal, "_jaguar_name_end_column", name_tok.end_column)
+                signals.append(signal)
+                continue
+
             exposed = False
             if self.peek().kind == "@":
                 attrs = self.parse_attributes()
@@ -1252,7 +1271,7 @@ class Parser:
         if self.peek().kind == ";":
             self.advance()
         qname = f"{namespace.replace(':', '_')}_{name}" if namespace else name
-        node = ClassDecl(qname, base, fields, methods, "register" in class_attrs, namespace)
+        node = ClassDecl(qname, base, fields, methods, "register" in class_attrs, namespace, signals)
         setattr(node, "_jaguar_name_column", name_tok.column); setattr(node, "_jaguar_name_end_column", name_tok.end_column)
         if base_span:
             setattr(node, "_jaguar_base_column", base_span[1]); setattr(node, "_jaguar_base_end_column", base_span[2])
@@ -3490,6 +3509,9 @@ class CodeGen:
                 for f in item.fields:
                     if f.init is not None:
                         scan_expr(f.init)
+                for signal in getattr(item, "signals", []):
+                    for stmt in signal.body.statements:
+                        scan_stmt(stmt)
                 for m in item.methods:
                     for stmt in m.body.statements:
                         scan_stmt(stmt)
@@ -4074,6 +4096,32 @@ class CodeGen:
             f"static {s.name} _j_struct_{s.name}_default(void) {{ "
             f"{s.name} value; memset(&value, 0, sizeof(value)); return value; }}"
         )
+
+        # Value construction with arguments is deliberately implemented by a
+        # normal C function instead of a C99 compound literal. This keeps the
+        # same Jaguar semantics in `--c89` mode and gives us a single place to
+        # materialize the fields in declaration order. Array fields are not
+        # assignable in C and therefore cannot participate in positional
+        # struct construction.
+        if s.fields:
+            params = []
+            for i, f in enumerate(s.fields):
+                if self._fixed_array_parts(f.type) is not None:
+                    raise CodeGenError(
+                        f"struct '{s.name}' positional construction is not supported when field '{f.name}' is an array"
+                    )
+                fp = self._function_ptr_c_decl(f.type, f"_j_arg{i}")
+                if fp is not None:
+                    params.append(fp)
+                else:
+                    params.append(f"{self._decl_c_type(f.type)} _j_arg{i}")
+            lines.append(f"static {s.name} _j_struct_{s.name}_make(" + ", ".join(params) + ") {")
+            lines.append(f"    {s.name} value;")
+            for i, f in enumerate(s.fields):
+                lines.append(f"    value.{f.name} = _j_arg{i};")
+            lines.append("    return value;")
+            lines.append("}")
+
         lines.append(
             f"static {s.name} *_j_struct_{s.name}_new(void) {{ "
             f"{s.name} *value = ({s.name}*)calloc(1, sizeof({s.name})); "
@@ -4264,6 +4312,17 @@ class CodeGen:
 
     def gen_class(self, cls: ClassDecl) -> str:
         self._current_namespace = cls.namespace
+        # Validate class-level signals once, while the complete field list is
+        # available. A class signal may only refer to a field of this class or
+        # one of its bases.
+        signal_handlers = {}
+        for signal in getattr(cls, "signals", []):
+            if signal.name in signal_handlers:
+                raise CodeGenError(f"signal: multiple handlers for member '{signal.name}' in class '{cls.name}'")
+            owner, member = self._find_class_member(cls.name, signal.name, "field")
+            if member is None:
+                raise CodeGenError(f"signal: member '{signal.name}' is not declared in class '{cls.name}'")
+            signal_handlers[signal.name] = signal.body
         # Emit a C struct with an explicit vtable. Inheritance is represented
         # by embedding the base object as `_base`, preserving public layout.
         lines=[f"typedef struct {cls.name}_vtable {cls.name}_vtable;"]
@@ -4327,6 +4386,7 @@ class CodeGen:
         old=self._current_class; old_const=self._current_class_method_const; self._current_class=cls
         old_readonly=set(self._readonly_vars)
         old_return=getattr(self, "_current_return_type", None)
+        old_change_handlers=dict(self._change_handlers)
         for m in cls.methods:
             if m.is_constructor or m.is_destructor: continue
             self_decl = f"const {cls.name} *self" if m.is_const else f"{cls.name} *self"
@@ -4336,6 +4396,7 @@ class CodeGen:
             self._current_return_type=m.ret_type
             self._current_source_line=getattr(m, "_jaguar_line", self._current_source_line)
             self._readonly_vars = set(old_readonly) | {p.name for p in m.params if p.is_const}
+            self._change_handlers = dict(signal_handlers)
             body = self.gen_block(m.body, {p.name:p.type for p in m.params})
             self._readonly_vars = method_readonly
             if m.ret_type != "void" and not self._block_guarantees_return(m.body):
@@ -4405,6 +4466,8 @@ class CodeGen:
             for line in self._gen_body_lines(ctor_body.statements, {p.name:p.type for p in ctor_params}): lines.append("    "+line)
             self._current_class=old2; self._current_class_method_const=old2_const; self._readonly_vars=old2_readonly; self._const_object_vars=old2_const_objects; self._current_return_type=old2_return
             lines.append("    return self;"); lines.append("}")
+        # Class-level signals are active while an explicit/implicit destructor
+        # body executes as well; field cleanup itself happens after the body.
         destr=next((m for m in cls.methods if m.is_destructor),None)
         # A destructor is always generated. If the user supplied one, its
         # body runs first. The base destructor is then invoked automatically.
@@ -4418,6 +4481,7 @@ class CodeGen:
         self._current_class_method_const=False
         self._readonly_vars=set(old_readonly)
         self._const_object_vars=set()
+        self._change_handlers = dict(signal_handlers)
         if destr:
             for line in self._gen_body_lines(destr.body.statements, {}):
                 lines.append("    "+line)
@@ -4425,9 +4489,9 @@ class CodeGen:
             lines.append("    " + field_cleanup)
         if cls.base:
             lines.append(f"    {cls.base}_destr(&self->_base);")
-        self._current_class=old3; self._current_class_method_const=old3_const; self._readonly_vars=old3_readonly; self._const_object_vars=old3_const_objects; self._current_return_type=old3_return
+        self._current_class=old3; self._current_class_method_const=old3_const; self._readonly_vars=old3_readonly; self._const_object_vars=old3_const_objects; self._current_return_type=old3_return; self._change_handlers=old_change_handlers
         lines.append("}")
-        self._current_class=old; self._current_class_method_const=old_const; self._readonly_vars=old_readonly; self._current_return_type=old_return
+        self._current_class=old; self._current_class_method_const=old_const; self._readonly_vars=old_readonly; self._current_return_type=old_return; self._change_handlers=old_change_handlers
         return "\n".join(lines)
 
     def _class_field_cleanup_lines(self, cls):
@@ -5283,12 +5347,40 @@ class CodeGen:
                     if lt == "string" or rt == "string":
                         raise CodeGenError(f"operator '{e.op}' is not defined for 'string' operands")
                     if not (numeric(lt) and numeric(rt)):
-                        raise CodeGenError(f"operator '{e.op}' requires numeric operands, got '{lt}' and '{rt}'")
-                elif e.op in _BOOL_RESULT_OPS:
+                        raise CodeGenError(f"no operator exists for '{lt}' {e.op} '{rt}'")
+                elif e.op in ("<",">","<=",">="):
                     if lt is None or rt is None:
-                        raise CodeGenError(f"operator '{e.op}' cannot be checked because an operand has unknown type")
-                    if e.op in ("<",">","<=",">=") and not (numeric(lt) and numeric(rt)):
-                        raise CodeGenError(f"operator '{e.op}' requires numeric operands, got '{lt}' and '{rt}'")
+                        raise CodeGenError(f"no operator exists for '{lt}' {e.op} '{rt}'")
+                    if not (numeric(lt) and numeric(rt)):
+                        raise CodeGenError(f"no operator exists for '{lt}' {e.op} '{rt}'")
+                elif e.op in ("==", "!="):
+                    # C accepts equality for scalar values and matching
+                    # pointers, but not for Jaguar structs/unions/classes as
+                    # value objects. A custom Jaguar operator has already been
+                    # handled above. Keep string/string and numeric equality
+                    # available as in the existing compiler.
+                    def scalar_or_pointer(t):
+                        if isinstance(t, tuple) and t[0] == "literal":
+                            return t[1] in ("int", "float", "bool")
+                        if not isinstance(t, str):
+                            return False
+                        if t in INTEGER_TYPES | FLOAT_TYPES | {"bool", "string"}:
+                            return True
+                        if t in self.enums:
+                            return True
+                        if t == "nullptr" or t.endswith("*"):
+                            return True
+                        return False
+                    if not (scalar_or_pointer(lt) and scalar_or_pointer(rt)):
+                        raise CodeGenError(f"no operator exists for '{lt}' {e.op} '{rt}'")
+                    if ((lt in self.classes or lt in self.structs or lt in self.unions)
+                            or (rt in self.classes or rt in self.structs or rt in self.unions)):
+                        # Class values are represented by pointers internally,
+                        # so equality between class variables was already valid
+                        # C. Struct/union value equality is the important case
+                        # that C rejects and Jaguar does not define implicitly.
+                        if lt in self.structs or rt in self.structs or lt in self.unions or rt in self.unions:
+                            raise CodeGenError(f"no operator exists for '{lt}' {e.op} '{rt}'")
             self._check_expression_types(e.left,local_types); self._check_expression_types(e.right,local_types)
         elif isinstance(e, UnaryOp):
             t=self.infer_type(e.operand,local_types)
@@ -6104,8 +6196,19 @@ class CodeGen:
             else:
                 struct_name = None
             if struct_name is not None:
-                if e.args:
-                    raise CodeGenError(f"struct '{struct_name}' construction currently takes no arguments")
+                struct_decl = self.structs[struct_name]
+                if any(isinstance(a, NamedArg) for a in e.args):
+                    raise CodeGenError(f"struct '{struct_name}' construction only accepts positional arguments")
+                if not e.args:
+                    return struct_name
+                if len(e.args) != len(struct_decl.fields):
+                    raise CodeGenError(
+                        f"struct '{struct_name}' construction expects {len(struct_decl.fields)} argument(s), {len(e.args)} provided"
+                    )
+                for arg, field in zip(e.args, struct_decl.fields):
+                    at = self.infer_type(arg, local_types)
+                    self._check_assignable(field.type, at, f"initializer for struct field '{field.name}'", arg)
+                    self._check_expression_types(arg, local_types)
                 return struct_name
             if isinstance(e.callee, Ident) and self._current_class:
                 owner, method = self.resolve_class_method_call(
@@ -6874,9 +6977,20 @@ class CodeGen:
             else:
                 struct_name = None
             if struct_name is not None:
-                if e.args:
-                    raise CodeGenError(f"struct '{struct_name}' construction currently takes no arguments")
-                return f"_j_struct_{struct_name}_default()"
+                struct_decl = self.structs[struct_name]
+                if any(isinstance(a, NamedArg) for a in e.args):
+                    raise CodeGenError(f"struct '{struct_name}' construction only accepts positional arguments")
+                if not e.args:
+                    return f"_j_struct_{struct_name}_default()"
+                if len(e.args) != len(struct_decl.fields):
+                    raise CodeGenError(
+                        f"struct '{struct_name}' construction expects {len(struct_decl.fields)} argument(s), {len(e.args)} provided"
+                    )
+                for arg, field in zip(e.args, struct_decl.fields):
+                    at = self.infer_type(arg, local_types)
+                    self._check_assignable(field.type, at, f"initializer for struct field '{field.name}'", arg)
+                    self._check_expression_types(arg, local_types)
+                return f"_j_struct_{struct_name}_make(" + ", ".join(self.gen_expr(a, local_types) for a in e.args) + ")"
             if isinstance(e.callee, NamespacedIdent) and self._current_class and e.callee.namespace in self.classes and self._current_class.base == e.callee.namespace:
                 owner,m=self.resolve_class_method_call(
                     e.callee.namespace,

@@ -1,0 +1,8 @@
+struct v2 {
+  int a;
+}
+void main() {
+  v2 a = v2(1);
+  v2 b = v2(2);
+  v2 c = a + b;
+}
