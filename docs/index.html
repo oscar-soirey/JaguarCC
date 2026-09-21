@@ -299,6 +299,7 @@
       <button class="tab-btn" role="tab" aria-selected="true" data-tab="home">Home</button>
       <button class="tab-btn" role="tab" aria-selected="false" data-tab="language">Language</button>
       <button class="tab-btn" role="tab" aria-selected="false" data-tab="tools">Tools</button>
+      <button class="tab-btn" role="tab" aria-selected="false" data-tab="ecosystem">Ecosystem</button>
       <button class="tab-btn" role="tab" aria-selected="false" data-tab="documentation">Documentation</button>
       <button class="tab-btn" role="tab" aria-selected="false" data-tab="releases">Releases</button>
     </nav>
@@ -324,6 +325,7 @@
             <button class="btn btn-primary" data-tab-link="language">Explore the language</button>
             <a class="btn btn-outline" href="playground.html">Test on your browser</a>
             <button class="btn btn-outline" data-tab-link="tools">See the tools</button>
+            <button class="btn btn-outline" data-tab-link="ecosystem">Why Jaguar?</button>
           </div>
         </div>
         <div class="jaguar-art" aria-hidden="true">
@@ -589,6 +591,79 @@ move(x = <span class="str">10</span>, y = <span class="str">20</span>, speed = <
     </div>
   </section>
 
+  <!-- ECOSYSTEM -->
+  <section id="ecosystem" role="tabpanel" aria-labelledby="ecosystem">
+    <div class="wrap section-pad">
+      <div class="section-head">
+        <span class="eyebrow-tag">Ecosystem</span>
+        <h2>Built for the tools around a game engine.</h2>
+        <p>Jaguar is not only a language. Its editor integration, build tooling, and engine-oriented features are meant to work together as one development workflow.</p>
+      </div>
+
+      <div class="feat-row">
+        <div>
+          <span class="idx">Editor</span>
+          <h3>Jaguar in VS Code</h3>
+          <p>The Jaguar VS Code extension brings the language into the editor so working on <code class="inline">.ja</code> and <code class="inline">.jah</code> projects feels like a first-class development workflow rather than a collection of external commands.</p>
+        </div>
+        <div class="code-block"><span class="cm">// A Jaguar project in VS Code</span>
+<span class="kw">src/</span>
+    main.ja
+    player.ja
+<span class="kw">include/</span>
+    engine.jah
+<span class="cm">
+// The same files can be resolved by JBS</span>
+<span class="fn">using</span> engine;</div>
+      </div>
+
+      <div class="feat-row">
+        <div>
+          <span class="idx">Build</span>
+          <h3>Crimson + JBS</h3>
+          <p><strong>Crimson</strong> is Jaguar's build system layer, designed to fit the project model used by <strong>JBS</strong>. The current JBS workflow describes sources, headers, includes, definitions, targets and link steps, then feeds those project inputs through JCC and the native toolchain.</p>
+          <p>This keeps build orchestration outside the language itself while still making Jaguar projects reproducible and easy to structure.</p>
+        </div>
+        <div class="code-block"><span class="kw">version</span> 1.0
+<span class="kw">out</span> build
+<span class="kw">include</span> include
+
+<span class="fn">compile</span> Game {
+    src/main.ja
+    src/player.ja
+    include/engine.jah
+}
+
+<span class="cm"># Crimson can sit above this project workflow</span></div>
+      </div>
+
+      <div class="feat-row">
+        <div>
+          <span class="idx">Origins</span>
+          <h3>A language born from game development</h3>
+          <p>Jaguar was created by a game and game-engine developer who kept running into the same problem: many things that feel natural inside an engine end up requiring awkward layers of C++ code, templates, macros, generated code, or handwritten glue.</p>
+          <p>The idea behind Jaguar is to move those recurring engine problems closer to the language itself, instead of rebuilding them project after project.</p>
+        </div>
+        <div class="card" style="padding:22px;">
+          <h3>Engine-oriented features</h3>
+          <p style="margin-bottom:12px;">Jaguar already exposes several concepts directly in the language and runtime:</p>
+          <p style="margin-bottom:8px;"><code class="inline">@register</code> + <code class="inline">factory:construct</code> for runtime class construction.</p>
+          <p style="margin-bottom:8px;"><code class="inline">@exposed</code> + <code class="inline">GetMember</code> / <code class="inline">SetMember</code> for controlled reflection.</p>
+          <p style="margin-bottom:8px;"><code class="inline">container&lt;T&gt;</code> for ownership and automatic destruction.</p>
+          <p style="margin-bottom:8px;"><code class="inline">signal:</code> for variable-change reactions.</p>
+          <p><code class="inline">dynamic_list</code> for collections that can hold different value types.</p>
+        </div>
+      </div>
+
+      <div class="doc-callout">
+        <div>
+          <h3>Why not just do this in C++?</h3>
+          <p>The point is not that C++ cannot implement these systems. It can — but in a game engine, getting there can mean layers of templates, lambdas, variants or unions, complex macros, registration code, and generated glue. Jaguar makes some of these recurring patterns explicit language features instead.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <!-- DOCUMENTATION -->
   <section id="documentation" role="tabpanel" aria-labelledby="documentation">
     <div class="wrap section-pad">
@@ -702,7 +777,7 @@ move(x = <span class="str">10</span>, y = <span class="str">20</span>, speed = <
   <div class="wrap footer-inner">
     <div style="display:flex; align-items:center; gap:10px;">
       <img src="assets/logo.png" alt="" width="20" height="20" style="display:block; border-radius:5px;">
-      <p>Jaguar — a language compiled to C, by Oscar Soirey.</p>
+      <p>Jaguar — a language compiled to C, created by Oscar Soirey for game and engine development.</p>
     </div>
     <div class="footer-links">
       <a href="https://github.com/oscar-soirey/JaguarCC" target="_blank" rel="noopener">GitHub</a>
