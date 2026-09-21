@@ -1,0 +1,19 @@
+void main(string param) {
+    int health = 100;
+    signal:health {
+        sys:print("changed");
+    }
+    health = 75;
+    health = health;
+
+    const int limit = 10;
+    const int* view = &limit;
+    int mutable_value = 20;
+    int* const ptr = &mutable_value;
+    *ptr = 21;
+    int copy = *view;
+
+    if (copy == limit && mutable_value == 21) {
+        sys:print("const-ok");
+    }
+}

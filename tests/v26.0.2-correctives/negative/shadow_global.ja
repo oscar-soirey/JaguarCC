@@ -1,0 +1,5 @@
+i32 value = 10;
+void main(string param) {
+    i32 value = 20;
+    sys:print(value);
+}

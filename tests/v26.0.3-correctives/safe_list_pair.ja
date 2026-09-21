@@ -1,0 +1,2 @@
+
+void main(string param){ list<pair<i32,f64>> x={{1,2.5}}; sys:print(x.get(0).first); }

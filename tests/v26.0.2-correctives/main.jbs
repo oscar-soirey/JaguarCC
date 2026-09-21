@@ -1,0 +1,15 @@
+version 1.0
+
+keep_c
+
+out out
+
+compile Main {
+  //advanced_structural.ja
+  //class_collections.ja
+  //extras_new_overloads.ja
+  //docs_full_81.ja
+  //signal_and_const.ja
+  //using_enums.ja
+  virtual_overloads.ja
+}

@@ -1,0 +1,5 @@
+
+class A { i32 x; constr(i32 v){x=v;} }
+A make(A a){return a;}
+using Cb = fn(A)->A;
+void main(string param){ A a=A(3); Cb cb=make; A b=cb(a); sys:print(b.x); }

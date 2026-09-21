@@ -1,0 +1,3 @@
+
+class A { i32 f(i32 x){return x+1;} f64 f(f64 x){return x+0.5;} }
+void main(string param) { A a=A(); f64 x=a.f(2.5); sys:print(x); }

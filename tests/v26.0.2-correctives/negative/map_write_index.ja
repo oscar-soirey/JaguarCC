@@ -1,0 +1,4 @@
+void main(string param) {
+    map<string, i32> values = {"a", 1};
+    values["a"] = 2;
+}

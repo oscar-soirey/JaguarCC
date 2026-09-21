@@ -817,11 +817,28 @@ Braces are mandatory.
 
 # 24. `while`
 
-Jaguar's `while` is deliberately different from C's: it takes **no
-condition**.
+`while` is a conditional loop. The condition is evaluated before each
+iteration. The loop continues while the condition is true.
 
 ``` jaguar
-while {
+while (health > 0) {
+    health = health - 1;
+}
+```
+
+The condition is mandatory. A conditionless `while { ... }` is not the
+`while` syntax implemented by the current compiler. Use `loop { ... }`
+for an unconditional loop.
+
+------------------------------------------------------------------------
+
+## `loop`
+
+`loop` is Jaguar's unconditional loop. It has no condition and continues
+until execution leaves it with `break` or `return`.
+
+``` jaguar
+loop {
     if (health <= 0) {
         break;
     }
@@ -830,21 +847,15 @@ while {
 }
 ```
 
-Exiting the loop is done with `break` or `return`.
-
-The following form is forbidden:
-
-``` jaguar
-while (health > 0) {
-}
-```
+`continue` skips the remainder of the current iteration and starts the
+next iteration.
 
 ------------------------------------------------------------------------
 
 # 25. `break` and `continue`
 
 ``` jaguar
-while {
+while (true) {
     if (value == 10) {
         break;
     }
@@ -983,6 +994,25 @@ They are generated as C `typedef struct`.
 
 ------------------------------------------------------------------------
 
+### Access modifiers
+
+Jaguar uses three member-access levels:
+
+- `$` — **public**
+- `%` — **protected**
+- no access marker — **private**
+
+The access marker belongs to the declaration and may be placed in any of the following equivalent positions:
+
+```ja
+$int life;
+int$ life;
+int$life;
+int $life;
+```
+
+These forms all declare the member `life` as `public`. The same placement rule applies when using `%` for `protected` access. If neither `$` nor `%` is present, the member is `private`.
+
 # 30. Classes
 
 Jaguar has a class system with:
@@ -1016,9 +1046,34 @@ class Player {
 
 # 31. Class access control
 
-Members are private by default.
+Class members are private by default. Jaguar provides three access
+levels:
 
-## Public: `$`
+-   `$` — **public**; the member is accessible from outside the class.
+-   `%` — **protected**; the member is accessible from the class and its
+    derived classes according to the compiler's access rules.
+-   no marker — **private**; the member is accessible only from the class
+    itself according to the compiler's access rules.
+
+The access marker is part of the member declaration. For `$` (public),
+the current compiler accepts all of the following equivalent placements:
+
+``` jaguar
+class Player {
+    $int life;
+    int$ life;
+    int$life;
+    int $life;
+}
+```
+
+Whitespace does not change the meaning of these forms. They all declare
+a public member named `life`. The same access syntax applies to class
+methods as well; for example, `$void heal()` and `void$ heal()` declare a
+public method.
+
+The canonical form used throughout this documentation is `$` before the
+type:
 
 ``` jaguar
 class Player {
@@ -1026,7 +1081,7 @@ class Player {
 }
 ```
 
-## Protected: `%`
+Protected members use `%`:
 
 ``` jaguar
 class Player {
@@ -1034,9 +1089,7 @@ class Player {
 }
 ```
 
-## Private
-
-Without a marker:
+Private members use no access marker:
 
 ``` jaguar
 class Player {
@@ -1252,21 +1305,30 @@ Adding an element:
 numbers.push(5);
 ```
 
-Reading an element:
+Getting the number of elements:
 
 ``` jaguar
-int value = numbers[2];
+i32 count = numbers.size();
 ```
 
-Indexing is **read-only**.
+`size()` returns the current number of elements in the list.
 
-The following syntax is not allowed:
+Reading an element can be done either with indexing or with `get()`:
+
+``` jaguar
+i32 value_a = numbers[2];
+i32 value_b = numbers.get(2);
+```
+
+Both forms read an element. Indexing is **read-only**. The following
+syntax is not allowed:
 
 ``` jaguar
 numbers[2] = 10;
 ```
 
-To modify/add values, use the operations provided by the collection.
+`get(index)` returns the element at the specified index. To modify/add
+values, use the operations provided by the collection.
 
 ------------------------------------------------------------------------
 
@@ -1280,6 +1342,14 @@ map<string, int> scores = {
     "bob", 20
 };
 ```
+
+Getting the number of entries:
+
+``` jaguar
+i32 count = scores.size();
+```
+
+`size()` returns the current number of entries in the map.
 
 Adding or replacing an entry:
 
@@ -2935,7 +3005,12 @@ if (condition) {
 } else {
 }
 
-while {
+while (true) {
+    break;
+    continue;
+}
+
+loop {
     break;
     continue;
 }
@@ -3533,9 +3608,13 @@ nullptr
 
 ``` text
 list.push()
+list.size()
+list.get(index)
 list[index]
 
+map.size()
 map.emplace()
+map.size()
 map[key]
 
 pair.first
@@ -3655,7 +3734,8 @@ This documentation matches the behavior currently present in `jcc.py`.
 Points to consider as particularly specific to the current
 implementation are:
 
--   the conditionless form of `while`;
+-   the conditional form of `while`;
+-   the unconditional `loop { ... }` construct;
 -   `for_loop` with an inclusive final bound;
 -   collections without C++ templates;
 -   the ban on modifying a collection during `loop_list` / `loop_map`;
@@ -4277,6 +4357,7 @@ Functions:
 Control:
     if / else if / else
     while
+    loop
     for_loop
     loop_list
     loop_map

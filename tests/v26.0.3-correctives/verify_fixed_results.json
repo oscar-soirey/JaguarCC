@@ -1,0 +1,354 @@
+[
+  {
+    "case": "const_class_param_negative",
+    "mode": "normal",
+    "pass": true,
+    "diagnostic": "cannot call non-const method 'mut' on a const object"
+  },
+  {
+    "case": "const_class_param_negative",
+    "mode": "c89",
+    "pass": true,
+    "diagnostic": "cannot call non-const method 'mut' on a const object"
+  },
+  {
+    "case": "const_class_ptr_param_negative",
+    "mode": "normal",
+    "pass": true,
+    "diagnostic": "cannot call non-const method 'mut' on a const object"
+  },
+  {
+    "case": "const_class_ptr_param_negative",
+    "mode": "c89",
+    "pass": true,
+    "diagnostic": "cannot call non-const method 'mut' on a const object"
+  },
+  {
+    "case": "const_class_ptr_param_positive",
+    "mode": "normal",
+    "pass": true,
+    "stdout": "4\n",
+    "stderr": "",
+    "rc": 0
+  },
+  {
+    "case": "const_class_ptr_param_positive",
+    "mode": "c89",
+    "pass": true,
+    "stdout": "4\n",
+    "stderr": "",
+    "rc": 0
+  },
+  {
+    "case": "suffix_const_class_ptr",
+    "mode": "normal",
+    "pass": true,
+    "stdout": "2\n",
+    "stderr": "",
+    "rc": 0
+  },
+  {
+    "case": "suffix_const_class_ptr",
+    "mode": "c89",
+    "pass": true,
+    "stdout": "2\n",
+    "stderr": "",
+    "rc": 0
+  },
+  {
+    "case": "duplicate_methods_same_params",
+    "mode": "normal",
+    "pass": true,
+    "diagnostic": "method 'A::f' declared multiple times with the same signature"
+  },
+  {
+    "case": "duplicate_methods_same_params",
+    "mode": "c89",
+    "pass": true,
+    "diagnostic": "method 'A::f' declared multiple times with the same signature"
+  },
+  {
+    "case": "overload_resolution_float_first",
+    "mode": "normal",
+    "pass": true,
+    "stdout": "3\n",
+    "stderr": "",
+    "rc": 0
+  },
+  {
+    "case": "overload_resolution_float_first",
+    "mode": "c89",
+    "pass": true,
+    "stdout": "3\n",
+    "stderr": "",
+    "rc": 0
+  },
+  {
+    "case": "overload_resolution_int_first",
+    "mode": "normal",
+    "pass": true,
+    "stdout": "3\n",
+    "stderr": "",
+    "rc": 0
+  },
+  {
+    "case": "overload_resolution_int_first",
+    "mode": "c89",
+    "pass": true,
+    "stdout": "3\n",
+    "stderr": "",
+    "rc": 0
+  },
+  {
+    "case": "ctor_overload_choice",
+    "mode": "normal",
+    "pass": true,
+    "stdout": "8\n",
+    "stderr": "",
+    "rc": 0
+  },
+  {
+    "case": "ctor_overload_choice",
+    "mode": "c89",
+    "pass": true,
+    "stdout": "8\n",
+    "stderr": "",
+    "rc": 0
+  },
+  {
+    "case": "ctor_default_choice",
+    "mode": "normal",
+    "pass": true,
+    "stdout": "9\n",
+    "stderr": "",
+    "rc": 0
+  },
+  {
+    "case": "ctor_default_choice",
+    "mode": "c89",
+    "pass": true,
+    "stdout": "9\n",
+    "stderr": "",
+    "rc": 0
+  },
+  {
+    "case": "duplicate_destructor",
+    "mode": "normal",
+    "pass": true,
+    "diagnostic": "class 'A' declares multiple destructors"
+  },
+  {
+    "case": "duplicate_destructor",
+    "mode": "c89",
+    "pass": true,
+    "diagnostic": "class 'A' declares multiple destructors"
+  },
+  {
+    "case": "destructor_params",
+    "mode": "normal",
+    "pass": true,
+    "diagnostic": "destructor 'destr' cannot take parameters"
+  },
+  {
+    "case": "destructor_params",
+    "mode": "c89",
+    "pass": true,
+    "diagnostic": "destructor 'destr' cannot take parameters"
+  },
+  {
+    "case": "extern_overload",
+    "mode": "normal",
+    "pass": true,
+    "diagnostic": "extern function 'f' cannot be overloaded: all @extern declarations use the same C symbol"
+  },
+  {
+    "case": "extern_overload",
+    "mode": "c89",
+    "pass": true,
+    "diagnostic": "extern function 'f' cannot be overloaded: all @extern declarations use the same C symbol"
+  },
+  {
+    "case": "nested_list_rejected",
+    "mode": "normal",
+    "pass": true,
+    "diagnostic": "nested owning collection type 'list<list<i32>>' is not supported"
+  },
+  {
+    "case": "nested_list_rejected",
+    "mode": "c89",
+    "pass": true,
+    "diagnostic": "nested owning collection type 'list<list<i32>>' is not supported"
+  },
+  {
+    "case": "map_i32_key",
+    "mode": "normal",
+    "pass": true,
+    "stdout": "two\n",
+    "stderr": "",
+    "rc": 0
+  },
+  {
+    "case": "map_i32_key",
+    "mode": "c89",
+    "pass": true,
+    "stdout": "two\n",
+    "stderr": "",
+    "rc": 0
+  },
+  {
+    "case": "map_f64_key",
+    "mode": "normal",
+    "pass": true,
+    "stdout": "two\n",
+    "stderr": "",
+    "rc": 0
+  },
+  {
+    "case": "map_f64_key",
+    "mode": "c89",
+    "pass": true,
+    "stdout": "two\n",
+    "stderr": "",
+    "rc": 0
+  },
+  {
+    "case": "while_true_no_fallthrough",
+    "mode": "normal",
+    "pass": true
+  },
+  {
+    "case": "while_true_no_fallthrough",
+    "mode": "c89",
+    "pass": true
+  },
+  {
+    "case": "while_true_break_negative",
+    "mode": "normal",
+    "pass": true,
+    "diagnostic": "non-void function 'f' may exit without returning a value of type 'i32'"
+  },
+  {
+    "case": "while_true_break_negative",
+    "mode": "c89",
+    "pass": true,
+    "diagnostic": "non-void function 'f' may exit without returning a value of type 'i32'"
+  },
+  {
+    "case": "loop_nested_break",
+    "mode": "normal",
+    "pass": true
+  },
+  {
+    "case": "loop_nested_break",
+    "mode": "c89",
+    "pass": true
+  },
+  {
+    "case": "sibling_const_scope",
+    "mode": "normal",
+    "pass": true,
+    "stdout": "1\n3\n",
+    "stderr": "",
+    "rc": 0
+  },
+  {
+    "case": "sibling_const_scope",
+    "mode": "c89",
+    "pass": true,
+    "stdout": "1\n3\n",
+    "stderr": "",
+    "rc": 0
+  },
+  {
+    "case": "sibling_pointee_const_scope",
+    "mode": "normal",
+    "pass": true,
+    "stdout": "3\n",
+    "stderr": "",
+    "rc": 0
+  },
+  {
+    "case": "sibling_pointee_const_scope",
+    "mode": "c89",
+    "pass": true,
+    "stdout": "3\n",
+    "stderr": "",
+    "rc": 0
+  },
+  {
+    "case": "main_collision",
+    "mode": "normal",
+    "pass": true,
+    "stdout": "hello\n1\n2\n",
+    "stderr": "",
+    "rc": 0
+  },
+  {
+    "case": "main_collision",
+    "mode": "c89",
+    "pass": true,
+    "stdout": "hello\n1\n2\n",
+    "stderr": "",
+    "rc": 0
+  },
+  {
+    "case": "class_function_abi",
+    "mode": "normal",
+    "pass": true,
+    "stdout": "7\n",
+    "stderr": "",
+    "rc": 0
+  },
+  {
+    "case": "class_function_abi",
+    "mode": "c89",
+    "pass": true,
+    "stdout": "7\n",
+    "stderr": "",
+    "rc": 0
+  },
+  {
+    "case": "class_function_ptr_alias",
+    "mode": "normal",
+    "pass": true,
+    "stdout": "3\n",
+    "stderr": "",
+    "rc": 0
+  },
+  {
+    "case": "class_function_ptr_alias",
+    "mode": "c89",
+    "pass": true,
+    "stdout": "3\n",
+    "stderr": "",
+    "rc": 0
+  },
+  {
+    "case": "const_class_local_call",
+    "mode": "normal",
+    "pass": true,
+    "stdout": "1\n",
+    "stderr": "",
+    "rc": 0
+  },
+  {
+    "case": "const_class_local_call",
+    "mode": "c89",
+    "pass": true,
+    "stdout": "1\n",
+    "stderr": "",
+    "rc": 0
+  },
+  {
+    "case": "const_class_local_mut_negative",
+    "mode": "normal",
+    "pass": true,
+    "diagnostic": "cannot call non-const method 'mut' on a const object"
+  },
+  {
+    "case": "const_class_local_mut_negative",
+    "mode": "c89",
+    "pass": true,
+    "diagnostic": "cannot call non-const method 'mut' on a const object"
+  }
+]

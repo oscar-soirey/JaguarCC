@@ -1,0 +1,22 @@
+enum GlobalState {
+    Zero,
+    One,
+}
+
+namespace colors {
+    enum Kind {
+        Red,
+        Blue,
+    }
+}
+
+using namespace colors;
+
+void main(string param) {
+    GlobalState a = One;
+    colors:Kind b = Blue;
+    colors:Kind c = colors:Red;
+    sys:print(a == One);
+    sys:print(b == Blue);
+    sys:print(c == colors:Red);
+}

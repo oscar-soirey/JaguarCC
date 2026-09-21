@@ -27,7 +27,8 @@ include third-party/
 
 //compile files to exe
 compile _01 {
-  02_function_pointers.ja
+  01_overloads_structs.ja
+  //02_function_pointers.ja
   //03_namespace_struct_union.ja
   //04_classes_constructors_methods.ja
   //05_decorators_register.ja

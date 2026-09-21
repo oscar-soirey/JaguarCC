@@ -1,0 +1,220 @@
+#define ANSWER 42
+#define SCALE 2.5
+
+using Number = f64;
+using Index = i32;
+using Callback = fn(i32) -> i32;
+
+enum GlobalMode {
+    Idle,
+    Running,
+    Finished,
+}
+
+struct Vec2 {
+    f32 x;
+    f32 y;
+}
+
+union Value {
+    int integer;
+    f32 real;
+}
+
+namespace math {
+    enum Kind {
+        Basic,
+        Precise,
+    }
+
+    struct Bounds {
+        f64 min;
+        f64 max;
+    }
+
+    int add(int a, int b) {
+        return a + b;
+    }
+
+    f64 add(f64 a, f64 b) {
+        return a + b;
+    }
+
+    int triple(int x) {
+        return x * 3;
+    }
+}
+
+namespace engine {
+    namespace core {
+        int scale(int x) {
+            return x * ANSWER;
+        }
+    }
+}
+
+using namespace math;
+using namespace engine:core;
+using math:triple as triple_number;
+
+class Base {
+    $int value;
+
+    constr(int value) {
+        this.value = value;
+    }
+
+    virtual int $get_value() const {
+        return value;
+    }
+
+    void $set_value(int value) {
+        this.value = value;
+    }
+}
+
+class Derived, Base {
+    $int extra;
+
+    constr(int value) {
+        extra = value + 1;
+        this.value = value;
+    }
+
+    int get_value() override const {
+        return value + extra;
+    }
+
+    destr() {
+        extra = 0;
+    }
+}
+
+@register 
+class Reflected {
+    @exposed int $health = ANSWER;
+
+    constr(int value = ANSWER) {
+        health = value;
+    }
+
+    void $damage(int amount) {
+        health = health - amount;
+    }
+
+    bool $alive() const {
+        return health > 0;
+    }
+}
+
+@extern i32 external_identity(i32 value);
+@extern u32 external_global;
+@extern fn() -> void external_callback;
+
+int callback_target(int value) {
+    return value + 1;
+}
+
+void main(string param) {
+    Index index = 3;
+    Number amount = 1.5;
+    Vec2 position;
+    position.x = 4.0;
+    position.y = 5.0;
+
+    math:Bounds* bounds = new math:Bounds();
+    bounds.min = 0.0;
+    bounds.max = 10.0;
+
+    Value.integer = 42;
+    int union_value = (int)Value;
+
+    GlobalMode mode = GlobalMode:Running;
+    math:Kind kind = math:Precise;
+
+    int sum_a = math:add(index, 2);
+    f64 sum_b = math:add(amount, 2.5);
+    int imported_a = add(index, 4);
+    int imported_b = triple_number(5);
+    int imported_c = scale(2);
+
+    Base base = Base(5);
+    Derived derived = Derived(7);
+    int base_value = base.get_value();
+    int derived_value = derived.get_value();
+    derived.set_value(10);
+
+    Reflected reflected = Reflected();
+    reflected.damage(2);
+    bool alive = reflected.alive();
+    int direct_health = reflected.health;
+
+    const i32 constant_value = 10;
+    i32 mutable_value = 20;
+    const i32* pointer_to_const = &constant_value;
+    i32* const const_pointer = &mutable_value;
+    i32* allocated => 123;
+    i32 read_allocated = *allocated;
+    *const_pointer = 21;
+
+    Callback callback = callback_target;
+    int callback_result = callback(5);
+
+    list<int> numbers = {1, 2, 3};
+    numbers.push(4);
+    int second = numbers[1];
+    int count = numbers.size();
+    auto item = loop_list(numbers) {
+        sys:print(item);
+    }
+
+    map<string, int> scores = {
+        "alice", 10,
+        "bob", 20
+    };
+    scores.emplace("charlie", 30);
+    int alice = scores["alice"];
+    auto entry = loop_map(scores) {
+        sys:print(entry.first);
+        sys:print(entry.second);
+    }
+
+    pair<string, int> result = {"score", 42};
+    sys:print(result.first);
+    sys:print(result.second);
+
+    dynamic_list values = {42, "hello", true, 3.14};
+    values.push(123);
+    int dynamic_count = values.size();
+    string dynamic_type = values.type(1);
+    auto dynamic_value = values.get(0);
+    sys:print(values[0]);
+
+    container<int> owned_number => 42;
+    int owned_value = owned_number.get();
+
+    string text = "Jaguar";
+    int text_length = text.length();
+    bool text_empty = text.empty();
+    bool text_equals = text.equals("Jaguar");
+    bool text_contains = text.contains("gua");
+    bool text_starts = text.starts_with("Jag");
+    bool text_ends = text.ends_with("ar");
+    string text_concat = text.concat("CC");
+    string text_sub = text.substring(0, 3);
+    int text_char = text.char_at(0);
+    string text_upper = text.to_upper();
+    string text_lower = text.to_lower();
+
+    int i = for_loop(0, 3) {
+        sys:print(i);
+    }
+
+    while (alive) {
+        break;
+    }
+
+    loop {
+        break;
+    }
+}

@@ -1,0 +1,2 @@
+
+void main(string param){ map<f64,string> m={1.5,"one",2.5,"two"}; sys:print(m[2.5]); }

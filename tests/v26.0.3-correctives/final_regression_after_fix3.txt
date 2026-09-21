@@ -1,0 +1,24 @@
+{"file": "advanced_structural.ja", "mode": "normal", "status": "ok", "rc": 0, "stdout": "1\n2\n3\n4\nalice\n10\nbob\n20\ncharlie\n30\nscore\n42\n42\n0\n1\n2\n3\n", "stderr": ""}
+{"file": "advanced_structural.ja", "mode": "c89", "status": "ok", "rc": 0, "stdout": "1\n2\n3\n4\nalice\n10\nbob\n20\ncharlie\n30\nscore\n42\n42\n0\n1\n2\n3\n", "stderr": ""}
+{"file": "class_collections.ja", "mode": "normal", "status": "ok", "rc": 0, "stdout": "1\n2\n42\n7\n21\n", "stderr": ""}
+{"file": "class_collections.ja", "mode": "c89", "status": "ok", "rc": 0, "stdout": "1\n2\n42\n7\n21\n", "stderr": ""}
+{"file": "docs_full_81.ja", "mode": "normal", "status": "ok", "rc": 0, "stdout": "10\n20\n30\n75\nPlayer alive\n5\n30\n", "stderr": ""}
+{"file": "docs_full_81.ja", "mode": "c89", "status": "ok", "rc": 0, "stdout": "10\n20\n30\n75\nPlayer alive\n5\n30\n", "stderr": ""}
+{"file": "focus_round2.ja", "mode": "normal", "status": "ok", "rc": 0, "stdout": "5\n6\n7\n10\n12\n12.5\n30\n21\n2\n60\ntrue\n12\n", "stderr": ""}
+{"file": "focus_round2.ja", "mode": "c89", "status": "ok", "rc": 0, "stdout": "5\n6\n7\n10\n12\n12.5\n30\n21\n2\n60\ntrue\n12\n", "stderr": ""}
+{"file": "collections_matrix.ja", "mode": "normal", "status": "ok", "rc": 0, "stdout": "8\n20\n", "stderr": ""}
+{"file": "collections_matrix.ja", "mode": "c89", "status": "ok", "rc": 0, "stdout": "8\n20\n", "stderr": ""}
+{"file": "const_leak.ja", "mode": "normal", "status": "ok-compile-only", "rc": 0}
+{"file": "const_leak.ja", "mode": "c89", "status": "ok-compile-only", "rc": 0}
+{"file": "extras_new_overloads.ja", "mode": "normal", "status": "ok", "rc": 0, "stdout": "5\n6\n10\n12\n12.5\n60\ntrue\n12\n", "stderr": ""}
+{"file": "extras_new_overloads.ja", "mode": "c89", "status": "ok", "rc": 0, "stdout": "5\n6\n10\n12\n12.5\n60\ntrue\n12\n", "stderr": ""}
+{"file": "reflection.ja", "mode": "normal", "status": "ok", "rc": 0, "stdout": "100\n25\n", "stderr": ""}
+{"file": "reflection.ja", "mode": "c89", "status": "ok", "rc": 0, "stdout": "100\n25\n", "stderr": ""}
+{"file": "virtual_overloads.ja", "mode": "normal", "status": "ok", "rc": 0, "stdout": "102\n22.5\n", "stderr": ""}
+{"file": "virtual_overloads.ja", "mode": "c89", "status": "ok", "rc": 0, "stdout": "102\n22.5\n", "stderr": ""}
+{"file": "calculator_overloads.ja", "mode": "normal", "status": "ok", "rc": 0, "stdout": "5\n6\n10\n12\n12.5\n60\ntrue\n12\n", "stderr": ""}
+{"file": "calculator_overloads.ja", "mode": "c89", "status": "ok", "rc": 0, "stdout": "5\n6\n10\n12\n12.5\n60\ntrue\n12\n", "stderr": ""}
+{"file": "signal_and_const.ja", "mode": "normal", "status": "ok", "rc": 0, "stdout": "changed\nconst-ok\n", "stderr": ""}
+{"file": "signal_and_const.ja", "mode": "c89", "status": "ok", "rc": 0, "stdout": "changed\nconst-ok\n", "stderr": ""}
+{"file": "using_enums.ja", "mode": "normal", "status": "ok", "rc": 0, "stdout": "true\ntrue\ntrue\n", "stderr": ""}
+{"file": "using_enums.ja", "mode": "c89", "status": "ok", "rc": 0, "stdout": "true\ntrue\ntrue\n", "stderr": ""}

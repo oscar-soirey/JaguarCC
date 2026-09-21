@@ -1,0 +1,4 @@
+
+class A { void mut() { } }
+void f(const A a) { a.mut(); }
+void main(string param) { A x=A(); f(x); }

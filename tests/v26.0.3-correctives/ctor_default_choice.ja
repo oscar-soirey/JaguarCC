@@ -1,0 +1,11 @@
+
+class A { 
+  i32 x; 
+  constr(i32 v=9){
+    x=v;
+  } 
+  constr(i32 v,i32 w){
+    x=v+w;
+  } 
+}
+void main(string param) { A a=A(); sys:print(a.x); }

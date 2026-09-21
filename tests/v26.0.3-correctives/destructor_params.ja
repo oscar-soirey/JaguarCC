@@ -1,0 +1,3 @@
+
+class A { destr(i32 x){} }
+void main(string param) { A a=A(); }

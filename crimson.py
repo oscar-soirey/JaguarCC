@@ -518,10 +518,26 @@ class Crimson:
             raise CrimsonError("Downloaded TAR archive is invalid.") from exc
 
     @staticmethod
+    def find_source_root(directory: Path) -> Path:
+        """
+        Locate the payload root of a downloaded release archive.
+
+        Unlike find_manifest_root(), this deliberately does not require a
+        .crimson file: release archives are payloads and .crimson is owned by
+        the repository root.
+        """
+        entries = list(directory.iterdir())
+        if len(entries) == 1 and entries[0].is_dir():
+            return entries[0]
+        return directory
+
+    @staticmethod
     def find_manifest_root(directory: Path) -> Path:
         """
-        GitHub source archives normally contain one top-level directory.
-        Assets may instead contain the manifest directly.
+        Legacy helper for callers that explicitly need a release manifest.
+
+        Installation does not use this function: release archives are not
+        authoritative for package metadata or dependencies.
         """
         direct = directory / MANIFEST_NAME
         if direct.is_file():
@@ -602,32 +618,35 @@ class Crimson:
 
         try:
             self.download_release(release, extracted)
-            source_root = self.find_manifest_root(extracted)
-            manifest = self.read_manifest(source_root)
+
+            # IMPORTANT: .crimson is always read from the repository root.
+            # A release archive is only the package payload and must not
+            # define, add, or override dependencies.
+            #
+            # download_repository_manifest() reads the .crimson at the
+            # repository's default branch/root. This is intentionally done
+            # even when an explicit release version was requested.
+            repository_manifest = self.download_repository_manifest(repo)
 
             # The release tag is authoritative for the version being
-            # installed. In particular, when the user explicitly requests
-            # "-v 1.0.0", a stale/different version in the release's
-            # .crimson must NOT prevent installation of v1.0.0.
-            #
-            # The manifest is still required because it contains the package
-            # metadata and dependencies, but its version is not compared to
-            # the release tag.
-            declared_version = self.package_version(manifest)
+            # installed. The repository-root manifest supplies metadata and
+            # dependencies, but its version is not compared to the tag.
+            declared_version = self.package_version(repository_manifest)
 
-            # friendly-name is purely a human-readable display name.
-            # It is intentionally NOT used as the package identifier.
-            # Package identity comes from the repository/package name.
-            friendly_name = str(manifest["package"]["friendly-name"]).strip()
+            friendly_name = str(
+                repository_manifest["package"]["friendly-name"]
+            ).strip()
             if not friendly_name:
                 raise CrimsonError(
                     f"{MANIFEST_NAME}: package.friendly-name cannot be empty."
                 )
 
             self.install_dependencies(
-                manifest.get("dependencies", {}),
+                repository_manifest.get("dependencies", {}),
                 dependency_stack=(*dependency_stack, package_name),
             )
+
+            source_root = self.find_source_root(extracted)
 
             target = self.installed_package_dir(package_name)
             staging = self.packages_dir / (

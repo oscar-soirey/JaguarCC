@@ -409,12 +409,18 @@
         <div>
           <span class="idx">Access control</span>
           <h3>Private by default, a symbol for the rest</h3>
-          <p>A class member with no marker is private. <code class="inline">$</code> makes it public, <code class="inline">%</code> makes it protected — enforced by the compiler.</p>
+          <p>A class member with no marker is private. <code class="inline">$</code> makes it public and <code class="inline">%</code> makes it protected. The access marker can be placed around the type/name boundary without changing its meaning.</p>
         </div>
         <div class="code-block"><span class="kw">class</span> Player {
     <span class="fn">$</span><span class="ty">int</span> health = <span class="str">100</span>;
     <span class="fn">%</span><span class="ty">int</span> stamina;
     <span class="ty">int</span> secret_value;
+
+    <span class="cm">// All four forms are public:</span>
+    <span class="fn">$</span><span class="ty">int</span> life_a;
+    <span class="ty">int</span><span class="fn">$</span> life_b;
+    <span class="ty">int</span><span class="fn">$</span>life_c;
+    <span class="ty">int</span> <span class="fn">$life_d</span>;
 
     <span class="ty">int</span> get_health() <span class="kw">const</span> {
         <span class="kw">return</span> health;
@@ -438,17 +444,35 @@ player.get().damage(<span class="str">25</span>);
       <div class="feat-row">
         <div>
           <span class="idx">Loops</span>
-          <h3><code class="inline">while</code> with no condition, inclusive <code class="inline">for_loop</code></h3>
-          <p>Jaguar's <code class="inline">while</code> never takes a condition — you exit with <code class="inline">break</code>. <code class="inline">for_loop</code> includes its final bound.</p>
+          <h3>Conditional <code class="inline">while</code>, unconditional <code class="inline">loop</code></h3>
+          <p><code class="inline">while</code> requires a condition. Use <code class="inline">loop</code> for an unconditional loop. <code class="inline">for_loop</code> includes its final bound.</p>
         </div>
-        <div class="code-block"><span class="kw">while</span> {
-    <span class="kw">if</span> (health &lt;= <span class="str">0</span>) { <span class="kw">break</span>; }
+        <div class="code-block"><span class="kw">while</span> (health &gt; <span class="str">0</span>) {
     health = health - <span class="str">1</span>;
+}
+
+<span class="kw">loop</span> {
+    <span class="kw">if</span> (done) { <span class="kw">break</span>; }
 }
 
 <span class="ty">int</span> i = for_loop(<span class="str">0</span>, <span class="str">10</span>) {
     sys:print(i); <span class="cm">// 0..10, inclusive</span>
 }</div>
+      </div>
+
+
+      <div class="feat-row">
+        <div>
+          <span class="idx">Collections</span>
+          <h3><code class="inline">list</code> and <code class="inline">map</code> APIs</h3>
+          <p>Collections expose their size through <code class="inline">size()</code>. Lists also provide <code class="inline">get()</code> for indexed reads.</p>
+        </div>
+        <div class="code-block"><span class="ty">list</span>&lt;<span class="ty">int</span>&gt; numbers = {<span class="str">1</span>, <span class="str">2</span>, <span class="str">3</span>};
+<span class="ty">i32</span> count = numbers.size();
+<span class="ty">i32</span> value = numbers.get(<span class="str">1</span>);
+
+<span class="ty">map</span>&lt;<span class="ty">string</span>, <span class="ty">int</span>&gt; scores;
+<span class="ty">i32</span> entries = scores.size();</div>
       </div>
 
       <div class="feat-row">
@@ -592,12 +616,12 @@ move(x = <span class="str">10</span>, y = <span class="str">20</span>, speed = <
         <a class="doc-card" href="https://oscar-soirey.github.io/JaguarCC/" target="_blank" rel="noopener">
           <span class="num">04</span>
           <h3>Classes & structs</h3>
-          <p>Access control, inheritance, virtual methods, constr/destr.</p>
+          <p>Access control, all <code class="inline">$</code>/<code class="inline">%</code> placements, inheritance, virtual methods, constr/destr.</p>
         </a>
         <a class="doc-card" href="https://oscar-soirey.github.io/JaguarCC/" target="_blank" rel="noopener">
           <span class="num">05</span>
           <h3>Collections & memory</h3>
-          <p>list, map, pair, container, dynamic_list, and runtime memory management.</p>
+          <p>list, map, pair, container, dynamic_list, including <code class="inline">list.size()</code>, <code class="inline">list.get()</code>, and <code class="inline">map.size()</code>.</p>
         </a>
         <a class="doc-card" href="https://oscar-soirey.github.io/JaguarCC/" target="_blank" rel="noopener">
           <span class="num">06</span>

@@ -1,0 +1,5 @@
+
+class A { i32 x; constr(i32 v){x=v;} }
+i32 get(A a){ return a.x; }
+A make(A a){ return a; }
+void main(string param){ A a=A(7); A b=make(a); sys:print(get(b)); }

@@ -1,0 +1,3 @@
+
+class A { i32 x; constr(){x=1;} constr(i32 v){x=v;} }
+void main(string param) { A a=A(8); sys:print(a.x); }

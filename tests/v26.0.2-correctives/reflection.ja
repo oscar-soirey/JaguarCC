@@ -1,0 +1,18 @@
+@register
+class Enemy {
+    @exposed
+    $int health = 100;
+    $string name = "Enemy";
+}
+
+void main(string param) {
+    string class_name = "Enemy";
+    auto enemy = factory:construct(class_name);
+
+    if (enemy.MemberExists("health")) {
+        int health = (int)enemy.GetMember("health");
+        sys:print(health);
+        enemy.SetMember("health", 25);
+        sys:print((int)enemy.GetMember("health"));
+    }
+}

@@ -1,0 +1,2 @@
+void take(i32& value) { }
+void main(string param) { }

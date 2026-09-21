@@ -1,0 +1,5 @@
+void main(string param) {
+    i32 value = 1;
+    void* p = (void*)&value;
+    p.MemberExists("value");
+}

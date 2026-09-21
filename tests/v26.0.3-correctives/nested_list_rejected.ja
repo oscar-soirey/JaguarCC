@@ -1,0 +1,2 @@
+
+void main(string param){ list<list<i32>> x; }

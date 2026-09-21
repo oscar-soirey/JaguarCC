@@ -1,0 +1,6 @@
+void main(string param) {
+    i32 x = 1;
+    i32 y = 2;
+    i32* const p = &x;
+    p = &y;
+}

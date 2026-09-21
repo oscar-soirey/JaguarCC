@@ -1,0 +1,8 @@
+Analyse des exemples, crée les exemples en te basant sur le contenu du compilateur, ne fais aucune approximation ou rapprochement avec d'autres langages, et apprend. Je veux que le langage devance plus souvent gcc en detection d'erreurs verifie que language server et jcc renvoient bien les memes erreurs, pour ne pas avoir d'impression de deconnexion entre le prospectus et la compilation.
+Envoie moi bien les exemples des fichiers ja que tu as utilisés.
+
+
+Analyse des exemples, crée les exemples en te basant sur le contenu du compilateur, ne fais aucune approximation ou rapprochement avec d'autres langages, et apprend. Corrige les erreurs unes par unes et a chaque modification teste a chaque fois des gros fichiers .ja avec des classes, des decorateurs, des structures, des nalmespaces, des unions, etc.... Je veux que tu reflechisse pour supprimer toutes les erreurs que tu rencontres. Je veux que une fois que tu as terminé, toutes ces erreurs aient disparuent, sans toucher aux fonctionalités existantes qui marchent deja, genre je veux pas que en corrigeant ces erreurs tu en créees des nouvelles. Envoie moi bien les exemples des fichiers ja que tu as utilisés.
+Pour chaque erreurs je veux que tu comprenne réellement pourquoi ca arrive, dans quel contexte, pour que tu puisses corriger toutes les erreurs qui puissent en decouler. Tu peux faire des diagnostiques avec tes exemples pour comprendre pourquoi arrive l'erreur.
+Ecris moi un rapport sur tes changements détaillés.
+N'invente aucun rapport faux, si les tests échouent, ne m'invente pas qu'ils ont réussits.

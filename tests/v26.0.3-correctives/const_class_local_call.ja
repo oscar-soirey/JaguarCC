@@ -1,0 +1,3 @@
+
+class A { i32 x; constr(){x=1;} i32 read() const{return x;} void mut(){x=x+1;} }
+void main(string param){ const A a=A(); sys:print(a.read()); }

@@ -1,0 +1,46 @@
+#define MAX_HEALTH 100
+
+@register
+class Player {
+    @exposed
+    $int health = MAX_HEALTH;
+
+    constr(int initial_health = MAX_HEALTH) {
+        health = initial_health;
+    }
+
+    $void damage(int amount) {
+        health = health - amount;
+    }
+
+    $bool alive() const {
+        return health > 0;
+    }
+}
+
+int add(int a, int b = 0) {
+    return a + b;
+}
+
+void main(string param) {
+    Player player = Player(100);
+
+    list<int> values = {10, 20, 30};
+
+    auto item = loop_list(values) {
+        sys:print(item);
+    }
+
+    player.damage(25);
+
+    sys:print(player.health);
+
+    if (player.alive()) {
+        sys:print("Player alive");
+    }
+
+    f64 distance = jcc:sqrt(3.0 * 3.0 + 4.0 * 4.0);
+    sys:print(distance);
+
+    sys:print(add(10, b = 20));
+}

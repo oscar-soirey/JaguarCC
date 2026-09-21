@@ -1,0 +1,23 @@
+class BaseOver {
+    virtual int $get(i32 value) {
+        return value + 10;
+    }
+
+    virtual f64 $get(f64 value) {
+        return value + 20.0;
+    }
+}
+
+class DerivedOver, BaseOver {
+    int get(i32 value) override {
+        return value + 100;
+    }
+}
+
+void main(string param) {
+    DerivedOver object = DerivedOver();
+    int integer_result = object.get(2);
+    f64 float_result = object.get(2.5);
+    sys:print(integer_result);
+    sys:print(float_result);
+}

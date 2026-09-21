@@ -17,18 +17,46 @@ from urllib.parse import unquote, urlparse
 from typing import Any, Dict, List, Optional
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-JCC_PATH = os.path.join(HERE, "jcc.py")
+
+
+def _jcc_candidates():
+    """Yield JaguarCC candidates in deployment/test priority order."""
+    explicit = os.environ.get("JAGUAR_JCC")
+    candidates = []
+    if explicit:
+        candidates.append(os.path.abspath(explicit))
+    candidates.extend([
+        os.path.join(HERE, "jcc.py"),
+        os.path.join(HERE, "jcc_fixed_round2.py"),
+        os.path.join(HERE, "jcc_fixed.py"),
+        os.path.join(HERE, "jcc(9).py"),
+    ])
+    seen = set()
+    for path in candidates:
+        path = os.path.abspath(path)
+        if path not in seen:
+            seen.add(path)
+            yield path
 
 
 def load_jcc():
-    if not os.path.isfile(JCC_PATH):
-        return None
-    spec = importlib.util.spec_from_file_location("jaguar_jcc", JCC_PATH)
-    if not spec or not spec.loader:
-        return None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    for path in _jcc_candidates():
+        if not os.path.isfile(path):
+            continue
+        spec = importlib.util.spec_from_file_location("jaguar_jcc", path)
+        if not spec or not spec.loader:
+            continue
+        try:
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            mod.__jaguar_source_path__ = path
+            return mod
+        except Exception:
+            # An optional/broken development copy must not stop the server when
+            # another valid JaguarCC is available.
+            continue
+    return None
+
 
 JCC = load_jcc()
 
@@ -305,7 +333,7 @@ class JaguarServer:
                     "definitionProvider": True,
                     "renameProvider": True,
                     "workspaceSymbolProvider": True,
-                }, "serverInfo": {"name":"Jaguar Language Server", "version":"0.3.4"}})
+                }, "serverInfo": {"name":"Jaguar Language Server", "version":"0.4.0"}})
             elif method == "initialized": pass
             elif method == "shutdown": self.result(ident, None)
             elif method == "exit": return False
@@ -933,6 +961,12 @@ class JaguarServer:
                 diagnostics.append(self._diag(source,ln,f"Unknown function '{ns}:{name}'",start=max(0,a-len(ns)-1),end=b))
 
     def _semantic_diagnostics(self, uri, source, program):
+        """Legacy supplemental diagnostics.
+
+        Published diagnostics use JaguarCC itself as the authoritative source.
+        This helper remains available for older internal callers/tests, but it
+        must never override the compiler result.
+        """
         diagnostics=[]
         self._diagnose_duplicate_functions(source, program, diagnostics)
         self._diagnose_invalid_exposed(source, diagnostics)
@@ -993,50 +1027,81 @@ class JaguarServer:
             diagnostics.append(self._diag(source,line,msg,start=0,end=max(1,len(source.splitlines()[line]) if source.splitlines() and line<len(source.splitlines()) else 1)))
         return diagnostics
 
-    def publish_diagnostics(self, uri):
-        """Publish the diagnostics produced by JaguarCC itself.
+    def _compiler_diagnostics(self, source):
+        """Return diagnostics produced by the same JaguarCC used to compile.
 
-        Completion/hover may still use the tolerant SymbolIndex while a file is
-        incomplete, but diagnostics must have a single source of truth: jcc.py.
-        This guarantees that the editor shows the same message and source span
-        that the compiler reports for the exact same Jaguar source.
+        Semantic rules are deliberately not duplicated in the language server:
+        class constness, override compatibility, overload resolution, namespaces,
+        collection APIs, unions, etc. belong to jcc.py.
+        """
+        if JCC is None:
+            return [{
+                "message": "JaguarCC compiler not found",
+                "line": 1, "column": 0, "end_column": 1, "severity": 1,
+            }]
+
+        diagnose = getattr(JCC, "diagnose_source", None)
+        if callable(diagnose):
+            result = diagnose(source)
+            return [] if result is None else list(result)
+
+        transpile = getattr(JCC, "transpile", None)
+        if not callable(transpile):
+            return [{
+                "message": "Loaded JaguarCC does not expose diagnose_source() or transpile()",
+                "line": 1, "column": 0, "end_column": 1, "severity": 1,
+            }]
+
+        try:
+            transpile(source)
+            return []
+        except Exception as exc:
+            message = getattr(exc, "_jaguar_message", str(exc))
+            line = int(getattr(exc, "_jaguar_line", self._error_line(message, 0) + 1))
+            column = int(getattr(exc, "_jaguar_column", 0))
+            end_column = int(getattr(exc, "_jaguar_end_column", column + 1))
+            return [{
+                "message": message,
+                "line": max(1, line),
+                "column": max(0, column),
+                "end_column": max(max(0, column) + 1, end_column),
+                "severity": 1,
+            }]
+
+    def publish_diagnostics(self, uri):
+        """Publish exactly the diagnostics reported by JaguarCC.
+
+        The tolerant scanner remains useful for completion/hover while a file
+        is incomplete, but it must not invent semantic errors or resurrect stale
+        rules (for example an old const-context or collection-method rule).
         """
         source = self.docs.get(uri, "")
         if not source.strip():
             self.notify("textDocument/publishDiagnostics", {"uri": uri, "diagnostics": []})
             return
-        if JCC is None:
-            diagnostics = [self._diag(source, 0, "jcc.py not found: unable to analyze the Jaguar file")]
-            self.notify("textDocument/publishDiagnostics", {"uri": uri, "diagnostics": diagnostics})
-            return
 
-        try:
-            compiler_diagnostics = JCC.diagnose_source(source)
-        except AttributeError:
-            # Compatibility with older colocated jcc.py files: use the same
-            # compiler pipeline, but never invent a different semantic error.
-            compiler_diagnostics = []
-            try:
-                JCC.transpile(source)
-            except Exception as e:
-                message = getattr(e, "_jaguar_message", str(e))
-                line = max(1, int(getattr(e, "_jaguar_line", self._error_line(message, 0) + 1)))
-                column = max(0, int(getattr(e, "_jaguar_column", 0)))
-                end_column = max(column + 1, int(getattr(e, "_jaguar_end_column", column + 1)))
-                compiler_diagnostics = [{"message": message, "line": line, "column": column, "end_column": end_column}]
-        except Exception as e:
-            compiler_diagnostics = [{
-                "message": str(e),
-                "line": max(1, self._error_line(str(e), 0) + 1),
-                "column": 0,
-                "end_column": 1,
-            }]
-
+        compiler_diagnostics = self._compiler_diagnostics(source)
         diagnostics = []
+        seen = set()
+        lines = source.splitlines()
+
         for d in compiler_diagnostics:
             line = max(1, int(d.get("line", 1))) - 1
             start = max(0, int(d.get("column", 0)))
             end = max(start + 1, int(d.get("end_column", start + 1)))
+            if lines:
+                line = min(line, len(lines) - 1)
+                width = len(lines[line])
+                if width:
+                    start = min(start, width)
+                    end = min(max(start + 1, end), width)
+                else:
+                    start = end = 0
+            message = d.get("message", "Jaguar compilation error")
+            key = (line, start, end, message)
+            if key in seen:
+                continue
+            seen.add(key)
             diagnostics.append({
                 "range": {
                     "start": {"line": line, "character": start},
@@ -1044,7 +1109,7 @@ class JaguarServer:
                 },
                 "severity": int(d.get("severity", 1)),
                 "source": "Jaguar",
-                "message": d.get("message", "Jaguar compilation error"),
+                "message": message,
             })
 
         self.notify("textDocument/publishDiagnostics", {"uri": uri, "diagnostics": diagnostics})

@@ -3,7 +3,7 @@
 ; Non-commercial use only.
 
 #define MyAppName "JaguarCC"
-#define MyAppVersion "v26 0.2"
+#define MyAppVersion "v26.0.3"
 #define MyAppPublisher "Oscar Soirey"
 #define MyAppURL "https://oscar-soirey.github.io/JaguarCC/"
 #define EscapeConstArgument(Value) StringChange(StringChange(StringChange(Value, "%", "%25"), ",", "%2c"), "}", "%7d")
@@ -36,8 +36,8 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Source: "C:\Users\User\Desktop\Jaguar\JaguarCC\jbg.py"; DestDir: "{app}"; Flags: ignoreversion
 Source: "C:\Users\User\Desktop\Jaguar\JaguarCC\jbs.py"; DestDir: "{app}"; Flags: ignoreversion
 Source: "C:\Users\User\Desktop\Jaguar\JaguarCC\jcc.py"; DestDir: "{app}"; Flags: ignoreversion
+Source: "C:\Users\User\Desktop\Jaguar\JaguarCC\crimson.py"; DestDir: "{app}"; Flags: ignoreversion
 Source: "C:\Users\User\Desktop\Jaguar\JaguarCC\jlanguage_server.py"; DestDir: "{app}"; Flags: ignoreversion
-Source: "C:\Users\User\Desktop\Jaguar\JaguarCC\jpackage_system.py"; DestDir: "{app}"; Flags: ignoreversion
 Source: "C:\Users\User\Desktop\Jaguar\JaguarCC\toolchain\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; NOTE: Don't use "Flags: ignoreversion" on any shared system files.
 

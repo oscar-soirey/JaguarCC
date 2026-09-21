@@ -1,0 +1,3 @@
+
+i32 f(){ while(true){break;} }
+void main(string param){}

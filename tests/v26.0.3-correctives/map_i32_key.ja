@@ -1,0 +1,2 @@
+
+void main(string param){ map<i32,string> m={1,"one",2,"two"}; sys:print(m[2]); }

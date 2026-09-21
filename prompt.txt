@@ -1,6 +1,3 @@
-Salut, je dfeveloppe mon compilateur vers du C, Analyse tous ces fichiers et je vais te demander de les modifier et de me les renvoyer a chaque modification.
-
-
 -extension pour Jetbrains et Visual Studio
 
 
@@ -22,6 +19,12 @@ Salut, je dfeveloppe mon compilateur vers du C, Analyse tous ces fichiers et je 
 -jbs doit gerer c -> jaguar, mais aussi jaguar -> c
 
 -convertir une api complete, pas juste un single file
+
+-signal sur une variable membre de classe
+
+-ast visualiser dans vscode
+
+-produire un IR intermediaire
 
 
 

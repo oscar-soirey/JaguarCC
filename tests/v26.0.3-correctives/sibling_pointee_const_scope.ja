@@ -1,0 +1,2 @@
+
+void main(string param){ i32 a=1; if(true){ const i32* p=&a; } i32* p=&a; *p=3; sys:print(a); }

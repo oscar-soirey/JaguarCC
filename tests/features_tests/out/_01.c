@@ -2,11 +2,17 @@
 
 #include <stdlib.h>
 
+#include <string.h>
+
+#include <stdio.h>
+
+static void *_j_alloc_value(size_t size, const void *src) { void *p = malloc(size); if (!p) { fprintf(stderr, "Jaguar runtime error: allocation failed\n"); abort(); } memcpy(p, src, size); return p; }
+
+typedef struct MyStruct MyStruct;
+
 typedef unsigned char _jBool;
 typedef int i32;
 typedef struct _jString { size_t length; unsigned char literal; char data[]; } string;
-
-typedef int32_t (*fptr)(int32_t, int32_t);
 
 /* Jaguar system library runtime (generated automatically). */
 #include <stdio.h>
@@ -178,24 +184,97 @@ static void _j_sys_print_dynamic(void *data, const char *type) {
     abort();
 }
 
+/* Jaguar containers: runtime polymorphic storage, no C templates. */
+#include <string.h>
+typedef struct _jDynamicItem { void *data; size_t size; const char *type; void (*destroy)(void*); } _jDynamicItem;
+typedef struct _jDynamicList { _jDynamicItem *items; size_t size; size_t cap; } _jDynamicList;
+typedef struct _jList { void **items; size_t size; size_t cap; size_t elem_size; const char *elem_type; } _jList;
+typedef struct _jMapEntry { void *key; void *value; } _jMapEntry;
+typedef struct _jMap { _jMapEntry *items; size_t size; size_t cap; size_t key_size; size_t value_size; const char *key_type; const char *value_type; } _jMap;
+typedef struct _jContainer { void *data; const char *type; void (*destroy)(void*); } _jContainer;
+static void *_j_memdup(const void *src,size_t n){void*p=malloc(n);if(p&&src)memcpy(p,src,n);return p;}
+static void _j_destroy_string_value(void*p){if(p)_j_untrack_literal((string*)p);}
+static void _j_dynamic_list_init(_jDynamicList*l){l->items=0;l->size=0;l->cap=0;}
+static void _j_dynamic_list_grow(_jDynamicList*l){if(l->size==l->cap){size_t nc=l->cap?l->cap*2:4;_jDynamicItem*ni=(_jDynamicItem*)realloc(l->items,nc*sizeof(_jDynamicItem));if(!ni)abort();l->items=ni;l->cap=nc;}}
+static void _j_dynamic_list_push_copy(_jDynamicList*l,const void*v,size_t n,const char*t){_j_dynamic_list_grow(l);l->items[l->size].data=_j_memdup(v,n);if(!l->items[l->size].data)abort();l->items[l->size].size=n;l->items[l->size].type=t;l->items[l->size].destroy=0;l->size++;}
+static void _j_dynamic_list_push_owned(_jDynamicList*l,void*v,const char*t,void(*destroy)(void*)){_j_dynamic_list_grow(l);l->items[l->size].data=v;l->items[l->size].size=sizeof(void*);l->items[l->size].type=t;l->items[l->size].destroy=destroy;l->size++;}
+static void _j_dynamic_list_push_borrowed(_jDynamicList*l,void*v,const char*t){_j_dynamic_list_push_owned(l,v,t,_j_dynamic_list_borrowed);}
+static void *_j_dynamic_list_get(_jDynamicList*l,size_t i){if(!l||i>=l->size){fprintf(stderr,"Jaguar runtime error: dynamic_list index %lu out of range\n",(unsigned long)i);abort();}return l->items[i].data;}
+static const char *_j_dynamic_list_type(_jDynamicList*l,size_t i){if(!l||i>=l->size){fprintf(stderr,"Jaguar runtime error: dynamic_list index %lu out of range\n",(unsigned long)i);abort();}return l->items[i].type;}
+static void _j_dynamic_list_borrowed(void*p){(void)p;}
+static void _j_dynamic_list_destroy(_jDynamicList*l){size_t i;if(!l)return;for(i=0;i<l->size;i++){if(l->items[i].destroy!=_j_dynamic_list_borrowed){if(l->items[i].destroy)l->items[i].destroy(l->items[i].data);free(l->items[i].data);}}free(l->items);l->items=0;l->size=0;l->cap=0;}
+static void _j_list_init(_jList*l,size_t es,const char*t){l->items=0;l->size=0;l->cap=0;l->elem_size=es;l->elem_type=t;}
+static void _j_destroy_string_slot(void*p){string*s=p?*(string**)p:0;if(s){string_destr(s);}}
+static void _j_list_push(_jList*l,const void*v){void*p;if(l->size==l->cap){size_t nc=l->cap?l->cap*2:4;void**ni=(void**)realloc(l->items,nc*sizeof(void*));if(!ni)abort();l->items=ni;l->cap=nc;}p=_j_memdup(v,l->elem_size);if(!p)abort();l->items[l->size++]=p;}
+static void *_j_list_get(_jList*l,size_t i){if(!l||i>=l->size){fprintf(stderr,"Jaguar runtime error: list index %lu out of range\n",(unsigned long)i);abort();}return l->items[i];}
+static void _j_list_destroy(_jList*l,void(*destroy)(void*)){size_t i;if(!l)return;for(i=0;i<l->size;i++){if(destroy)destroy(l->items[i]);free(l->items[i]);}free(l->items);l->items=0;l->size=0;l->cap=0;}
+static void _j_map_init(_jMap*m,size_t ks,size_t vs,const char*kt,const char*vt){m->items=0;m->size=0;m->cap=0;m->key_size=ks;m->value_size=vs;m->key_type=kt;m->value_type=vt;}
+static int _j_map_keyeq(const void*a,const void*b,size_t n,const char*t){if(!strcmp(t,"string")){string*sa=*(string**)a;string*sb=*(string**)b;return sa&&sb&&sa->data&&sb->data&&!strcmp(sa->data,sb->data);}return memcmp(a,b,n)==0;}
+static void *_j_map_get(_jMap*m,const void*k){size_t i;for(i=0;i<m->size;i++)if(_j_map_keyeq(m->items[i].key,k,m->key_size,m->key_type))return m->items[i].value;return 0;}
+static void *_j_map_get_string(_jMap*m,string*k){size_t i;for(i=0;i<m->size;i++){string*sk=*(string**)m->items[i].key;if(sk&&k&&sk->data&&k->data&&!strcmp(sk->data,k->data))return m->items[i].value;}fprintf(stderr,"Jaguar runtime error: map key not found\n");abort();return 0;}
+static void *_j_map_get_string_cstr(_jMap*m,const char*k){size_t i;for(i=0;i<m->size;i++){string*sk=*(string**)m->items[i].key;if(sk&&sk->data&&k&&!strcmp(sk->data,k))return m->items[i].value;}fprintf(stderr,"Jaguar runtime error: map key not found\n");abort();return 0;}
+static void _j_map_emplace(_jMap*m,const void*k,const void*v){size_t i;void*kp;void*vp;for(i=0;i<m->size;i++)if(_j_map_keyeq(m->items[i].key,k,m->key_size,m->key_type)){memcpy(m->items[i].value,v,m->value_size);return;}if(m->size==m->cap){size_t nc=m->cap?m->cap*2:4;_jMapEntry*ni=(_jMapEntry*)realloc(m->items,nc*sizeof(_jMapEntry));if(!ni)abort();m->items=ni;m->cap=nc;}kp=_j_memdup(k,m->key_size);vp=_j_memdup(v,m->value_size);if(!kp||!vp)abort();m->items[m->size].key=kp;m->items[m->size].value=vp;m->size++;}
+static void _j_map_destroy(_jMap*m,void(*kd)(void*),void(*vd)(void*)){size_t i;if(!m)return;for(i=0;i<m->size;i++){if(kd)kd(m->items[i].key);if(vd)vd(m->items[i].value);free(m->items[i].key);free(m->items[i].value);}free(m->items);m->items=0;m->size=0;m->cap=0;}
+static void _j_container_init(_jContainer*c,void*d,const char*t,void(*destroy)(void*)){c->data=d;c->type=t;c->destroy=destroy;}
+static void *_j_container_get(_jContainer*c){if(!c||!c->data){fprintf(stderr,"Jaguar runtime error: empty container access\n");abort();}return c->data;}
+static void _j_container_destroy(_jContainer*c){if(!c)return;if(c->data){if(c->destroy)c->destroy(c->data);else free(c->data);}c->data=0;c->destroy=0;}
 
+struct MyStruct {
+    int32_t a;
+};
+static MyStruct _j_struct_MyStruct_default(void) { MyStruct value; memset(&value, 0, sizeof(value)); return value; }
+static MyStruct *_j_struct_MyStruct_new(void) { MyStruct *value = (MyStruct*)calloc(1, sizeof(MyStruct)); if (!value) abort(); return value; }
 
-int32_t add(int32_t a, int32_t b) {
-    return a + b;
+void Show_i32(int32_t a) {
+    _j_sys_print_i32(a);
 }
 
-int32_t multiply(int32_t a, int32_t b) {
-    return a * b;
+void Show_string(string * a) {
+    _j_sys_print_string(a);
 }
 
-int main(int argc, char *argv[]) {
-    string *args = string_from_cstr((argc > 1) ? argv[1] : "");
-    int32_t (*f)(int32_t, int32_t) = add;
-    int32_t r = f(1, 2);
-    int32_t r2;
-    _j_sys_print_i32(r);
-    f = multiply;
-    r2 = f(4, 5);
-    _j_sys_print_i32(r2);
+int main(void) {
+    _jList l;
+    int32_t s;
+    MyStruct st;
+    MyStruct * pst;
+    _j_list_init(&l,sizeof(int32_t),"i32");
+    {
+        int32_t _jct0;
+        _jct0 = 1;
+        _j_list_push(&l, &_jct0);
+    }
+    {
+        int32_t _jct1;
+        _jct1 = 2;
+        _j_list_push(&l, &_jct1);
+    }
+    {
+        int32_t _jct2;
+        _jct2 = 3;
+        _j_list_push(&l, &_jct2);
+    }
+    {
+        int32_t _jct3;
+        _jct3 = 4;
+        _j_list_push(&l, &_jct3);
+    }
+    {
+        int32_t _jct4;
+        _jct4 = 5;
+        _j_list_push(&l, &_jct4);
+    }
+    s = (int32_t)(i32)l.size;
+    _j_sys_print_i32(s);
+    st = _j_struct_MyStruct_default();
+    st.a = 42;
+    _j_sys_print_i32(st.a);
+    pst = _j_struct_MyStruct_new();
+    pst->a = 77;
+    _j_sys_print_i32(pst->a);
+    Show_i32(123);
+    Show_string(string_from_literal("hello"));
+    if (pst) free(pst);
+    _j_list_destroy(&l,0);
     return 0;
 }

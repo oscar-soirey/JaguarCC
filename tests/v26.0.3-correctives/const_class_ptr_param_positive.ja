@@ -1,0 +1,4 @@
+
+class A { i32 x; constr(){x=4;} i32 read() const { return x; } }
+i32 f(const A* a) { return a.read(); }
+void main(string param) { A* x = new A(); sys:print(f(x)); }

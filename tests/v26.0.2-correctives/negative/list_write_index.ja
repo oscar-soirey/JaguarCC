@@ -1,0 +1,4 @@
+void main(string param) {
+    list<i32> values = {1, 2};
+    values[0] = 3;
+}

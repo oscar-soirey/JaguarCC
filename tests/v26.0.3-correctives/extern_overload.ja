@@ -1,0 +1,4 @@
+
+@extern i32 f(i32 x);
+@extern f64 f(f64 x);
+void main(string param){}

@@ -1,0 +1,8 @@
+class C {
+    $i32 value;
+    i32 $read() const {
+        value = 10;
+        return value;
+    }
+}
+void main(string param) { C c = C(); sys:print(c.read()); }

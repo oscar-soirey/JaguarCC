@@ -1,0 +1,2 @@
+
+void main(string argc){ i32 _j_main_argc=1; i32 _j_main_argv=2; sys:print(argc); sys:print(_j_main_argc); sys:print(_j_main_argv); }

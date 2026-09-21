@@ -1,0 +1,3 @@
+
+class A { i32 x; constr(){x=1;} void inc(){x=x+1;} }
+void main(string param) { A* p = new A(); A* const q = p; q.inc(); sys:print(q.x); }

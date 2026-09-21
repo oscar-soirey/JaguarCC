@@ -1,0 +1,34 @@
+@register
+class Inventory {
+    @exposed
+    $int gold = 10;
+
+    $list<int> items = {1, 2, 3};
+    $map<string, int> prices = {"apple", 2, "pear", 3};
+    $dynamic_list data = {42, "x", true};
+    $container<int> owned = new int(7);
+
+    constr() {
+        items.push(4);
+        prices.emplace("banana", 5);
+        data.push(99);
+    }
+
+    $int total() const {
+        return gold + items.size() + prices.size() + data.size();
+    }
+
+    destr() {
+        gold = 0;
+    }
+}
+
+void main(string param) {
+    Inventory inventory = Inventory();
+    int value = inventory.total();
+    sys:print(inventory.items[0]);
+    sys:print(inventory.prices["apple"]);
+    sys:print(inventory.data[0]);
+    sys:print(inventory.owned.get());
+    sys:print(value);
+}

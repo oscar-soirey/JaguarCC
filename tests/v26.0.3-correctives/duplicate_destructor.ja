@@ -1,0 +1,3 @@
+
+class A { destr(){} destr(){} }
+void main(string param) { A a=A(); }

@@ -1,0 +1,2 @@
+
+void main(string param){ if(true){ const i32 x=1; sys:print(x); } if(true){ i32 x=2; x=x+1; sys:print(x); } }

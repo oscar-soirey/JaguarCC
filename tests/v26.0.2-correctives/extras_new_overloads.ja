@@ -1,0 +1,84 @@
+#define BASE 5
+
+enum State {
+    Off,
+    On,
+}
+
+struct Pair2 {
+    i32 a;
+    i32 b;
+}
+
+union Slot {
+    i32 integer;
+    f64 decimal;
+}
+
+namespace nested {
+    namespace inner {
+        i32 twice(i32 value) {
+            return value * 2;
+        }
+    }
+}
+
+class Calculator {
+    $i32 value;
+
+    constr(i32 initial) {
+        value = initial;
+    }
+
+    i32 $read() const {
+        return value;
+    }
+
+    i32 $add(i32 x) {
+        value = value + x;
+        return value;
+    }
+
+    f64 $add(f64 x) const {
+        return value + x;
+    }
+
+    void $set(const i32 next) {
+        value = next;
+    }
+}
+
+void main(string param) {
+    State state = State:On;
+    Pair2 p;
+    p.a = BASE;
+    p.b = 8;
+
+    Slot slot;
+    slot.integer = 12;
+    i32 copied = (i32)slot;
+
+    i32* a = new i32(5);
+    i32* b => 6;
+    i32 av = *a;
+    i32 bv = *b;
+    *b = 7;
+
+    Calculator calc = Calculator(10);
+    const i32 before = calc.read();
+    i32 after = calc.add(2);
+    f64 decimal = calc.add(0.5);
+    calc.set(30);
+    i32 final_value = calc.read();
+
+    i32 nested_value = nested:inner:twice(final_value);
+
+    sys:print(av);
+    sys:print(bv);
+    sys:print(before);
+    sys:print(after);
+    sys:print(decimal);
+    sys:print(nested_value);
+    sys:print(state == State:On);
+    sys:print(copied);
+}
