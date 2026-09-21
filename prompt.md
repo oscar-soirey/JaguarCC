@@ -1,14 +1,6 @@
 ##### Features:
 
-//-signal sur une variable membre de classe
-
 \-convertir une api complete, pas juste un single file
-
-//-surcharge d'operateurs avec MyStruct operator==(MyStruct a, MyStruct b) { return ...; }
-
-//-multithreading
-
-//-syntaxe if(!condition)
 
 \-operateur + sur les strings
 
@@ -105,4 +97,10 @@
 \-histoire du langage (ca a été crée par moi meme qui est un developpeur de jeux videos/moteurs de jeux, et que pleins d'aspects pourraient etre natifs au langage, mais tu dois passer par des galeres pour les ajouter en c++ par exemple.
 
 le langage corrige les defaut du C++ qui sont vraiment chiant dans un moteur: factory native, reflexion native, container<>, signal:, dynamic\_list qui remplacent des aspects super chiants du C++ (lambdas, variant ou union, macros complexes, et plus)
+
+\-couleur d'accent en vert foncé Jaguar
+
+\-inclure le logo jaguar et le nom Oscar Soirey
+
+\-ajouter un section spéciale pour creer un jeu avec sdl2, de A à Z (jeu simple bien sur)
 

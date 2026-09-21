@@ -135,6 +135,8 @@ THREAD_SIGNATURES = {
     "yield": ("void", ""),
 }
 
+OPERATOR_TOKENS = ["+", "-", "*", "/", "%", "==", "!=", "<", ">", "<=", ">="]
+
 TYPE_INFO = {
     "void": (0, "no storage; only valid as a return type"),
     "bool": (1, "1 byte"), "int": (4, "4 bytes on the current JaguarCC C ABI"),
@@ -201,6 +203,7 @@ class SymbolIndex:
         self.unions = {}
         self.enums = {}
         self.functions = []
+        self.decorators = []
         self.namespaces = []
         self.errors = []
         self.used_jcc_parser = False
@@ -225,7 +228,10 @@ class SymbolIndex:
                 self.variables.setdefault(item.name, item.type)
             elif cls == "FunctionDecl":
                 ns = getattr(item, "namespace", None) or namespace
-                self.functions.append({"name": item.name, "type": item.ret_type, "args": ", ".join(f"{p.type} {p.name}" for p in item.params), "namespace": ns, "obj": item})
+                self.functions.append({"name": item.name, "type": item.ret_type, "args": ", ".join(f"{p.type} {p.name}" for p in item.params), "namespace": ns, "obj": item, "operator": item.name.startswith("operator") and item.name[8:] in OPERATOR_TOKENS, "decorated": bool(getattr(item, "decorators", []))})
+            elif cls == "DecoratorDecl":
+                ns = getattr(item, "namespace", None) or namespace
+                self.decorators.append({"name": item.name, "args": ", ".join(f"{p.type} {p.name}" for p in item.params), "namespace": ns, "obj": item})
             elif cls == "StructDecl":
                 self.structs[item.name] = {"name": item.name, "members": [{"name": f.name, "type": f.type, "kind": "field"} for f in item.fields]}
             elif cls == "UnionDecl":
@@ -238,7 +244,8 @@ class SymbolIndex:
                     members.append({"name": f.name, "type": f.type, "kind": "field", "access": getattr(f, "access", "private")})
                 for m in item.methods:
                     members.append({"name": m.name, "type": m.ret_type, "args": ", ".join(f"{p.type} {p.name}" for p in m.params), "kind": "method", "access": getattr(m, "access", "private")})
-                self.classes[item.name] = {"name": item.name, "base": item.base, "members": members}
+                class_signals = [{"name": s.name, "kind": "signal"} for s in getattr(item, "signals", [])]
+                self.classes[item.name] = {"name": item.name, "base": item.base, "members": members, "signals": class_signals}
             if getattr(item, "namespace", None) and getattr(item, "namespace", None) not in self.namespaces:
                 self.namespaces.append(item.namespace)
             # Namespace parsing in jcc flattens functions into FunctionDecl.namespace.
@@ -263,6 +270,27 @@ class SymbolIndex:
             if e["values"]: continue
             m = re.search(r"\benum\s+" + re.escape(name) + r"\s*\{([^}]*)\}", s, re.S)
             if m: e["values"] = re.findall(r"[A-Za-z_]\w*", m.group(1))
+
+        for m in re.finditer(r"(?:^|[;{}])\s*void\s+@([A-Za-z_]\w*)\s*\(([^)]*)\)\s*:[A-Za-z_]\w*\s*\{", s):
+            name, args = m.group(1), m.group(2).strip()
+            if not any(d["name"] == name and d["args"] == args for d in self.decorators):
+                self.decorators.append({"name": name, "args": args, "namespace": None})
+
+        for c in self.classes.values():
+            if c.get("signals"):
+                continue
+            class_match = re.search(r"\bclass\s+" + re.escape(c["name"]) + r"\s*\{", s)
+            if not class_match:
+                continue
+            start = class_match.end(); depth = 1; i = start
+            while i < len(s) and depth:
+                if s[i] == "{": depth += 1
+                elif s[i] == "}": depth -= 1
+                i += 1
+            body = s[start:max(start, i - 1)]
+            for sm in re.finditer(r"\bsignal\s*:\s*([A-Za-z_]\w*)\s*\{", body):
+                sig={"name":sm.group(1),"kind":"signal"}
+                c.setdefault("signals", []).append(sig)
 
         fn_re = re.compile(r"(?:^|[;{}])\s*(?:\$|%)?\s*(?:const\s+)?([A-Za-z_]\w*(?:\s*<[^;{}()]+>)?)\s+([A-Za-z_]\w*)\s*\(([^)]*)\)")
         for m in fn_re.finditer(s):
@@ -341,7 +369,7 @@ class JaguarServer:
                     "definitionProvider": True,
                     "renameProvider": True,
                     "workspaceSymbolProvider": True,
-                }, "serverInfo": {"name":"Jaguar Language Server", "version":"0.4.0"}})
+                }, "serverInfo": {"name":"Jaguar Language Server", "version":"0.5.0"}})
             elif method == "initialized": pass
             elif method == "shutdown": self.result(ident, None)
             elif method == "exit": return False
@@ -368,6 +396,31 @@ class JaguarServer:
 
     def completion(self, uri, pos):
         text, off = self.context(uri, pos); before=text[:off]; idx=SymbolIndex(text)
+
+        # Struct/value construction uses positional arguments in field order.
+        ctor = re.search(r"\b([A-Za-z_]\w*(?::[A-Za-z_]\w*)*)\s*\([^()]*$", before)
+        if ctor:
+            typename = ctor.group(1).split(":")[-1]
+            if typename in idx.structs:
+                members = idx.structs[typename].get("members", [])
+                sig = ", ".join(f"{m['type']} {m['name']}" for m in members)
+                return {"isIncomplete":False,"items":[{"label":typename,"kind":3,"detail":f"{typename}({sig})","documentation":"Positional struct construction; arguments follow field declaration order."}]}
+
+        # Class-level signal completion is intentionally restricted to the
+        # fields of the class containing the cursor.
+        if re.search(r"\bsignal\s*:[ \t]*(?:[A-Za-z_]\w*)?$", before):
+            cls = self._enclosing_class(idx, off)
+            if cls:
+                items=[{"label":m["name"],"kind":5,"detail":m.get("type", ""),"documentation":"Class-level signal member."}
+                       for m in cls.get("members", []) if m.get("kind") == "field"]
+                return {"isIncomplete":False,"items":items}
+
+        if re.search(r"@(?:[A-Za-z_]\w*)?$", before):
+            return {"isIncomplete":False,"items":[{"label":d["name"],"kind":14,"detail":f"decorator ({d.get('args','')})"} for d in idx.decorators]}
+
+        if re.search(r"\boperator\s*$", before):
+            return {"isIncomplete":False,"items":[{"label":op,"kind":24,"detail":f"operator{op}"} for op in OPERATOR_TOKENS]}
+
         # Critical: completion is requested after the dot, before or after a partial member name.
         m=re.search(r"([A-Za-z_]\w*)\.(?:[A-Za-z_]\w*)?$", before)
         if m:
@@ -387,6 +440,7 @@ class JaguarServer:
         for t in BUILTIN_TYPES: items.append({"label":t,"kind":25,"detail":"Jaguar type"})
         for k in KEYWORDS: items.append({"label":k,"kind":14,"detail":"keyword"})
         for f in idx.functions: items.append({"label":f["name"],"kind":3,"detail":f'{f["type"]} {f["name"]}({f["args"]})'})
+        for d in idx.decorators: items.append({"label":d["name"],"kind":14,"detail":f'decorator ({d.get("args", "")})'})
         for n,t in idx.variables.items(): items.append({"label":n,"kind":6,"detail":t})
         for n in list(idx.classes)+list(idx.structs)+list(idx.unions)+list(idx.enums): items.append({"label":n,"kind":7,"detail":"Jaguar type"})
         for enum_name, enum in idx.enums.items():
@@ -394,9 +448,23 @@ class JaguarServer:
                 items.append({"label":value,"kind":21,"detail":f"{enum_name} enum value"})
         return {"isIncomplete":False,"items":items}
 
+    def _enclosing_class(self, idx, off):
+        scan = idx.scan; best = None
+        for m in re.finditer(r"\bclass\s+([A-Za-z_]\w*)(?:\s*,\s*[A-Za-z_]\w*)?\s*\{", scan):
+            start = m.end(); depth = 1; i = start
+            while i < len(scan) and depth:
+                if scan[i] == "{": depth += 1
+                elif scan[i] == "}": depth -= 1
+                i += 1
+            if start <= off <= i and (best is None or start > best[0]):
+                best = (start, i, m.group(1))
+        return idx.classes.get(best[2]) if best else None
+
     @staticmethod
     def item(x):
-        return {"label":x["name"],"kind":2 if x.get("kind") == "method" else 5,"detail":x.get("detail",x.get("type","")),"documentation":x.get("documentation",x.get("args", ""))}
+        kind = x.get("kind")
+        lsp_kind = 2 if kind == "method" else 15 if kind == "signal" else 5
+        return {"label":x["name"],"kind":lsp_kind,"detail":x.get("detail",x.get("type","")),"documentation":x.get("documentation",x.get("args", ""))}
 
     def _semantic_documents(self, uri):
         docs = self._workspace_documents()
@@ -474,6 +542,9 @@ class JaguarServer:
             return {"kind": "class", "name": word, "type": f"class {word}" + (f" : {c['base']}" if c.get('base') else ""), "detail": c}
         if word in idx.structs:
             return {"kind": "struct", "name": word, "type": f"struct {word}", "detail": idx.structs[word]}
+        for d in idx.decorators:
+            if d.get("name") == word:
+                return {"kind": "decorator", "name": word, "args": d.get("args", ""), "namespace": d.get("namespace")}
         funcs = self._all_workspace_functions(word, namespace, uri)
         if funcs:
             return {"kind": "function", "name": word, "overloads": funcs, "namespace": namespace}
@@ -540,6 +611,10 @@ class JaguarServer:
         elif kind in ("method","field"):
             sig=f"{info.get('type','')} {w}" + (f"({info.get('args','')})" if kind=="method" else "")
             value=f"### {kind.capitalize()}\n```jaguar\n{sig}\n```" + (f"\n\n**Access:** `{info['access']}`" if info.get('access') else "")
+        elif kind == "signal":
+            value=f"### Class-level signal\n```jaguar\nsignal: {w} {{ ... }}\n```\n\nDeclared directly in the class body for that class member."
+        elif kind == "decorator":
+            value=f"### Decorator `@{w}`\n\n```jaguar\nvoid @{w}({info.get('args','')}):func {{ ... }}\n```"
         else:
             vtype = info.get('type','auto')
             size, note = TYPE_INFO.get(vtype, (None, 'size depends on the Jaguar/runtime representation'))
@@ -622,6 +697,8 @@ class JaguarServer:
             idx=SymbolIndex(text)
             for f in idx.functions:
                 if query.lower() in f["name"].lower(): out.append({"name":f["name"],"kind":12,"location":{"uri":uri,"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":0}}}})
+            for d in idx.decorators:
+                if query.lower() in d["name"].lower(): out.append({"name":"@" + d["name"],"kind":12,"location":{"uri":uri,"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":0}}}})
         return out
 
     # ------------------------------------------------------------------
