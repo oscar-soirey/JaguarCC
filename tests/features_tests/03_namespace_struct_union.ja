@@ -1,0 +1,31 @@
+namespace math {
+    struct Vec2 {
+        float x;
+        float y;
+    }
+
+    union Value {
+        int i;
+        float f;
+    }
+
+    int global = 10;
+
+    int add(int a, int b) {
+        return a + b;
+    }
+}
+
+void main() {
+    math:Vec2 v = math:Vec2();
+    v.x = 3.0;
+    v.y = 4.0;
+
+    math:Value value;
+    value.i = 123;
+
+    sys:print((int)v.x);
+    sys:print(value.i);
+    sys:print(math:global);
+    sys:print(math:add(10, 20));
+}

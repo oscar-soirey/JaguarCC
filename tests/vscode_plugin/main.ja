@@ -15,40 +15,20 @@ namespace math {
 
 using namespace sys;
 
+enum Ekip {
+    BONJOUR, AUREVOIR
+}
+
+
+
+
 void main() {
-    int x = 0;
-    int* p= nullptr;
-
-    sys:print(*p);
-
-    if(p) {
-        sys:print(*p);
-    }
-    else {
-        sys:print(*p);
+    class A {
+        constr(int a) { life=a; sys:print("hello"); }
+        destr() { sys:print("bye"); }
+        @exposed int $ life;
     }
 
-
-
-    while (x < 3) {
-        x = x + 1;
-    }
-
-    loop {
-        break;
-    }
-
-    int* px = &x;
-    *px = 7;
-
-    int y = twice(x);
-    sys:print(y);
-
-    int* a;
-    *a = 5;
-
-    int b=8;
-    a = &b;
-
-    sys:print(*a);
+    A* m = new A(4);
+    sys:print(m->life);
 }

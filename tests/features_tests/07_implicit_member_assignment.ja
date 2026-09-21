@@ -1,0 +1,23 @@
+class Person {
+    int age;
+    string name;
+
+    Person(int a, string n) {
+        age = a;
+        name = n;
+    }
+
+    void birthday() {
+        age = age + 1;
+    }
+}
+
+void main() {
+    Person* p => Person(20, "Alice");
+
+    sys:print(p.age);
+    sys:print(p.name);
+
+    p.birthday();
+    sys:print(p.age);
+}

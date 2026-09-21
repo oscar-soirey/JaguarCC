@@ -1,0 +1,12 @@
+version 1.0
+
+out out
+
+keep_c
+
+mode release
+
+compile main {
+  main.ja
+}
+

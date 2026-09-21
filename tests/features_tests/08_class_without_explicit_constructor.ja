@@ -1,0 +1,9 @@
+class Empty {
+    int value;
+}
+
+void main() {
+    Empty* a => Empty();
+    a.value = 123;
+    sys:print(a.value);
+}

@@ -1,0 +1,21 @@
+using fptr = fn(int, int) -> int;
+
+int add(int a, int b) {
+    return a + b;
+}
+
+int multiply(int a, int b) {
+    return a * b;
+}
+
+int main(string args) {
+    fptr f = add;
+    int r = f(1, 2);
+    sys:print(r);
+
+    f = multiply;
+    int r2 = f(4, 5);
+    sys:print(r2);
+
+    return 0;
+}

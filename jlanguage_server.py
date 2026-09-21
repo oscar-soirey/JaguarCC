@@ -33,14 +33,16 @@ def load_jcc():
 JCC = load_jcc()
 
 BUILTIN_TYPES = [
-    "void", "bool", "int", "float", "string",
+    "void", "bool", "int", "uint", "short", "ushort", "long", "ulong", "char", "uchar", "sbyte", "byte",
+    "float", "double", "string",
     "i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64", "f32", "f64",
     "auto", "cptr", "cstr", "cfuncptr",
+    "list", "map", "container", "dynamic_list", "pair",
 ]
 KEYWORDS = [
-    "class", "struct", "namespace", "using", "const", "virtual", "override",
+    "class", "struct", "union", "enum", "namespace", "using", "const", "virtual", "override",
     "constr", "destr", "if", "else", "while", "for_loop", "return", "break",
-    "continue", "true", "false", "new", "signal", "public", "protected", "private",
+    "continue", "true", "false", "nullptr", "this", "new", "signal", "as", "loop", "public", "protected", "private",
 ]
 DIRECTIVES = ["#define", "#undef", "#if", "#ifdef", "#ifndef", "#elif", "#elseif", "#else", "#endif", "#pragma", "#error", "#warning", "#line"]
 
@@ -107,6 +109,10 @@ TYPE_INFO = {
     "string": (None, "pointer-sized string handle; the underlying string struct also stores a pointer and a size"),
     "cptr": (None, "pointer-sized"), "cstr": (None, "pointer-sized"), "cfuncptr": (None, "function-pointer-sized"),
     "auto": (None, "deduced from the initializer"),
+    "uint": (4, "alias of u32"), "short": (2, "alias of i16"), "ushort": (2, "alias of u16"),
+    "long": (8, "alias of i64"), "ulong": (8, "alias of u64"), "char": (1, "alias of i8"),
+    "uchar": (1, "alias of u8"), "sbyte": (1, "alias of i8"), "byte": (1, "alias of u8"),
+    "double": (8, "alias of f64"),
 }
 
 
@@ -156,6 +162,8 @@ class SymbolIndex:
         self.variables = {}
         self.classes = {}
         self.structs = {}
+        self.unions = {}
+        self.enums = {}
         self.functions = []
         self.namespaces = []
         self.errors = []
@@ -184,6 +192,10 @@ class SymbolIndex:
                 self.functions.append({"name": item.name, "type": item.ret_type, "args": ", ".join(f"{p.type} {p.name}" for p in item.params), "namespace": ns, "obj": item})
             elif cls == "StructDecl":
                 self.structs[item.name] = {"name": item.name, "members": [{"name": f.name, "type": f.type, "kind": "field"} for f in item.fields]}
+            elif cls == "UnionDecl":
+                self.unions[item.name] = {"name": item.name, "members": [{"name": f.name, "type": f.type, "kind": "field"} for f in item.fields]}
+            elif cls == "EnumDecl":
+                self.enums[item.name] = {"name": item.name, "values": list(getattr(item, "values", []))}
             elif cls == "ClassDecl":
                 members = []
                 for f in item.fields:
@@ -198,11 +210,24 @@ class SymbolIndex:
     def fallback_scan(self):
         s = self.scan
         # This supplements the AST index for incomplete source.
-        for m in re.finditer(r"\b(namespace|class|struct)\s+([A-Za-z_]\w*)(?:\s*,\s*([A-Za-z_]\w*))?\s*\{", s):
+        for m in re.finditer(r"\b(namespace|class|struct|union|enum)\s+([A-Za-z_]\w*)(?:\s*,\s*([A-Za-z_]\w*))?\s*\{", s):
             kind, name, base = m.groups()
             if kind == "class" and name not in self.classes: self.classes[name] = {"name": name, "base": base, "members": []}
             elif kind == "struct" and name not in self.structs: self.structs[name] = {"name": name, "members": []}
+            elif kind == "union" and name not in self.unions: self.unions[name] = {"name": name, "members": []}
+            elif kind == "enum" and name not in self.enums: self.enums[name] = {"name": name, "values": []}
             elif kind == "namespace" and name not in self.namespaces: self.namespaces.append(name)
+        for name, u in self.unions.items():
+            if u["members"]: continue
+            m = re.search(r"\bunion\s+" + re.escape(name) + r"\s*\{([^}]*)\}", s, re.S)
+            if m:
+                for fm in re.finditer(r"(?:const\s+)?([A-Za-z_]\w*(?:\s*<[^;{}]+>)?(?:\s*\*)?)\s+([A-Za-z_]\w*)\s*;", m.group(1)):
+                    u["members"].append({"name": fm.group(2), "type": fm.group(1).strip(), "kind": "field"})
+        for name, e in self.enums.items():
+            if e["values"]: continue
+            m = re.search(r"\benum\s+" + re.escape(name) + r"\s*\{([^}]*)\}", s, re.S)
+            if m: e["values"] = re.findall(r"[A-Za-z_]\w*", m.group(1))
+
         fn_re = re.compile(r"(?:^|[;{}])\s*(?:\$|%)?\s*(?:const\s+)?([A-Za-z_]\w*(?:\s*<[^;{}()]+>)?)\s+([A-Za-z_]\w*)\s*\(([^)]*)\)")
         for m in fn_re.finditer(s):
             typ, name, args = m.groups()
@@ -244,6 +269,8 @@ class SymbolIndex:
             return self.classes[base]["members"]
         if base in self.structs:
             return self.structs[base]["members"]
+        if base in self.unions:
+            return self.unions[base]["members"]
         m = re.match(r"(list|map|container|dynamic_list|pair)\s*<", typ)
         if m:
             return [{"name":n,"detail":d,"documentation":doc,"kind":"method"} for n,d,doc in COLLECTION_METHODS[m.group(1)]]
@@ -321,7 +348,10 @@ class JaguarServer:
         for k in KEYWORDS: items.append({"label":k,"kind":14,"detail":"keyword"})
         for f in idx.functions: items.append({"label":f["name"],"kind":3,"detail":f'{f["type"]} {f["name"]}({f["args"]})'})
         for n,t in idx.variables.items(): items.append({"label":n,"kind":6,"detail":t})
-        for n in list(idx.classes)+list(idx.structs): items.append({"label":n,"kind":7,"detail":"type"})
+        for n in list(idx.classes)+list(idx.structs)+list(idx.unions)+list(idx.enums): items.append({"label":n,"kind":7,"detail":"Jaguar type"})
+        for enum_name, enum in idx.enums.items():
+            for value in enum.get("values", []):
+                items.append({"label":value,"kind":21,"detail":f"{enum_name} enum value"})
         return {"isIncomplete":False,"items":items}
 
     @staticmethod
@@ -443,6 +473,14 @@ class JaguarServer:
             st=info["detail"]; members=st.get("members",[])
             value=f"### Struct `{w}`\n\n**Fields:** {len(members)}"
             if members: value += "\n\n" + "\n".join(f"- `{m.get('type','')} {m['name']}`" for m in members[:30])
+        elif kind == "union":
+            u=info["detail"]; members=u.get("members",[])
+            value=f"### Union `{w}`\n\n**Fields:** {len(members)}"
+            if members: value += "\n\n" + "\n".join(f"- `{m.get('type','')} {m['name']}`" for m in members[:30])
+        elif kind == "enum":
+            e=info["detail"]; values=e.get("values",[])
+            value=f"### Enum `{w}`\n\n**Values:** {len(values)}"
+            if values: value += "\n\n" + "\n".join(f"- `{v}`" for v in values[:50])
         elif kind == "function":
             overloads=info.get("overloads",[])
             if info.get("jcc"):
@@ -526,7 +564,7 @@ class JaguarServer:
     def definition(self, uri, pos):
         text,off=self.context(uri,pos); w=word_at(text,off)
         idx=SymbolIndex(text); scan=idx.scan
-        patterns=[rf"\b(?:class|struct)\s+{re.escape(w)}\b", rf"\b[A-Za-z_]\w*(?:\s*<[^;]+>)?\s+{re.escape(w)}\s*(?:=|;)", rf"\b[A-Za-z_]\w*\s+{re.escape(w)}\s*\("]
+        patterns=[rf"\b(?:class|struct|union|enum)\s+{re.escape(w)}\b", rf"\b[A-Za-z_]\w*(?:\s*<[^;]+>)?\s+{re.escape(w)}\s*(?:=|;)", rf"\b[A-Za-z_]\w*\s+{re.escape(w)}\s*\("]
         for pat in patterns:
             m=re.search(pat,scan)
             if m:
@@ -956,34 +994,61 @@ class JaguarServer:
         return diagnostics
 
     def publish_diagnostics(self, uri):
-        source=self.docs.get(uri,"")
-        diagnostics=[]
+        """Publish the diagnostics produced by JaguarCC itself.
+
+        Completion/hover may still use the tolerant SymbolIndex while a file is
+        incomplete, but diagnostics must have a single source of truth: jcc.py.
+        This guarantees that the editor shows the same message and source span
+        that the compiler reports for the exact same Jaguar source.
+        """
+        source = self.docs.get(uri, "")
         if not source.strip():
-            self.notify("textDocument/publishDiagnostics", {"uri":uri,"diagnostics":[]})
+            self.notify("textDocument/publishDiagnostics", {"uri": uri, "diagnostics": []})
             return
-        if JCC is not None:
+        if JCC is None:
+            diagnostics = [self._diag(source, 0, "jcc.py not found: unable to analyze the Jaguar file")]
+            self.notify("textDocument/publishDiagnostics", {"uri": uri, "diagnostics": diagnostics})
+            return
+
+        try:
+            compiler_diagnostics = JCC.diagnose_source(source)
+        except AttributeError:
+            # Compatibility with older colocated jcc.py files: use the same
+            # compiler pipeline, but never invent a different semantic error.
+            compiler_diagnostics = []
             try:
-                tokens=JCC.tokenize(source)
-                program=JCC.Parser(tokens).parse_program()
+                JCC.transpile(source)
             except Exception as e:
-                msg=str(e)
-                line=self._error_line(msg,0)
-                # LexError does not always expose a line in the message; the
-                # first offending line is still preferable to silently showing
-                # no error.
-                lines=source.splitlines()
-                line=max(0,min(line,len(lines)-1)) if lines else 0
-                diagnostics.append(self._diag(source,line,msg,start=0,end=max(1,len(lines[line]) if lines else 1)))
-            else:
-                diagnostics.extend(self._semantic_diagnostics(uri,source,program))
-        else:
-            diagnostics.append(self._diag(source,0,"jcc.py not found: unable to analyze the Jaguar file"))
-        # Avoid duplicate diagnostics generated by the generic compiler pass.
-        unique=[]; seen=set()
-        for d in diagnostics:
-            key=(d["range"]["start"]["line"],d["range"]["start"]["character"],d["message"])
-            if key not in seen: seen.add(key); unique.append(d)
-        self.notify("textDocument/publishDiagnostics", {"uri":uri,"diagnostics":unique})
+                message = getattr(e, "_jaguar_message", str(e))
+                line = max(1, int(getattr(e, "_jaguar_line", self._error_line(message, 0) + 1)))
+                column = max(0, int(getattr(e, "_jaguar_column", 0)))
+                end_column = max(column + 1, int(getattr(e, "_jaguar_end_column", column + 1)))
+                compiler_diagnostics = [{"message": message, "line": line, "column": column, "end_column": end_column}]
+        except Exception as e:
+            compiler_diagnostics = [{
+                "message": str(e),
+                "line": max(1, self._error_line(str(e), 0) + 1),
+                "column": 0,
+                "end_column": 1,
+            }]
+
+        diagnostics = []
+        for d in compiler_diagnostics:
+            line = max(1, int(d.get("line", 1))) - 1
+            start = max(0, int(d.get("column", 0)))
+            end = max(start + 1, int(d.get("end_column", start + 1)))
+            diagnostics.append({
+                "range": {
+                    "start": {"line": line, "character": start},
+                    "end": {"line": line, "character": end},
+                },
+                "severity": int(d.get("severity", 1)),
+                "source": "Jaguar",
+                "message": d.get("message", "Jaguar compilation error"),
+            })
+
+        self.notify("textDocument/publishDiagnostics", {"uri": uri, "diagnostics": diagnostics})
+
 
 
 def main():

@@ -140,7 +140,7 @@ BUILTIN_TYPEDEFS: Dict[str, str] = {
     "u64":  "typedef unsigned long long u64;",
     "f32":  "typedef float f32;",
     "f64":  "typedef double f64;",
-    "string": "typedef struct _jString string;\nstruct _jString { char *data; size_t length; };",
+    "string": "typedef struct _jString { size_t length; unsigned char literal; char data[]; } string;",
 }
 ORDERED_BUILTIN_TYPES = list(BUILTIN_TYPEDEFS.keys())
 
@@ -148,6 +148,20 @@ ORDERED_BUILTIN_TYPES = list(BUILTIN_TYPEDEFS.keys())
 # "bool" est déjà réservé en C (macro de <stdbool.h>, mot-clé en C23) :
 # on émet donc "_jBool" partout dans le C généré.
 C_TYPE_NAMES: Dict[str, str] = {
+    # Jaguar's fixed-width numeric types are source-language types.  They
+    # must be translated back to their C representation only when jcc emits
+    # C.  In particular, do NOT expose C spellings such as `unsigned long
+    # long` in Jaguar source.
+    "i8": "int8_t",
+    "u8": "uint8_t",
+    "i16": "int16_t",
+    "u16": "uint16_t",
+    "i32": "int32_t",
+    "u32": "uint32_t",
+    "i64": "int64_t",
+    "u64": "uint64_t",
+    "f32": "float",
+    "f64": "double",
     "bool": "_jBool",
     "string": "string *",
 }
@@ -164,13 +178,39 @@ def c_type(jaguar_type: str) -> str:
     # represented by a pointer to the runtime string struct.
     return mapped + (" *" * depth) if depth else mapped
 
+def _split_type_list(text: str) -> list[str]:
+    parts=[]; start=0; depth=0
+    for i,ch in enumerate(text):
+        if ch in "(<": depth += 1
+        elif ch in ")>": depth -= 1
+        elif ch == "," and depth == 0:
+            parts.append(text[start:i].strip()); start=i+1
+    tail=text[start:].strip()
+    if tail: parts.append(tail)
+    return parts
+
+def _function_type_parts(jaguar_type: str):
+    if not isinstance(jaguar_type, str) or not jaguar_type.startswith("fn("): return None
+    close = jaguar_type.rfind(") -> ")
+    if close < 0: return None
+    inner=jaguar_type[3:close]
+    ret=jaguar_type[close+5:].strip()
+    return _split_type_list(inner), ret
+
+def _c_function_pointer_decl(jaguar_type: str, name: str) -> str | None:
+    parts=_function_type_parts(jaguar_type)
+    if parts is None: return None
+    params, ret=parts
+    p=", ".join(c_type(x) for x in params) if params else "void"
+    return f"{c_type(ret)} (*{name})({p})"
+
 
 TYPE_KEYWORDS = NATIVE_TYPE_KEYWORDS | set(BUILTIN_TYPEDEFS.keys()) | set(TYPE_ALIASES.keys()) | {"dynamic_list", "list", "map", "container", "pair"}
 INTEGER_TYPES = {"int", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64"}
 FLOAT_TYPES = {"float", "f32", "f64"}
 
 KEYWORDS = TYPE_KEYWORDS | {
-    "struct", "enum", "namespace", "class", "virtual", "override", "constr", "destr", "return", "true", "false", "nullptr", "const", "using", "as", "loop",
+    "struct", "union", "enum", "namespace", "class", "virtual", "override", "constr", "destr", "return", "true", "false", "nullptr", "const", "using", "as", "loop",
     "if", "else", "while", "break", "continue", "for_loop", "this", "auto", "signal", "new",
 }
 
@@ -190,6 +230,8 @@ class Token:
     kind: str   # nom du token ("IDENT", "INT", "{", "void", "i32", "@", ...)
     value: str
     line: int
+    column: int = 0
+    end_column: int = 0
 
 
 def tokenize(src: str) -> List[Token]:
@@ -197,18 +239,24 @@ def tokenize(src: str) -> List[Token]:
     i = 0
     n = len(src)
     line = 1
+    column = 0
 
     while i < n:
         c = src[i]
 
         if c == "\n":
             line += 1
+            column = 0
             i += 1
             continue
 
         if c in " \t\r":
             i += 1
+            column += 1
             continue
+
+        start_line = line
+        start_column = column
 
         # --- directive préprocesseur : toute la ligne, telle quelle ---
         if c == "#":
@@ -219,14 +267,14 @@ def tokenize(src: str) -> List[Token]:
             m = re.match(r"#\s*([A-Za-z_][A-Za-z0-9_]*)", directive)
             if m:
                 name = m.group(1)
-                # Jaguar possède son propre système `using` : les headers C
-                # ne doivent donc jamais être inclus avec #include.
                 if name == "include":
-                    raise LexError("#include is not supported by Jaguar; use `using` or BindGen")
-                # Alias pratique côté Jaguar. GCC reçoit le vrai #elif.
+                    err = LexError("#include is not supported by Jaguar; use `using` or BindGen")
+                    err._jaguar_line = start_line; err._jaguar_column = start_column; err._jaguar_end_column = start_column + len(directive)
+                    raise err
                 if name == "elseif":
                     directive = "#elif" + directive[m.end():]
-            tokens.append(Token("PREPROC", directive, line))
+            tokens.append(Token("PREPROC", directive, start_line, start_column, start_column + len(directive)))
+            column += j - i
             i = j
             continue
 
@@ -235,6 +283,7 @@ def tokenize(src: str) -> List[Token]:
             j = src.find("\n", i)
             if j == -1:
                 j = n
+            column += j - i
             i = j
             continue
 
@@ -242,8 +291,16 @@ def tokenize(src: str) -> List[Token]:
         if c == "/" and i + 1 < n and src[i + 1] == "*":
             j = src.find("*/", i + 2)
             if j == -1:
-                raise LexError(f"unterminated multiline comment (line {line})")
-            line += src.count("\n", i, j)
+                err = LexError(f"unterminated multiline comment (line {line})")
+                err._jaguar_line = start_line; err._jaguar_column = start_column; err._jaguar_end_column = start_column + 2
+                raise err
+            chunk = src[i:j + 2]
+            newlines = chunk.count("\n")
+            if newlines:
+                line += newlines
+                column = len(chunk.rsplit("\n", 1)[-1])
+            else:
+                column += len(chunk)
             i = j + 2
             continue
 
@@ -256,8 +313,12 @@ def tokenize(src: str) -> List[Token]:
                 else:
                     j += 1
             if j >= n:
-                raise LexError(f"unterminated string literal (line {line})")
-            tokens.append(Token("STRING", src[i:j + 1], line))
+                err = LexError(f"unterminated string literal (line {line})")
+                err._jaguar_line = start_line; err._jaguar_column = start_column; err._jaguar_end_column = start_column + 1
+                raise err
+            value = src[i:j + 1]
+            tokens.append(Token("STRING", value, start_line, start_column, start_column + len(value)))
+            column += len(value)
             i = j + 1
             continue
 
@@ -272,7 +333,9 @@ def tokenize(src: str) -> List[Token]:
                 j += 1
                 while j < n and src[j].isdigit():
                     j += 1
-            tokens.append(Token("FLOAT" if is_float else "INT", src[i:j], line))
+            value = src[i:j]
+            tokens.append(Token("FLOAT" if is_float else "INT", value, start_line, start_column, start_column + len(value)))
+            column += len(value)
             i = j
             continue
 
@@ -283,27 +346,32 @@ def tokenize(src: str) -> List[Token]:
                 j += 1
             word = src[i:j]
             kind = word if word in KEYWORDS else "IDENT"
-            tokens.append(Token(kind, word, line))
+            tokens.append(Token(kind, word, start_line, start_column, start_column + len(word)))
+            column += len(word)
             i = j
             continue
 
         # --- opérateurs à deux caractères : == != <= >= && || ---
         if src[i:i + 2] in TWO_CHAR_TOKENS:
             two = src[i:i + 2]
-            tokens.append(Token(two, two, line))
+            tokens.append(Token(two, two, start_line, start_column, start_column + 2))
             i += 2
+            column += 2
             continue
 
         # --- ponctuation simple (dont '@' pour les attributs, '=' pour
         #     l'initialisation des variables) ---
         if c in SINGLE_CHAR_TOKENS:
-            tokens.append(Token(c, c, line))
+            tokens.append(Token(c, c, start_line, start_column, start_column + 1))
             i += 1
+            column += 1
             continue
 
-        raise LexError(f"unexpected character {c!r} (line {line})")
+        err = LexError(f"unexpected character {c!r} (line {line})")
+        err._jaguar_line = start_line; err._jaguar_column = start_column; err._jaguar_end_column = start_column + 1
+        raise err
 
-    tokens.append(Token("EOF", "", line))
+    tokens.append(Token("EOF", "", line, column, column))
     return tokens
 
 
@@ -359,6 +427,7 @@ class ClassDecl:
     fields: List[ClassField]
     methods: List[ClassMethod]
     is_registered: bool = False
+    namespace: Optional[str] = None
 
 
 # --- expressions ---
@@ -471,6 +540,8 @@ class VarDecl:
     init: Optional[object] = None
     is_const: bool = False
     pointee_const: bool = False
+    is_extern: bool = False
+    namespace: Optional[str] = None
 
 
 @dataclass
@@ -628,6 +699,14 @@ class FunctionDecl:
 class StructDecl:
     name: str
     fields: List[Field]
+    namespace: Optional[str] = None
+
+
+@dataclass
+class UnionDecl:
+    name: str
+    fields: List[Field]
+    namespace: Optional[str] = None
 
 
 @dataclass
@@ -679,14 +758,23 @@ class Parser:
     def __init__(self, tokens: List[Token]):
         self.tokens = tokens
         self.pos = 0
+        self._last_type_span = None
 
     @staticmethod
-    def _mark_line(node, line):
+    def _mark_line(node, line, column=None, end_column=None):
         try:
             setattr(node, "_jaguar_line", line)
+            if column is not None:
+                setattr(node, "_jaguar_column", column)
+            if end_column is not None:
+                setattr(node, "_jaguar_end_column", end_column)
         except Exception:
             pass
         return node
+
+    @staticmethod
+    def _mark_token(node, token):
+        return Parser._mark_line(node, token.line, token.column, token.end_column)
 
     # -- utilitaires --
     def peek(self, offset: int = 0) -> Token:
@@ -704,10 +792,22 @@ class Parser:
     def expect(self, kind: str) -> Token:
         tok = self.peek()
         if tok.kind != kind:
-            raise ParseError(
+            err = ParseError(
                 f"expected '{kind}' but found '{tok.kind}' ({tok.value!r}) on line {tok.line}"
             )
+            err._jaguar_line = tok.line
+            err._jaguar_column = tok.column
+            err._jaguar_end_column = tok.end_column if tok.end_column > tok.column else tok.column + 1
+            raise err
         return self.advance()
+
+    def _parse_error(self, message: str, tok: Token | None = None):
+        tok = tok or self.peek()
+        err = ParseError(message)
+        err._jaguar_line = tok.line
+        err._jaguar_column = tok.column
+        err._jaguar_end_column = tok.end_column if tok.end_column > tok.column else tok.column + 1
+        raise err
 
     # -- programme --
     def parse_program(self) -> Program:
@@ -735,7 +835,7 @@ class Parser:
                 while self.peek().kind == ":":
                     self.advance(); parts.append(self.expect("IDENT").value)
                 self.expect(";")
-                return UsingNamespaceDecl(":".join(parts))
+                return self._mark_token(UsingNamespaceDecl(":".join(parts)), tok)
             first = self.expect("IDENT").value
             if self.peek().kind == ":":
                 parts = [first]
@@ -746,17 +846,31 @@ class Parser:
                 if self.peek().kind == "as":
                     self.advance(); alias = self.expect("IDENT").value
                 self.expect(";")
-                return UsingSymbolDecl(namespace, symbol, alias)
+                return self._mark_token(UsingSymbolDecl(namespace, symbol, alias), tok)
             if self.peek().kind == ";":
                 self.advance()
                 return UsingImportDecl(first)
             self.expect("=")
             target = self.parse_type()
+            target_span = self._last_type_span
             self.expect(";")
-            return TypeAliasDecl(first, target)
+            node = self._mark_token(TypeAliasDecl(first, target), tok)
+            if target_span:
+                setattr(node, "_jaguar_target_column", target_span[1]); setattr(node, "_jaguar_target_end_column", target_span[2])
+            return node
 
         if tok.kind == "enum":
             return self.parse_enum()
+
+        if tok.kind == "union":
+            line = tok.line
+            self.advance()
+            name_tok = self.expect("IDENT")
+            if self.peek().kind == ";":
+                self.advance()
+                return self._mark_line(ForwardDecl("union", name_tok.value), line)
+            self.pos -= 2
+            return self.parse_union()
 
         if tok.kind == "struct":
             line = tok.line
@@ -786,17 +900,22 @@ class Parser:
             attrs = self.parse_attributes()
             if self.peek().kind == "class":
                 return self.parse_class(attrs)
+            if self._is_function_ahead():
+                self.pos = save
+                return self.parse_function()
+            # @extern is also valid on a file-scope variable. This is needed
+            # by BindGen for C API globals, including function-pointer globals.
+            if attrs <= {"extern"} and (self.peek().kind in TYPE_KEYWORDS or self.peek().kind in ("IDENT", "const")):
+                return self.parse_var_decl(attrs=attrs)
             self.pos = save
-            if not self._is_function_ahead():
-                raise ParseError(
-                    f"attributes (@...) can only be applied to functions or classes (line {tok.line})"
-                )
-            return self.parse_function()
+            self._parse_error(
+                f"attributes (@...) can only be applied to functions, classes, or global variables (line {tok.line})", tok
+            )
 
         if tok.kind in TYPE_KEYWORDS or tok.kind in ("const", "IDENT"):
             # Un IDENT suivi de ':' ou '(' est un appel isolé au niveau
             # global (cf. `my_namespace:Foo();`), pas une déclaration.
-            if tok.kind == "IDENT" and self.peek(1).kind in (":", "("):
+            if tok.kind == "IDENT" and self.peek(1).kind in (":", "(") and not (tok.kind == "IDENT" and self.peek(1).kind == ":" and self._starts_var_decl()):
                 expr = self.parse_expr()
                 self.expect(";")
                 return TopExprStmt(expr)
@@ -806,7 +925,7 @@ class Parser:
                 return self.parse_function()
             return self.parse_var_decl()
 
-        raise ParseError(f"unexpected top-level declaration: '{tok.kind}' on line {tok.line}")
+        self._parse_error(f"unexpected top-level declaration: '{tok.kind}' on line {tok.line}", tok)
 
     def _is_function_ahead(self) -> bool:
         """Detect a function declaration, including pointer return types."""
@@ -843,9 +962,9 @@ class Parser:
             self.advance()
             name_tok = self.expect("IDENT")
             if name_tok.value not in KNOWN_ATTRIBUTES:
-                raise ParseError(
-                    f"unknown attribute '@{name_tok.value}' (line {name_tok.line})"
-                )
+                err = ParseError(f"unknown attribute '@{name_tok.value}' (line {name_tok.line})")
+                err._jaguar_line = name_tok.line; err._jaguar_column = max(0, name_tok.column - 1); err._jaguar_end_column = name_tok.end_column
+                raise err
             self._attribute_line = name_tok.line
             attrs.add(name_tok.value)
         return attrs
@@ -854,7 +973,8 @@ class Parser:
     def parse_enum(self) -> EnumDecl:
         line = self.peek().line
         self.expect("enum")
-        name = self.expect("IDENT").value
+        name_tok = self.expect("IDENT")
+        name = name_tok.value
         self.expect("{")
         values = []
         while self.peek().kind != "}":
@@ -867,36 +987,78 @@ class Parser:
                 if self.peek().kind == "}":
                     break
             elif self.peek().kind != "}":
-                raise ParseError(f"expected ',' or '}}' after enum value (line {self.peek().line})")
+                self._parse_error(f"expected ',' or '}}' after enum value (line {self.peek().line})", self.peek())
         self.expect("}")
         if self.peek().kind == ";": self.advance()
-        return self._mark_line(EnumDecl(name, values), line)
+        node = self._mark_line(EnumDecl(name, values), line)
+        setattr(node, "_jaguar_name_column", name_tok.column); setattr(node, "_jaguar_name_end_column", name_tok.end_column)
+        return node
 
     # -- struct --
-    def parse_struct(self) -> StructDecl:
+    def parse_struct(self, namespace: Optional[str] = None) -> StructDecl:
         self.expect("struct")
-        name = self.expect("IDENT").value
+        name_tok = self.expect("IDENT")
+        name = name_tok.value
         self.expect("{")
         fields = []
         while self.peek().kind != "}":
             t = self.parse_type()
-            n = self.expect("IDENT").value
+            type_span = self._last_type_span
+            n_tok = self.expect("IDENT")
             self.expect(";")
-            fields.append(Field(t, n))
+            field = Field(t, n_tok.value)
+            if type_span:
+                setattr(field, "_jaguar_type_column", type_span[1]); setattr(field, "_jaguar_type_end_column", type_span[2])
+            setattr(field, "_jaguar_name_column", n_tok.column); setattr(field, "_jaguar_name_end_column", n_tok.end_column)
+            setattr(field, "_jaguar_line", type_span[0] if type_span else n_tok.line)
+            fields.append(field)
         self.expect("}")
         if self.peek().kind == ";":
             self.advance()
-        return StructDecl(name, fields)
+        qname = f"{namespace.replace(':', '_')}_{name}" if namespace else name
+        node = StructDecl(qname, fields, namespace)
+        setattr(node, "_jaguar_name_column", name_tok.column); setattr(node, "_jaguar_name_end_column", name_tok.end_column)
+        return node
+
+    # -- union -------------------------------------------------------------
+    def parse_union(self, namespace: Optional[str] = None) -> UnionDecl:
+        self.expect("union")
+        name_tok = self.expect("IDENT")
+        name = name_tok.value
+        self.expect("{")
+        fields = []
+        while self.peek().kind != "}":
+            t = self.parse_type()
+            type_span = self._last_type_span
+            n_tok = self.expect("IDENT")
+            self.expect(";")
+            field = Field(t, n_tok.value)
+            if type_span:
+                setattr(field, "_jaguar_type_column", type_span[1]); setattr(field, "_jaguar_type_end_column", type_span[2])
+            setattr(field, "_jaguar_name_column", n_tok.column); setattr(field, "_jaguar_name_end_column", n_tok.end_column)
+            setattr(field, "_jaguar_line", type_span[0] if type_span else n_tok.line)
+            fields.append(field)
+        self.expect("}")
+        if self.peek().kind == ";":
+            self.advance()
+        qname = f"{namespace.replace(':', '_')}_{name}" if namespace else name
+        node = UnionDecl(qname, fields, namespace)
+        setattr(node, "_jaguar_name_column", name_tok.column); setattr(node, "_jaguar_name_end_column", name_tok.end_column)
+        return node
 
     # -- class -------------------------------------------------------------
-    def _parse_class_impl(self, class_attrs=None) -> ClassDecl:
+    def _parse_class_impl(self, class_attrs=None, namespace: Optional[str] = None) -> ClassDecl:
         class_attrs = class_attrs or set()
         self.expect("class")
-        name = self.expect("IDENT").value
+        name_tok = self.expect("IDENT")
+        name = name_tok.value
         base = None
+        base_span = None
         if self.peek().kind == ",":
             self.advance()
-            base = self.expect("IDENT").value
+            base_tok = self.expect("IDENT")
+            base = base_tok.value
+            base_span = (base_tok.line, base_tok.column, base_tok.end_column)
         self.expect("{")
         fields, methods = [], []
         while self.peek().kind != "}":
@@ -904,7 +1066,7 @@ class Parser:
             if self.peek().kind == "@":
                 attrs = self.parse_attributes()
                 if attrs - {"exposed"}:
-                    raise ParseError(f"invalid attributes on a class member (line {self.peek().line})")
+                    self._parse_error(f"invalid attributes on a class member (line {self.peek().line})", self.peek())
                 exposed = "exposed" in attrs
             access = "private"
             if self.peek().kind in ("$", "%"):
@@ -916,6 +1078,7 @@ class Parser:
 
             # constructors/destructors are always public
             if self.peek().kind in ("constr", "destr"):
+                member_tok = self.peek()
                 kind = self.advance().kind
                 self.expect("("); params=[]
                 if self.peek().kind != ")":
@@ -924,7 +1087,8 @@ class Parser:
                         self.advance(); params.append(self.parse_param())
                 self.expect(")")
                 body = self.parse_block()
-                methods.append(ClassMethod("void", kind, params, body, "public", False, False, kind=="constr", kind=="destr"))
+                method_node = ClassMethod("void", kind, params, body, "public", False, False, kind=="constr", kind=="destr")
+                methods.append(self._mark_token(method_node, member_tok))
                 continue
 
             # Support both `void $foo()` et `void$ foo()` forms.
@@ -933,15 +1097,17 @@ class Parser:
             if self.peek().kind == "const":
                 self.advance(); field_const = True
             ret_type = self.parse_type()
+            ret_type_span = self._last_type_span
             if field_const and ret_type.endswith("*"):
                 field_const = False; field_pointee_const = True
             if self.peek().kind == "const":
                 self.advance()
                 if not ret_type.endswith("*"):
-                    raise ParseError("'const' after a non-pointer field type is not valid")
+                    self._parse_error("'const' after a non-pointer field type is not valid", self.peek())
                 field_const = True
             if self.peek().kind in ("$", "%"):
                 access = "public" if self.advance().kind == "$" else "protected"
+            member_tok = self.peek()
             member_name = self.expect("IDENT").value
             if self.peek().kind == "(":
                 self.advance(); params=[]
@@ -959,31 +1125,46 @@ class Parser:
                 body = self.parse_block()
                 if exposed and access != "public":
                     # @exposed is only valid for public class members.
-                    raise ParseError(
-                        f"an @exposed method must be public (line {self._attribute_line if hasattr(self, '_attribute_line') else self.peek().line})"
+                    self._parse_error(
+                        f"an @exposed method must be public (line {self._attribute_line if hasattr(self, '_attribute_line') else self.peek().line})", member_tok
                     )
-                methods.append(ClassMethod(ret_type, member_name, params, body, access, is_virtual, is_override, False, False, method_const))
+                method_node = ClassMethod(ret_type, member_name, params, body, access, is_virtual, is_override, False, False, method_const)
+                self._mark_token(method_node, member_tok)
+                if ret_type_span:
+                    setattr(method_node, "_jaguar_type_column", ret_type_span[1]); setattr(method_node, "_jaguar_type_end_column", ret_type_span[2])
+                setattr(method_node, "_jaguar_name_column", member_tok.column); setattr(method_node, "_jaguar_name_end_column", member_tok.end_column)
+                methods.append(method_node)
             else:
                 init=None
                 if self.peek().kind == "=":
                     self.advance(); init=self.parse_expr()
                 self.expect(";")
                 if is_virtual:
-                    raise ParseError(f"'virtual' can only be applied to a method (line {self.peek().line})")
+                    self._parse_error(f"'virtual' can only be applied to a method (line {self.peek().line})", member_tok)
                 if exposed and access != "public":
-                    raise ParseError(
-                        f"an @exposed variable must be public (line {self.peek().line})"
+                    self._parse_error(
+                        f"an @exposed variable must be public (line {self.peek().line})", member_tok
                     )
-                methods.append(None) if False else fields.append(ClassField(ret_type, member_name, access, init, field_const, exposed, field_pointee_const))
+                field_node = ClassField(ret_type, member_name, access, init, field_const, exposed, field_pointee_const)
+                self._mark_token(field_node, member_tok)
+                if ret_type_span:
+                    setattr(field_node, "_jaguar_type_column", ret_type_span[1]); setattr(field_node, "_jaguar_type_end_column", ret_type_span[2])
+                setattr(field_node, "_jaguar_name_column", member_tok.column); setattr(field_node, "_jaguar_name_end_column", member_tok.end_column)
+                fields.append(field_node)
         self.expect("}")
         if self.peek().kind == ";":
             self.advance()
-        return ClassDecl(name, base, fields, methods, "register" in class_attrs)
+        qname = f"{namespace.replace(':', '_')}_{name}" if namespace else name
+        node = ClassDecl(qname, base, fields, methods, "register" in class_attrs, namespace)
+        setattr(node, "_jaguar_name_column", name_tok.column); setattr(node, "_jaguar_name_end_column", name_tok.end_column)
+        if base_span:
+            setattr(node, "_jaguar_base_column", base_span[1]); setattr(node, "_jaguar_base_end_column", base_span[2])
+        return node
 
-    def parse_class(self, class_attrs=None) -> ClassDecl:
-        line = self.peek().line
-        node = self._parse_class_impl(class_attrs)
-        return self._mark_line(node, line)
+    def parse_class(self, class_attrs=None, namespace: Optional[str] = None) -> ClassDecl:
+        tok = self.peek()
+        node = self._parse_class_impl(class_attrs, namespace)
+        return self._mark_token(node, tok)
 
     # -- namespace ---------------------------------------------------------
     # Namespaces are stored as a path such as "physics:common".
@@ -1000,22 +1181,34 @@ class Parser:
                 enum.namespace = namespace
                 items.append(enum)
             elif tok.kind == "struct":
-                items.append(self.parse_struct())
+                items.append(self.parse_struct(namespace=namespace))
+            elif tok.kind == "union":
+                items.append(self.parse_union(namespace=namespace))
             elif tok.kind == "class":
-                items.append(self.parse_class())
+                items.append(self.parse_class(namespace=namespace))
             elif tok.kind == "namespace":
                 items.extend(self.parse_namespace(namespace))
-            elif tok.kind == "@" or tok.kind in TYPE_KEYWORDS or tok.kind == "IDENT":
-                if not self._is_function_ahead():
-                    raise ParseError(
-                        f"unexpected declaration in namespace '{namespace}': only "
-                        f"functions, structs, and namespaces are supported "
-                        f"(global variables are not allowed in a namespace) on line {tok.line}"
-                    )
-                items.append(self.parse_function(namespace=namespace))
+            elif tok.kind == "@":
+                save = self.pos
+                attrs = self.parse_attributes()
+                if self.peek().kind == "class":
+                    items.append(self.parse_class(attrs, namespace=namespace))
+                elif self._is_function_ahead():
+                    self.pos = save
+                    items.append(self.parse_function(namespace=namespace))
+                elif attrs <= {"extern"} and (self.peek().kind in TYPE_KEYWORDS or self.peek().kind in ("IDENT", "const")):
+                    items.append(self.parse_var_decl(attrs=attrs, namespace=namespace))
+                else:
+                    self.pos = save
+                    self._parse_error(f"invalid namespace declaration on line {tok.line}", tok)
+            elif tok.kind in TYPE_KEYWORDS or tok.kind == "IDENT" or tok.kind == "const":
+                if self._is_function_ahead():
+                    items.append(self.parse_function(namespace=namespace))
+                else:
+                    items.append(self.parse_var_decl(namespace=namespace))
             else:
-                raise ParseError(
-                    f"unexpected namespace element: '{tok.kind}' on line {tok.line}"
+                self._parse_error(
+                    f"unexpected namespace element: '{tok.kind}' on line {tok.line}", tok
                 )
         self.expect("}")
         return items
@@ -1023,9 +1216,32 @@ class Parser:
     # -- fonction --
     def parse_type(self) -> str:
         tok = self.peek()
+        start_tok = tok
+        # Function-pointer type: `fn(T1, T2) -> R`.
+        if tok.kind == "IDENT" and tok.value == "fn":
+            self.advance()
+            self.expect("(")
+            params = []
+            if self.peek().kind != ")":
+                params.append(self.parse_type())
+                while self.peek().kind == ",":
+                    self.advance(); params.append(self.parse_type())
+            self.expect(")")
+            self.expect("->")
+            ret = self.parse_type()
+            result = f"fn({', '.join(params)}) -> {ret}"
+            last = self.tokens[self.pos - 1] if self.pos else start_tok
+            self._last_type_span = (start_tok.line, start_tok.column, last.end_column or last.column + 1)
+            return result
         if tok.kind in TYPE_KEYWORDS or tok.kind == "IDENT":
             self.advance()
             base = canonical_type(tok.value)
+            if self.peek().kind == ":":
+                parts = [tok.value]
+                while self.peek().kind == ":":
+                    self.advance()
+                    parts.append(self.expect("IDENT").value)
+                base = ":".join(parts)
             if self.peek().kind == "<":
                 self.advance()
                 first = self.parse_type()
@@ -1033,37 +1249,49 @@ class Parser:
                     self.advance()
                     second = self.parse_type()
                     self.expect(">")
-                    if base not in ("map", "pair"): raise ParseError(f"generic type '{base}' accepts only one parameter")
+                    if base not in ("map", "pair"):
+                        self._parse_error(f"generic type '{base}' accepts only one parameter", tok)
                     base = f"{base}<{first},{second}>"
                 else:
                     self.expect(">")
                     if base not in ("list", "container"):
-                        raise ParseError(f"generic type '{base}' expects two parameters" if base in ("map", "pair") else f"unknown generic type '{base}' (line {tok.line})")
+                        self._parse_error(f"generic type '{base}' expects two parameters" if base in ("map", "pair") else f"unknown generic type '{base}' (line {tok.line})", tok)
                     base = f"{base}<{first}>"
             pointers = 0
             while self.peek().kind == "*":
                 self.advance(); pointers += 1
-            return base + "*" * pointers
-        raise ParseError(f"expected a type, found '{tok.kind}' on line {tok.line}")
+            result = base + "*" * pointers
+            last = self.tokens[self.pos - 1] if self.pos else start_tok
+            self._last_type_span = (start_tok.line, start_tok.column, last.end_column or last.column + 1)
+            return result
+        self._parse_error(f"expected a type, found '{tok.kind}' on line {tok.line}", tok)
 
     def parse_param(self) -> Param:
         leading_const = False
         if self.peek().kind == "const":
             self.advance(); leading_const = True
         t = self.parse_type()
+        type_span = self._last_type_span
         pointee_const = leading_const and t.endswith("*")
         is_const = leading_const and not pointee_const
         if self.peek().kind == "const":
             self.advance();
             if not t.endswith("*"):
-                raise ParseError("'const' after a non-pointer parameter type is not valid")
+                self._parse_error("'const' after a non-pointer parameter type is not valid", self.peek())
             is_const = True
         n = self.expect("IDENT")
         default = None
         if self.peek().kind == "=":
             self.advance()
             default = self.parse_expr()
-        return Param(t, n.value, is_const, default, pointee_const)
+        param = Param(t, n.value, is_const, default, pointee_const)
+        if type_span:
+            setattr(param, "_jaguar_line", type_span[0])
+            setattr(param, "_jaguar_type_column", type_span[1]); setattr(param, "_jaguar_type_end_column", type_span[2])
+        else:
+            setattr(param, "_jaguar_line", n.line)
+        setattr(param, "_jaguar_name_column", n.column); setattr(param, "_jaguar_name_end_column", n.end_column)
+        return param
 
     def _parse_function_impl(self, namespace: Optional[str] = None) -> FunctionDecl:
         attrs = self.parse_attributes()
@@ -1073,6 +1301,7 @@ class Parser:
         if self.peek().kind == "const":
             self.advance(); prefix_const = True
         ret_type = self.parse_type()
+        ret_type_span = self._last_type_span
         name_tok = self.expect("IDENT")
         self.expect("(")
         params = []
@@ -1090,18 +1319,25 @@ class Parser:
         # Il n'a pas de corps Jaguar et sera émis comme une déclaration C.
         if self.peek().kind == ";":
             self.advance()
-            return FunctionDecl(
+            node = FunctionDecl(
                 ret_type, name_tok.value, params, Block([]), namespace,
                 is_extern, prefix_const or suffix_const, True
             )
-
-        body = self.parse_block()
-        return FunctionDecl(ret_type, name_tok.value, params, body, namespace, is_extern, prefix_const or suffix_const, False)
+        else:
+            body = self.parse_block()
+            node = FunctionDecl(ret_type, name_tok.value, params, body, namespace, is_extern, prefix_const or suffix_const, False)
+        if ret_type_span:
+            setattr(node, "_jaguar_type_column", ret_type_span[1]); setattr(node, "_jaguar_type_end_column", ret_type_span[2])
+        setattr(node, "_jaguar_name_column", name_tok.column); setattr(node, "_jaguar_name_end_column", name_tok.end_column)
+        return node
 
     def parse_function(self, namespace: Optional[str] = None) -> FunctionDecl:
-        line = self.peek().line
+        tok = self.peek()
         node = self._parse_function_impl(namespace)
-        return self._mark_line(node, line)
+        self._mark_token(node, tok)
+        # `_parse_function_impl` stores the return-type span/name span on the
+        # declaration so semantic diagnostics can highlight the exact symbol.
+        return node
 
     # -- bloc / instructions --
     def parse_block(self) -> Block:
@@ -1123,23 +1359,36 @@ class Parser:
             return True
         if tok.kind == "IDENT" and self.peek(1).kind == "*":
             return True
+        if tok.kind == "IDENT" and self.peek(1).kind == ":":
+            i = 1
+            while self.peek(i).kind == ":":
+                if self.peek(i + 1).kind != "IDENT":
+                    return False
+                i += 2
+            # Qualified custom types may be followed by pointer stars, e.g.
+            # `namespace:Class* value`.
+            while self.peek(i).kind == "*":
+                i += 1
+            return self.peek(i).kind == "IDENT"
         return tok.kind == "IDENT" and self.peek(1).kind == "IDENT"
 
-    def _parse_var_decl_impl(self) -> VarDecl:
+    def _parse_var_decl_impl(self, attrs=None, namespace: Optional[str] = None) -> VarDecl:
         type_tok = self.peek()
         leading_const = False
         if self.peek().kind == "const":
             self.advance(); leading_const = True
         is_const = False
         pointee_const = False
+        type_span = None
         is_auto = self.peek().kind == "auto"
         if is_auto:
             self.advance(); t = "auto"
             if leading_const: is_const = True
         else:
             t = self.parse_type()
+            type_span = self._last_type_span
             if t == "void":
-                raise ParseError(f"a variable cannot have type 'void' (line {type_tok.line})")
+                self._parse_error(f"a variable cannot have type 'void' (line {type_tok.line})", type_tok)
             if leading_const and t.endswith("*"):
                 pointee_const = True
             else:
@@ -1147,9 +1396,10 @@ class Parser:
         if self.peek().kind == "const":
             self.advance()
             if not t.endswith("*"):
-                raise ParseError("'const' after a non-pointer variable type is not valid")
+                self._parse_error("'const' after a non-pointer variable type is not valid", self.peek())
             is_const = True
-        name = self.expect("IDENT").value
+        name_tok = self.expect("IDENT")
+        name = name_tok.value
         init = None
         if self.peek().kind == "=":
             self.advance(); init = self.parse_expr()
@@ -1161,17 +1411,26 @@ class Parser:
             # alias for assigning an arbitrary integer/null pointer.
             if t.endswith("*"):
                 init = NewExpr(t.rstrip("*"), [value])
+            elif t.startswith("container<") and t.endswith(">"):
+                inner = t[len("container<"):-1]
+                init = NewExpr(inner, [value])
             else:
                 init = value
         self.expect(";")
         if (is_auto or is_const) and init is None:
-            raise ParseError(f"a variable '{'auto' if is_auto else 'const'}' '{name}' must be initialized (line {type_tok.line})")
-        return VarDecl(t, name, init, is_const, pointee_const)
+            self._parse_error(f"a variable '{'auto' if is_auto else 'const'}' '{name}' must be initialized (line {type_tok.line})", type_tok)
+        attrs = attrs or set()
+        qname = f"{namespace.replace(':', '_')}_{name}" if namespace else name
+        node = VarDecl(t, qname, init, is_const, pointee_const, "extern" in attrs, namespace)
+        if type_span:
+            setattr(node, "_jaguar_type_column", type_span[1]); setattr(node, "_jaguar_type_end_column", type_span[2])
+        setattr(node, "_jaguar_name_column", name_tok.column); setattr(node, "_jaguar_name_end_column", name_tok.end_column)
+        return node
 
-    def parse_var_decl(self) -> VarDecl:
-        line = self.peek().line
-        node = self._parse_var_decl_impl()
-        return self._mark_line(node, line)
+    def parse_var_decl(self, attrs=None, namespace: Optional[str] = None) -> VarDecl:
+        tok = self.peek()
+        node = self._parse_var_decl_impl(attrs, namespace)
+        return self._mark_token(node, tok)
 
     # -- contrôle de flux -------------------------------------------------
     def parse_if(self) -> IfStmt:
@@ -1216,10 +1475,12 @@ class Parser:
         """int i = for_loop(début, fin) { ... }   (fin comprise)"""
         type_tok = self.advance()
         if type_tok.kind not in INTEGER_TYPES:
-            raise ParseError(
+            err = ParseError(
                 f"the for_loop variable must have an integer type "
                 f"(int, i8..i64, u8..u64), not '{type_tok.value}' (line {type_tok.line})"
             )
+            err._jaguar_line = type_tok.line; err._jaguar_column = type_tok.column; err._jaguar_end_column = type_tok.end_column
+            raise err
         name = self.expect("IDENT").value
         self.expect("=")
         self.expect("for_loop")
@@ -1320,6 +1581,9 @@ class Parser:
             if self.peek().kind == "=":
                 if isinstance(lhs, (MemberAccess, IndexAccess)):
                     self.advance(); rhs=self.parse_expr(); self.expect(";"); return MemberAssignStmt(lhs,rhs)
+                if isinstance(lhs, NamespacedIdent):
+                    self.advance(); rhs=self.parse_expr(); self.expect(";")
+                    return AssignStmt(f"{lhs.namespace.replace(':', '_')}_{lhs.name}", rhs)
                 if isinstance(lhs, UnaryOp) and lhs.op == "*":
                     self.advance(); rhs=self.parse_expr(); self.expect(";"); return PointerAssignStmt(lhs, rhs)
                 if isinstance(lhs, Call) and isinstance(lhs.callee, MemberAccess) and lhs.callee.name == "GetMember":
@@ -1336,9 +1600,9 @@ class Parser:
         return ExprStmt(expr)
 
     def parse_statement(self):
-        line = self.peek().line
+        tok = self.peek()
         node = self._parse_statement_impl()
-        return self._mark_line(node, line)
+        return self._mark_token(node, tok)
 
     # -- expressions --
     # Précédence, de la plus faible à la plus forte (comme en C) :
@@ -1353,13 +1617,22 @@ class Parser:
 
     def parse_call_arg(self):
         if self.peek().kind == "IDENT" and self.peek(1).kind == "=":
-            name = self.advance().value
+            name_tok = self.advance()
             self.advance()
-            return NamedArg(name, self.parse_expr())
+            expr = self.parse_expr()
+            node = NamedArg(name_tok.value, expr)
+            self._mark_line(node, name_tok.line, name_tok.column, name_tok.end_column)
+            setattr(node, "_jaguar_name_column", name_tok.column)
+            setattr(node, "_jaguar_name_end_column", name_tok.end_column)
+            return node
         return self.parse_expr()
 
     def parse_expr(self):
-        return self.parse_or()
+        start = self.peek()
+        expr = self.parse_or()
+        end = self.tokens[self.pos - 1] if self.pos else start
+        self._mark_line(expr, start.line, start.column, end.end_column or end.column + 1)
+        return expr
 
     def parse_or(self):
         return self._parse_binary_level(("||",), self.parse_and)
@@ -1399,10 +1672,15 @@ class Parser:
                 self.advance()
                 type_tok = self.advance()
                 target_type = canonical_type(type_tok.value)
+                type_start = (type_tok.column, type_tok.end_column)
                 while self.peek().kind == "*":
-                    self.advance(); target_type += "*"
+                    star = self.advance(); target_type += "*"; type_start = (type_start[0], star.end_column)
                 self.expect(")")
-                return CastExpr(target_type, self.parse_unary())
+                node = CastExpr(target_type, self.parse_unary())
+                setattr(node, "_jaguar_line", type_tok.line)
+                setattr(node, "_jaguar_type_column", type_start[0])
+                setattr(node, "_jaguar_type_end_column", type_start[1])
+                return node
 
         if tok.kind == "INT": self.advance(); return IntLit(tok.value)
         if tok.kind == "FLOAT": self.advance(); return FloatLit(tok.value)
@@ -1423,6 +1701,7 @@ class Parser:
         if tok.kind == "new":
             self.advance()
             t = self.parse_type()
+            type_span = self._last_type_span
             self.expect("(")
             args=[]
             if self.peek().kind != ")":
@@ -1430,11 +1709,16 @@ class Parser:
                 while self.peek().kind == ",":
                     self.advance(); args.append(self.parse_call_arg())
             self.expect(")")
-            return NewExpr(t,args)
+            node = NewExpr(t,args)
+            if type_span:
+                setattr(node, "_jaguar_line", type_span[0])
+                setattr(node, "_jaguar_type_column", type_span[1])
+                setattr(node, "_jaguar_type_end_column", type_span[2])
+            return node
         if tok.kind not in ("IDENT", "this"):
             if tok.kind == "for_loop":
-                raise ParseError("for_loop can only be used in the form `int i = for_loop(start, end) { ... }`")
-            raise ParseError(f"unexpected expression: '{tok.kind}' on line {tok.line}")
+                self._parse_error("for_loop can only be used in the form `int i = for_loop(start, end) { ... }`", tok)
+            self._parse_error(f"unexpected expression: '{tok.kind}' on line {tok.line}", tok)
 
         self.advance()
         expr = Ident(tok.value)
@@ -1445,19 +1729,34 @@ class Parser:
             expr=NamespacedIdent(":".join(parts[:-1]), parts[-1])
 
         while True:
-            if self.peek().kind == ".":
-                self.advance(); expr=MemberAccess(expr, self.expect("IDENT").value); continue
-            if self.peek().kind == "->":
-                self.advance(); expr=MemberAccess(expr, self.expect("IDENT").value); continue
+            if self.peek().kind in (".", "->"):
+                self.advance()
+                name_tok = self.expect("IDENT")
+                member = MemberAccess(expr, name_tok.value)
+                setattr(member, "_jaguar_member_column", name_tok.column)
+                setattr(member, "_jaguar_member_end_column", name_tok.end_column)
+                expr = member
+                continue
             if self.peek().kind == "[":
-                self.advance(); idx=self.parse_expr(); self.expect("]"); expr=IndexAccess(expr, idx); continue
+                self.advance(); idx=self.parse_expr(); self.expect("]")
+                access = IndexAccess(expr, idx)
+                expr = access
+                continue
             if self.peek().kind == "(":
                 self.advance(); args=[]
                 if self.peek().kind != ")":
                     args.append(self.parse_call_arg())
                     while self.peek().kind == ",":
                         self.advance(); args.append(self.parse_call_arg())
-                self.expect(")"); expr=Call(expr,args); continue
+                self.expect(")")
+                call = Call(expr,args)
+                setattr(call, "_jaguar_callee_column", getattr(expr, "_jaguar_column", None))
+                setattr(call, "_jaguar_callee_end_column", getattr(expr, "_jaguar_end_column", None))
+                if isinstance(expr, MemberAccess):
+                    setattr(call, "_jaguar_callee_column", getattr(expr, "_jaguar_member_column", getattr(expr, "_jaguar_column", None)))
+                    setattr(call, "_jaguar_callee_end_column", getattr(expr, "_jaguar_member_end_column", getattr(expr, "_jaguar_end_column", None)))
+                expr=call
+                continue
             break
         return expr
 
@@ -1511,28 +1810,65 @@ class Resolver:
         self.using_symbols: Dict[str, Tuple[str, str]] = {}
         self.enums: Dict[str, EnumDecl] = {}
         self.enum_values: Dict[Tuple[str, str], str] = {}
+        self.named_types: Dict[Tuple[Optional[str], str], str] = {}
         for item in program.items:
             if isinstance(item, TypeAliasDecl):
                 if item.name in self.type_aliases:
-                    raise ResolverError(f"type alias '{item.name}' declared multiple times")
+                    self._resolver_error(f"type alias '{item.name}' declared multiple times", item)
                 self.type_aliases[item.name] = item.target
             elif isinstance(item, UsingNamespaceDecl):
                 if item.namespace not in self.using_namespaces:
                     self.using_namespaces.append(item.namespace)
             elif isinstance(item, UsingSymbolDecl):
                 if item.alias in self.using_symbols and self.using_symbols[item.alias] != (item.namespace, item.name):
-                    raise ResolverError(f"using symbol '{item.alias}' is imported more than once with different targets")
+                    self._resolver_error(f"using symbol '{item.alias}' is imported more than once with different targets", item)
                 self.using_symbols[item.alias] = (item.namespace, item.name)
             elif isinstance(item, EnumDecl):
                 key = f"{item.namespace}:{item.name}" if item.namespace else item.name
                 if key in self.enums:
-                    raise ResolverError(f"enum '{key}' declared multiple times")
+                    self._resolver_error(f"enum '{key}' declared multiple times", item)
                 self.enums[key] = item
                 for value in item.values:
                     vk=(item.namespace or "", value)
                     if vk in self.enum_values:
-                        raise ResolverError(f"enum value '{value}' declared multiple times in namespace '{item.namespace or '<global>'}'")
+                        self._resolver_error(f"enum value '{value}' declared multiple times in namespace '{item.namespace or '<global>'}", item)
                     self.enum_values[vk]=key
+                prefix = f"{item.namespace.replace(':', '_')}_" if item.namespace else ""
+                source_name = item.name[len(prefix):] if prefix and item.name.startswith(prefix) else item.name
+                self.named_types[(item.namespace, source_name)] = item.name
+        def resolve_decl_type(t, namespace=None, seen=None):
+            seen = set() if seen is None else seen
+            if not isinstance(t, str): return t
+            if t.endswith("*"):
+                base = t.rstrip("*")
+                return resolve_decl_type(base, namespace, seen) + "*" * (len(t) - len(base))
+            if t in seen:
+                self._resolver_error(f"circular type alias involving '{t}'")
+            if t in self.type_aliases:
+                return resolve_decl_type(self.type_aliases[t], namespace, seen | {t})
+            if ":" in t:
+                ns, name = t.rsplit(":", 1)
+                hit = self.named_types.get((ns, name))
+                if hit: return hit
+                return canonical_type(t.replace(":", "_"))
+            hit = self.named_types.get((namespace, t))
+            if hit: return hit
+            hit = self.named_types.get((None, t))
+            if hit: return hit
+            imported = self.using_symbols.get(t)
+            if imported:
+                ns, name = imported
+                hit = self.named_types.get((ns, name))
+                if hit: return hit
+                enum_key = f"{ns}:{name}"
+                if enum_key in self.enums: return f"{ns}_{name}"
+            for ns in self.using_namespaces:
+                hit = self.named_types.get((ns, t))
+                if hit: return hit
+                enum_key = f"{ns}:{t}"
+                if enum_key in self.enums: return f"{ns}_{t}"
+            return canonical_type(t)
+
         def resolve_alias(t, seen=None):
             seen = set() if seen is None else seen
             if not isinstance(t, str): return t
@@ -1540,7 +1876,7 @@ class Resolver:
                 base=t.rstrip("*")
                 return resolve_alias(base, seen) + "*" * (len(t)-len(base))
             if t in seen:
-                raise ResolverError(f"circular type alias involving '{t}'")
+                self._resolver_error(f"circular type alias involving '{t}'")
             if t in self.type_aliases:
                 return resolve_alias(self.type_aliases[t], seen | {t})
             imported = self.using_symbols.get(t)
@@ -1571,25 +1907,185 @@ class Resolver:
                 self._all_functions.append(item)
             elif isinstance(item, ClassDecl):
                 if item.name in self.classes:
-                    raise ResolverError(f"class '{item.name}' declared multiple times")
+                    self._resolver_error(f"class '{item.name}' declared multiple times", item)
                 self.classes[item.name] = item
-        # Resolve aliases before signatures are compared, so `using T = float;`
-        # behaves exactly like `float` for overloads and code generation.
-        def rewrite_type(t):
-            return self._resolve_alias(t)
+                prefix = f"{item.namespace.replace(':', '_')}_" if item.namespace else ""
+                source_name = item.name[len(prefix):] if prefix and item.name.startswith(prefix) else item.name
+                self.named_types[(item.namespace, source_name)] = item.name
+            elif isinstance(item, StructDecl):
+                prefix = f"{item.namespace.replace(':', '_')}_" if item.namespace else ""
+                source_name = item.name[len(prefix):] if prefix and item.name.startswith(prefix) else item.name
+                self.named_types[(item.namespace, source_name)] = item.name
+            elif isinstance(item, UnionDecl):
+                prefix = f"{item.namespace.replace(':', '_')}_" if item.namespace else ""
+                source_name = item.name[len(prefix):] if prefix and item.name.startswith(prefix) else item.name
+                self.named_types[(item.namespace, source_name)] = item.name
+
+        builtin_types = set(TYPE_KEYWORDS) | set(TYPE_ALIASES) | {"auto"}
+
+        def split_generic_args(text):
+            inner = text[text.find("<") + 1:-1]
+            parts=[]; depth=0; start=0
+            paren = 0
+            for i,ch in enumerate(inner):
+                if ch == '<': depth += 1
+                elif ch == '>' and (i == 0 or inner[i-1] != '-'): depth -= 1
+                elif ch == '(': paren += 1
+                elif ch == ')': paren -= 1
+                elif ch == ',' and depth == 0 and paren == 0:
+                    parts.append(inner[start:i].strip()); start=i+1
+            parts.append(inner[start:].strip())
+            return parts
+
+        def type_known(t, namespace=None, seen=None):
+            seen = set() if seen is None else seen
+            if not isinstance(t, str): return True
+            t = t.strip()
+            while t.endswith('*'): t = t[:-1]
+            if t.startswith("fn(") and ") -> " in t:
+                close = t.rfind(") -> ")
+                inner=t[3:close]
+                params=[]
+                if inner.strip(): params=split_generic_args("x<"+inner+">")
+                return all(type_known(x, namespace, seen) for x in params) and type_known(t[close+5:].strip(), namespace, seen)
+            if "<" in t and t.endswith(">"):
+                head=t[:t.index("<")].strip()
+                if head not in ("list", "map", "container", "pair", "dynamic_list"):
+                    return False
+                return all(type_known(x, namespace, seen) for x in split_generic_args(t))
+            t = canonical_type(t)
+            if t in builtin_types or t in ("dynamic_list", "list", "map", "container", "pair"):
+                return True
+            if t in seen: return False
+            if t in self.type_aliases:
+                return type_known(self.type_aliases[t], namespace, seen | {t})
+            if ":" in t:
+                ns,name=t.rsplit(":",1)
+                return (ns,name) in self.named_types
+            return (namespace,t) in self.named_types or (None,t) in self.named_types
+
+        def validate_type(t, node, namespace=None):
+            if not isinstance(t,str): return
+            if type_known(t, namespace): return
+            bad=t.rstrip("*")
+            base=t.rstrip("*")
+            if base.startswith("fn(") and ") -> " in base:
+                # Prefer the first unresolved component for a precise diagnostic.
+                inner=base[3:base.rfind(") -> ")]
+                parts=split_generic_args("x<"+inner+">") if inner.strip() else []
+                ret=base[base.rfind(") -> ")+5:].strip()
+                candidates=parts+[ret]
+                bad=next((x for x in candidates if not type_known(x,namespace)), base)
+            elif "<" in base and base.endswith(">"):
+                parts=split_generic_args(base)
+                bad=next((x for x in parts if not type_known(x,namespace)), base)
+            self._resolver_error(f"unknown type '{bad}'", node, "type")
+
+        for alias_name, alias_target in self.type_aliases.items():
+            # Catch alias cycles/unknown targets at the declaration, before GCC.
+            try:
+                resolved_alias = resolve_alias(alias_name)
+            except ResolverError as err:
+                if not hasattr(err, "_jaguar_line"):
+                    # Find the declaration by name in a stable way.
+                    for x in program.items:
+                        if isinstance(x, TypeAliasDecl) and x.name == alias_name:
+                            err._jaguar_line = getattr(x, "_jaguar_line", 1)
+                            err._jaguar_column = getattr(x, "_jaguar_target_column", getattr(x, "_jaguar_name_column", 0))
+                            err._jaguar_end_column = getattr(x, "_jaguar_target_end_column", err._jaguar_column + 1)
+                            break
+                raise
+            if not type_known(resolved_alias, None):
+                alias_node = next(x for x in program.items if isinstance(x, TypeAliasDecl) and x.name == alias_name)
+                self._resolver_error(f"unknown type '{resolved_alias}'", alias_node, "type")
+
+        def validate_expr(e, namespace=None):
+            if e is None: return
+            if isinstance(e, CastExpr):
+                validate_type(e.target_type, e, namespace); validate_expr(e.operand, namespace)
+            elif isinstance(e, NewExpr):
+                validate_type(e.type, e, namespace)
+                for a in e.args: validate_expr(a.expr if isinstance(a, NamedArg) else a, namespace)
+            elif isinstance(e, UnaryOp): validate_expr(e.operand, namespace)
+            elif isinstance(e, BinOp): validate_expr(e.left, namespace); validate_expr(e.right, namespace)
+            elif isinstance(e, IndexAccess): validate_expr(e.obj, namespace); validate_expr(e.index, namespace)
+            elif isinstance(e, MemberAccess): validate_expr(e.obj, namespace)
+            elif isinstance(e, Call):
+                validate_expr(e.callee, namespace)
+                for a in e.args: validate_expr(a.expr if isinstance(a, NamedArg) else a, namespace)
+            elif isinstance(e, ListLiteral):
+                for x in e.items: validate_expr(x, namespace)
+            elif isinstance(e, NamedArg): validate_expr(e.expr, namespace)
+
+        def validate_stmt(st, namespace=None):
+            if isinstance(st, VarDecl):
+                validate_type(st.type, st, namespace); validate_expr(st.init, namespace)
+            elif isinstance(st, ForLoopStmt):
+                validate_type(st.var_type, st, namespace); validate_expr(st.start, namespace); validate_expr(st.end, namespace)
+                for x in st.body.statements: validate_stmt(x, namespace)
+            elif isinstance(st, CollectionLoopStmt):
+                validate_expr(st.collection, namespace)
+                for x in st.body.statements: validate_stmt(x, namespace)
+            elif isinstance(st, ReturnStmt): validate_expr(st.expr, namespace)
+            elif isinstance(st, AssignStmt): validate_expr(st.expr, namespace)
+            elif isinstance(st, MemberAssignStmt): validate_expr(st.target, namespace); validate_expr(st.expr, namespace)
+            elif isinstance(st, PointerAssignStmt): validate_expr(st.target, namespace); validate_expr(st.expr, namespace)
+            elif isinstance(st, ExprStmt): validate_expr(st.expr, namespace)
+            elif isinstance(st, IfStmt):
+                validate_expr(st.cond, namespace)
+                for x in st.then_block.statements: validate_stmt(x, namespace)
+                if isinstance(st.else_branch, IfStmt): validate_stmt(st.else_branch, namespace)
+                elif isinstance(st.else_branch, Block):
+                    for x in st.else_branch.statements: validate_stmt(x, namespace)
+            elif isinstance(st, WhileStmt):
+                validate_expr(st.cond, namespace)
+                for x in st.body.statements: validate_stmt(x, namespace)
+            elif isinstance(st, LoopStmt):
+                for x in st.body.statements: validate_stmt(x, namespace)
+            elif isinstance(st, VariableChangeHandler):
+                for x in st.body.statements: validate_stmt(x, namespace)
+            elif isinstance(st, TypeAliasStmt):
+                validate_type(st.target, st, namespace)
+
         for item in program.items:
             if isinstance(item, FunctionDecl):
-                item.ret_type = rewrite_type(item.ret_type)
-                for p in item.params: p.type = rewrite_type(p.type)
+                validate_type(item.ret_type, item, item.namespace)
+                for p in item.params: validate_type(p.type, p, item.namespace); validate_expr(p.default, item.namespace)
+                for st in item.body.statements: validate_stmt(st, item.namespace)
             elif isinstance(item, StructDecl):
-                for f in item.fields: f.type = rewrite_type(f.type)
+                for f in item.fields: validate_type(f.type, f, item.namespace)
+            elif isinstance(item, UnionDecl):
+                for f in item.fields: validate_type(f.type, f, item.namespace)
             elif isinstance(item, ClassDecl):
-                for f in item.fields: f.type = rewrite_type(f.type)
+                if item.base: validate_type(item.base, item, item.namespace)
+                for f in item.fields: validate_type(f.type, f, item.namespace); validate_expr(f.init, item.namespace)
                 for m in item.methods:
-                    m.ret_type = rewrite_type(m.ret_type)
-                    for p in m.params: p.type = rewrite_type(p.type)
+                    validate_type(m.ret_type, m, item.namespace)
+                    for p in m.params: validate_type(p.type, p, item.namespace); validate_expr(p.default, item.namespace)
+                    for st in m.body.statements: validate_stmt(st, item.namespace)
             elif isinstance(item, VarDecl):
-                item.type = rewrite_type(item.type)
+                validate_type(item.type, item, item.namespace); validate_expr(item.init, item.namespace)
+
+        # Resolve aliases before signatures are compared, so `using T = float;`
+        # behaves exactly like `float` for overloads and code generation.
+        def rewrite_type(t, namespace=None):
+            return resolve_decl_type(t, namespace)
+        for item in program.items:
+            if isinstance(item, FunctionDecl):
+                item.ret_type = rewrite_type(item.ret_type, item.namespace)
+                for p in item.params: p.type = rewrite_type(p.type, item.namespace)
+            elif isinstance(item, StructDecl):
+                for f in item.fields: f.type = rewrite_type(f.type, item.namespace)
+            elif isinstance(item, ClassDecl):
+                item.base = rewrite_type(item.base, item.namespace) if item.base else None
+                for f in item.fields: f.type = rewrite_type(f.type, item.namespace)
+                for m in item.methods:
+                    m.ret_type = rewrite_type(m.ret_type, item.namespace)
+                    for p in m.params: p.type = rewrite_type(p.type, item.namespace)
+            elif isinstance(item, UnionDecl):
+                for f in item.fields: f.type = rewrite_type(f.type, item.namespace)
+            elif isinstance(item, VarDecl):
+                item.type = rewrite_type(item.type, item.namespace)
 
         def rewrite_expr(e):
             if isinstance(e, CastExpr):
@@ -1608,7 +2104,7 @@ class Resolver:
                 for x in e.items: rewrite_expr(x)
             elif isinstance(e, NamedArg): rewrite_expr(e.expr)
 
-        def rewrite_stmt(st, aliases=None, namespaces=None, symbols=None):
+        def rewrite_stmt(st, aliases=None, namespaces=None, symbols=None, current_namespace=None):
             aliases = dict(self.type_aliases if aliases is None else aliases)
             namespaces = list(self.using_namespaces if namespaces is None else namespaces)
             symbols = dict(self.using_symbols) if symbols is None else symbols
@@ -1632,7 +2128,7 @@ class Resolver:
                     enum_key=f"{ns}:{t}"
                     if enum_key in self.enums:
                         return f"{ns}_{t}"
-                return canonical_type(t)
+                return resolve_decl_type(t, current_namespace)
             def annotate_expr(e):
                 if e is None: return
                 if isinstance(e, Call):
@@ -1665,11 +2161,11 @@ class Resolver:
             elif isinstance(st, ForLoopStmt):
                 st.var_type = resolve_local(st.var_type); annotate_expr(st.start); annotate_expr(st.end)
                 ca=dict(aliases); cn=list(namespaces)
-                for x in st.body.statements: ca, cn = rewrite_stmt(x, ca, cn, dict(symbols))
+                for x in st.body.statements: ca, cn = rewrite_stmt(x, ca, cn, dict(symbols), current_namespace)
             elif isinstance(st, CollectionLoopStmt):
                 annotate_expr(st.collection)
                 ca=dict(aliases); cn=list(namespaces)
-                for x in st.body.statements: ca, cn = rewrite_stmt(x, ca, cn, dict(symbols))
+                for x in st.body.statements: ca, cn = rewrite_stmt(x, ca, cn, dict(symbols), current_namespace)
             elif isinstance(st, AssignStmt): annotate_expr(st.expr)
             elif isinstance(st, PointerAssignStmt): annotate_expr(st.target); annotate_expr(st.expr)
             elif isinstance(st, MemberAssignStmt): annotate_expr(st.target); annotate_expr(st.expr)
@@ -1678,30 +2174,30 @@ class Resolver:
             elif isinstance(st, IfStmt):
                 annotate_expr(st.cond)
                 ca=dict(aliases); cn=list(namespaces)
-                for x in st.then_block.statements: ca, cn = rewrite_stmt(x, ca, cn, dict(symbols))
+                for x in st.then_block.statements: ca, cn = rewrite_stmt(x, ca, cn, dict(symbols), current_namespace)
                 if isinstance(st.else_branch, IfStmt): rewrite_stmt(st.else_branch, dict(aliases), list(namespaces), dict(symbols))
                 elif isinstance(st.else_branch, Block):
                     ca=dict(aliases); cn=list(namespaces)
-                    for x in st.else_branch.statements: ca, cn = rewrite_stmt(x, ca, cn, dict(symbols))
+                    for x in st.else_branch.statements: ca, cn = rewrite_stmt(x, ca, cn, dict(symbols), current_namespace)
             elif isinstance(st, WhileStmt):
                 annotate_expr(st.cond)
                 ca=dict(aliases); cn=list(namespaces)
-                for x in st.body.statements: ca, cn = rewrite_stmt(x, ca, cn, dict(symbols))
+                for x in st.body.statements: ca, cn = rewrite_stmt(x, ca, cn, dict(symbols), current_namespace)
             elif isinstance(st, LoopStmt):
                 ca=dict(aliases); cn=list(namespaces)
-                for x in st.body.statements: ca, cn = rewrite_stmt(x, ca, cn, dict(symbols))
+                for x in st.body.statements: ca, cn = rewrite_stmt(x, ca, cn, dict(symbols), current_namespace)
             elif isinstance(st, VariableChangeHandler):
                 ca=dict(aliases); cn=list(namespaces)
-                for x in st.body.statements: ca, cn = rewrite_stmt(x, ca, cn, dict(symbols))
+                for x in st.body.statements: ca, cn = rewrite_stmt(x, ca, cn, dict(symbols), current_namespace)
             return aliases, namespaces
 
         for item in program.items:
             if isinstance(item, FunctionDecl):
                 aliases=dict(self.type_aliases); namespaces=list(self.using_namespaces); symbols=dict(self.using_symbols)
-                for st in item.body.statements: aliases, namespaces = rewrite_stmt(st, aliases, namespaces, symbols)
+                for st in item.body.statements: aliases, namespaces = rewrite_stmt(st, aliases, namespaces, symbols, item.namespace)
                 for p in item.params: rewrite_expr(p.default)
             elif isinstance(item, ClassDecl):
-                for f in item.fields: rewrite_type(f.type); rewrite_expr(f.init)
+                for f in item.fields: f.type = rewrite_type(f.type, item.namespace); rewrite_expr(f.init)
                 for m in item.methods:
                     for p in m.params: rewrite_expr(p.default)
                     aliases=dict(self.type_aliases); namespaces=list(self.using_namespaces); symbols=dict(self.using_symbols)
@@ -1722,12 +2218,14 @@ class Resolver:
                 defs = [fn for fn in same if not fn.is_prototype]
                 protos = [fn for fn in same if fn.is_prototype]
                 if len(defs) > 1:
-                    raise ResolverError(
-                        f"function '{key[1]}' declared multiple times with the same signature"
+                    self._resolver_error(
+                        f"function '{key[1]}' declared multiple times with the same signature",
+                        defs[1]
                     )
                 if len(protos) > 1:
-                    raise ResolverError(
-                        f"prototype of '{key[1]}' declared multiple times with the same signature"
+                    self._resolver_error(
+                        f"prototype of '{key[1]}' declared multiple times with the same signature",
+                        protos[1]
                     )
                 if defs and protos:
                     rep = defs[0]
@@ -1742,10 +2240,38 @@ class Resolver:
         setattr(program, "_enums", dict(self.enums))
         self._resolve_classes()
 
+    @staticmethod
+    def _resolver_error(message, node=None, span_kind=None):
+        err = ResolverError(message)
+        if node is not None:
+            if hasattr(node, "_jaguar_line"):
+                err._jaguar_line = getattr(node, "_jaguar_line")
+            if span_kind == "type" or (span_kind is None and "unknown type" in message):
+                col = getattr(node, "_jaguar_type_column", None)
+                end = getattr(node, "_jaguar_type_end_column", None)
+                if col is not None:
+                    err._jaguar_column = col
+                    err._jaguar_end_column = end if end is not None else col + 1
+                m = re.search(r"unknown type '([^']+)'", message)
+                if m:
+                    err._jaguar_symbol = m.group(1).rstrip("*")
+            if getattr(err, "_jaguar_column", None) is None:
+                col = getattr(node, "_jaguar_name_column", None)
+                end = getattr(node, "_jaguar_name_end_column", None)
+                if col is not None:
+                    err._jaguar_column = col
+                    err._jaguar_end_column = end if end is not None else col + 1
+            base_col = getattr(node, "_jaguar_base_column", None)
+            base_end = getattr(node, "_jaguar_base_end_column", None)
+            if "unknown base class" in message and base_col is not None:
+                err._jaguar_column = base_col
+                err._jaguar_end_column = base_end if base_end is not None else base_col + 1
+        raise err
+
     def _resolve_classes(self):
         for cls in self.classes.values():
             if cls.base and cls.base not in self.classes:
-                raise ResolverError(f"unknown base class '{cls.base}' for '{cls.name}'")
+                self._resolver_error(f"unknown base class '{cls.base}' for '{cls.name}'", cls)
             seen=set()
             for m in cls.methods:
                 if m.is_override:
@@ -1755,7 +2281,7 @@ class Resolver:
                         matches += [x for x in base.methods if x.name==m.name and not x.is_constructor and not x.is_destructor and [p.type for p in x.params]==[p.type for p in m.params] and x.ret_type==m.ret_type]
                         base=self.classes.get(base.base) if base else None
                     if len(matches)!=1 or not matches[0].is_virtual:
-                        raise ResolverError(f"invalid override: {cls.name}::{m.name}: no virtual method with an exact matching signature")
+                        self._resolver_error(f"invalid override: {cls.name}::{m.name}: no virtual method with an exact matching signature", m)
                     # An override inherits the base access level and virtual status.
                     m.access = matches[0].access
                     m.is_virtual = True
@@ -1766,7 +2292,8 @@ class Resolver:
         # toutes les déclarations correspondantes (prototype et définition).
         for (namespace, name), fns in self.groups.items():
             if name in LIBC_FUNCTION_NAMES and any(not fn.is_extern for fn in fns):
-                raise ResolverError(f"function name '{name}' is reserved by libc and cannot be used in Jaguar")
+                offending = next(fn for fn in fns if not fn.is_extern)
+                self._resolver_error(f"function name '{name}' is reserved by libc and cannot be used in Jaguar", offending)
             overloaded = len(fns) > 1
             for fn in fns:
                 if fn.is_extern:
@@ -1867,28 +2394,7 @@ SYSTEM_BUILTINS = {
     ("jcc", "exp"): ("_j_lib_exp", 1, "f64"),
     ("jcc", "fmod"): ("_j_lib_fmod", 2, "f64"),
 
-    # Strings : wrappers simples autour de string.h, avec les conventions
-    # Jaguar (string au lieu de char*).
-    ("jcc", "string_length"): ("_j_lib_string_length", 1, "i32"),
-    ("jcc", "string_equals"): ("_j_lib_string_equals", 2, "bool"),
-    ("jcc", "string_compare"): ("_j_lib_string_compare", 2, "i32"),
-    ("jcc", "string_contains"): ("_j_lib_string_contains", 2, "bool"),
-    ("jcc", "string_starts_with"): ("_j_lib_string_starts_with", 2, "bool"),
-    ("jcc", "string_ends_with"): ("_j_lib_string_ends_with", 2, "bool"),
-    ("jcc", "string_concat"): ("_j_lib_string_concat", 2, "string"),
-    ("jcc", "string_substring"): ("_j_lib_string_substring", 3, "string"),
-    ("jcc", "string_char_at"): ("_j_lib_string_char_at", 2, "i32"),
-    ("jcc", "string_find"): ("_j_lib_string_find", 2, "i32"),
-    ("jcc", "string_to_upper"): ("_j_lib_string_to_upper", 1, "string"),
-    ("jcc", "string_to_lower"): ("_j_lib_string_to_lower", 1, "string"),
-
-    # Conversions utiles, sans exposer strtol/strtod et leurs pointeurs.
-    ("jcc", "string_to_i32"): ("_j_lib_string_to_i32", 1, "i32"),
-    ("jcc", "string_to_i64"): ("_j_lib_string_to_i64", 1, "i64"),
-    ("jcc", "string_to_f64"): ("_j_lib_string_to_f64", 1, "f64"),
-    ("jcc", "i32_to_string"): ("_j_lib_i32_to_string", 1, "string"),
-    ("jcc", "i64_to_string"): ("_j_lib_i64_to_string", 1, "string"),
-    ("jcc", "f64_to_string"): ("_j_lib_f64_to_string", 1, "string"),
+    # Les opérations sur string sont exclusivement des fonctions membres de la classe native string.
 
     # ctype.h
     ("jcc", "is_digit"): ("_j_lib_is_digit", 1, "bool"),
@@ -1924,23 +2430,44 @@ def _system_runtime(used, used_string=False):
     if used_string:
         lines += [
             "",
-            "static string *string_from_cstr(const char *src) {",
-            "    string *s = (string *)calloc(1, sizeof(string));",
+            "static string *string_alloc(size_t length) {",
+            "    string *s = (string *)malloc(sizeof(string) + length + 1);",
             "    if (!s) return 0;",
-            "    if (!src) src = \"\";",
-            "    s->length = strlen(src);",
-            "    s->data = (char *)malloc(s->length + 1);",
-            "    if (!s->data) { free(s); return 0; }",
-            "    memcpy(s->data, src, s->length + 1);",
+            "    s->length = length;",
+            "    s->data[length] = '\\0';",
             "    return s;",
             "}",
-            "",
+            "static string *string_from_cstr(const char *src) {",
+            "    string *s; size_t length;",
+            "    if (!src) src = \"\";",
+            "    length = strlen(src);",
+            "    s = string_alloc(length);",
+            "    if (!s) return 0;",
+            "    memcpy(s->data, src, length);",
+            "    s->literal = 0;",
+            "    return s;",
+            "}",
+            "typedef struct _jLiteralNode { string *s; struct _jLiteralNode *next; } _jLiteralNode;",
+            "static _jLiteralNode *_j_literal_head = 0;",
+            "static int _j_literal_atexit = 0;",
+            "static int _j_untrack_literal(string *self) { _jLiteralNode **pp; _jLiteralNode *n; if(!self)return 0; pp=&_j_literal_head; while(*pp){if((*pp)->s==self){n=*pp;*pp=n->next;free(n);return 1;}pp=&(*pp)->next;}return 0; }",
+            "static void _j_free_literals(void) { _jLiteralNode *n; _jLiteralNode *next; n=_j_literal_head; while(n){next=n->next;free(n->s);free(n);n=next;} _j_literal_head=0; }",
+            "static string *string_from_literal(const char *src) { string *s; _jLiteralNode *n; s=string_from_cstr(src); if(!s)return 0; s->literal=1; n=(_jLiteralNode*)malloc(sizeof(_jLiteralNode)); if(!n){free(s);return 0;} n->s=s;n->next=_j_literal_head;_j_literal_head=n; if(!_j_literal_atexit){atexit(_j_free_literals);_j_literal_atexit=1;} return s; }",
             "static string *string_ctor(void) { return string_from_cstr(\"\"); }",
             "static void string_destr(string *self) {",
+            "    _jLiteralNode **pp; _jLiteralNode *n;",
             "    if (!self) return;",
-            "    free(self->data);",
-            "    self->data = 0;",
-            "    self->length = 0;",
+            "    if (self->literal) {",
+            "        pp = &_j_literal_head;",
+            "        while (*pp) {",
+            "            if ((*pp)->s == self) {",
+            "                n = *pp; *pp = n->next; free(n); self->literal = 0; free(self); return;",
+            "            }",
+            "            pp = &(*pp)->next;",
+            "        }",
+            "        return;",
+            "    }",
+            "    free(self);",
             "}",
             "static i32 string_length(string *self) { return self ? (i32)self->length : 0; }",
             "static _jBool string_empty(string *self) { return (!self || self->length == 0) ? 1 : 0; }",
@@ -1948,6 +2475,7 @@ def _system_runtime(used, used_string=False):
             "    if (!self || !other) return self == other;",
             "    return strcmp(self->data ? self->data : \"\", other->data ? other->data : \"\") == 0;",
             "}",
+            "",
             "static _jBool string_contains(string *self, string *needle) {",
             "    if (!self || !needle) return 0;",
             "    return strstr(self->data ? self->data : \"\", needle->data ? needle->data : \"\") != 0;",
@@ -1962,10 +2490,8 @@ def _system_runtime(used, used_string=False):
             "}",
             "static string *string_concat(string *self, string *other) {",
             "    size_t a = self ? self->length : 0, b = other ? other->length : 0;",
-            "    string *out = (string *)calloc(1, sizeof(string));",
+            "    string *out = string_alloc(a + b);",
             "    if (!out) return 0;",
-            "    out->length = a + b; out->data = (char *)malloc(out->length + 1);",
-            "    if (!out->data) { free(out); return 0; }",
             "    if (a) memcpy(out->data, self->data, a);",
             "    if (b) memcpy(out->data + a, other->data, b);",
             "    out->data[out->length] = '\\0';",
@@ -1975,8 +2501,7 @@ def _system_runtime(used, used_string=False):
             "    size_t a, n; string *out;",
             "    if (!self || start < 0 || length < 0 || (size_t)start > self->length) return string_from_cstr(\"\");",
             "    a = (size_t)start; n = (size_t)length; if (n > self->length - a) n = self->length - a;",
-            "    out = (string *)calloc(1, sizeof(string)); if (!out) return 0;",
-            "    out->length = n; out->data = (char *)malloc(n + 1); if (!out->data) { free(out); return 0; }",
+            "    out = string_alloc(n); if (!out) return 0;",
             "    memcpy(out->data, self->data + a, n); out->data[n] = '\\0'; return out;",
             "}",
             "static i32 string_char_at(string *self, i32 index) {",
@@ -2214,24 +2739,6 @@ def _system_runtime(used, used_string=False):
             "static f64 _j_lib_log10(f64 v) { return log10(v); }",
             "static f64 _j_lib_exp(f64 v) { return exp(v); }",
             "static f64 _j_lib_fmod(f64 a, f64 b) { return fmod(a,b); }",
-            "static i32 _j_lib_string_length(string *s) { return s ? (i32)s->length : 0; }",
-            "static _jBool _j_lib_string_equals(string *a, string *b) { return (a && b && a->data && b->data) ? strcmp(a->data,b->data)==0 : ((!a || !a->data) && (!b || !b->data)); }",
-            "static i32 _j_lib_string_compare(string *a, string *b) { const char *x=(a&&a->data)?a->data:\"\"; const char *y=(b&&b->data)?b->data:\"\"; return (i32)strcmp(x,y); }",
-            "static _jBool _j_lib_string_contains(string *s, string *n) { const char *x=(s&&s->data)?s->data:\"\"; const char *y=(n&&n->data)?n->data:\"\"; return strstr(x,y)!=0; }",
-            "static _jBool _j_lib_string_starts_with(string *s, string *p) { const char *x=(s&&s->data)?s->data:\"\"; const char *y=(p&&p->data)?p->data:\"\"; size_t n=strlen(y); return strncmp(x,y,n)==0; }",
-            "static _jBool _j_lib_string_ends_with(string *s, string *p) { const char *x=(s&&s->data)?s->data:\"\"; const char *y=(p&&p->data)?p->data:\"\"; size_t n=strlen(x), m=strlen(y); return m<=n && strcmp(x+n-m,y)==0; }",
-            "static string *_j_lib_string_concat(string *a, string *b) { const char *x=(a&&a->data)?a->data:\"\"; const char *y=(b&&b->data)?b->data:\"\"; size_t n=strlen(x)+strlen(y); char *buf=(char*)malloc(n+1); string *r; if(!buf)return 0; strcpy(buf,x); strcat(buf,y); r=string_from_cstr(buf); free(buf); return r; }",
-            "static string *_j_lib_string_substring(string *s, i32 start, i32 len) { const char *x=(s&&s->data)?s->data:\"\"; size_t n=strlen(x); size_t st=start<0?0:(size_t)start; size_t ln=len<0?0:(size_t)len; char *buf; string *r; if(st>n)st=n; if(ln>n-st)ln=n-st; buf=(char*)malloc(ln+1); if(!buf)return 0; memcpy(buf,x+st,ln); buf[ln]=0; r=string_from_cstr(buf); free(buf); return r; }",
-            "static i32 _j_lib_string_char_at(string *s, i32 i) { if(!s || !s->data || i<0 || (size_t)i>=s->length) return -1; return (unsigned char)s->data[i]; }",
-            "static i32 _j_lib_string_find(string *s, string *n) { const char *x=(s&&s->data)?s->data:\"\"; const char *y=(n&&n->data)?n->data:\"\"; const char *p=strstr(x,y); return p ? (i32)(p-x) : -1; }",
-            "static string *_j_lib_string_to_upper(string *s) { const char *x=(s&&s->data)?s->data:\"\"; size_t n=strlen(x),i; char *b=(char*)malloc(n+1); string *r; if(!b)return 0; for(i=0;i<n;i++)b[i]=(char)toupper((unsigned char)x[i]); b[n]=0; r=string_from_cstr(b); free(b); return r; }",
-            "static string *_j_lib_string_to_lower(string *s) { const char *x=(s&&s->data)?s->data:\"\"; size_t n=strlen(x),i; char *b=(char*)malloc(n+1); string *r; if(!b)return 0; for(i=0;i<n;i++)b[i]=(char)tolower((unsigned char)x[i]); b[n]=0; r=string_from_cstr(b); free(b); return r; }",
-            "static i32 _j_lib_string_to_i32(string *s) { return (i32)strtol((s&&s->data)?s->data:\"0\",0,10); }",
-            "static i64 _j_lib_string_to_i64(string *s) { return (i64)strtoll((s&&s->data)?s->data:\"0\",0,10); }",
-            "static f64 _j_lib_string_to_f64(string *s) { return (f64)strtod((s&&s->data)?s->data:\"0\",0); }",
-            "static string *_j_lib_i32_to_string(i32 v) { char b[64]; sprintf(b,\"%d\",(int)v); return string_from_cstr(b); }",
-            "static string *_j_lib_i64_to_string(i64 v) { char b[64]; sprintf(b,\"%lld\",(long long)v); return string_from_cstr(b); }",
-            "static string *_j_lib_f64_to_string(f64 v) { char b[64]; sprintf(b,\"%.17g\",v); return string_from_cstr(b); }",
             "static _jBool _j_lib_is_digit(i32 c) { return isdigit((unsigned char)c)!=0; }",
             "static _jBool _j_lib_is_alpha(i32 c) { return isalpha((unsigned char)c)!=0; }",
             "static _jBool _j_lib_is_alnum(i32 c) { return isalnum((unsigned char)c)!=0; }",
@@ -2309,12 +2816,25 @@ class CodeGen:
         self.groups = groups
         self.classes: Dict[str, ClassDecl] = {x.name:x for x in program.items if isinstance(x, ClassDecl)}
         self.enums: Dict[str, EnumDecl] = {x.name:x for x in program.items if isinstance(x, EnumDecl) and not x.namespace}
+        self.unions: Dict[str, UnionDecl] = {x.name:x for x in program.items if isinstance(x, UnionDecl)}
+        self.structs: Dict[str, StructDecl] = {x.name:x for x in program.items if isinstance(x, StructDecl)}
         self.using_namespaces = list(getattr(program, "_using_namespaces", []))
         self.using_symbols = dict(getattr(program, "_using_symbols", {}))
         self.forward_decls = [(x.kind, x.name) for x in program.items if isinstance(x, ForwardDecl)]
+        self.macros: Dict[str, str] = {}
+        for x in program.items:
+            if isinstance(x, PreprocLine):
+                m = re.match(r"\s*#\s*define\s+([A-Za-z_]\w*)(?:\s+(.*?))?\s*$", x.text)
+                if m and m.group(2):
+                    value = m.group(2).strip()
+                    if re.fullmatch(r"[+-]?\d+", value): self.macros[m.group(1)] = "int"
+                    elif re.fullmatch(r"[+-]?(?:\d+\.\d*|\.\d+)(?:[eE][+-]?\d+)?", value): self.macros[m.group(1)] = "float"
+                    elif value in ("true", "false"): self.macros[m.group(1)] = "bool"
+                    elif len(value) >= 2 and value[0] == value[-1] == '"': self.macros[m.group(1)] = "string"
         if "string" not in self.classes:
             self.classes["string"] = _builtin_string_class()
         self._current_class: Optional[ClassDecl] = None
+        self._current_namespace: Optional[str] = None
         # c89=False : déclarations laissées à leur place (C99+)
         # c89=True  : déclarations remontées en tête de bloc (C89 strict)
         self.c89 = c89
@@ -2334,11 +2854,22 @@ class CodeGen:
         # variables globales : nom -> type Jaguar (pour l'inférence de
         # types dans la résolution de surcharge, et la validation)
         self.global_types: Dict[str, str] = {}
+        self.global_decl_lines: Dict[str, int] = {}
+        self.union_globals: Dict[str, str] = {}
         self.global_const: set[str] = set()
         fn_c_names = {
             fn.mangled_name for fns in groups.values() for fn in fns
         }
         for item in program.items:
+            if isinstance(item, UnionDecl):
+                # A named union declaration also provides its default global
+                # storage in Jaguar, so `union val { ... }` can be used as
+                # `val.member` directly.
+                if item.name in self.global_types:
+                    raise CodeGenError(f"global variable '{item.name}' is declared multiple times")
+                self.global_types[item.name] = item.name
+                self.global_decl_lines[item.name] = getattr(item, "_jaguar_line", 1)
+                self.union_globals[item.name] = f"_j_union_{item.name}"
             if isinstance(item, VarDecl):
                 if item.type == "auto":
                     raise CodeGenError("'auto' is not allowed for a global variable")
@@ -2352,6 +2883,7 @@ class CodeGen:
                         f"(in C) as a function"
                     )
                 self.global_types[item.name] = item.type
+                self.global_decl_lines[item.name] = getattr(item, "_jaguar_line", 1)
                 if item.is_const: self.global_const.add(item.name)
 
     def _walk_expressions(self):
@@ -2374,7 +2906,25 @@ class CodeGen:
                         if hasattr(st, attr): yield from exprs(getattr(st, attr))
             elif isinstance(item, VarDecl): yield from exprs(item.init)
 
-    def gen(self) -> str:
+    def _validate_parameter_defaults(self):
+        # Defaults are part of Jaguar declarations, so type-check them before
+        # any C is emitted. This makes declaration errors independent of GCC.
+        owners = []
+        for item in self.program.items:
+            if isinstance(item, FunctionDecl):
+                owners.append((item.name, item.params))
+            elif isinstance(item, ClassDecl):
+                for m in item.methods:
+                    owners.append((f"{item.name}::{m.name}", m.params))
+        for owner_name, params in owners:
+            for p in params:
+                if p.default is None:
+                    continue
+                at = self.infer_type(p.default, {})
+                self._check_assignable(p.type, at, f"default value of parameter '{p.name}'", p.default)
+
+    def gen(self, split_runtime: bool = False):
+        self._validate_parameter_defaults()
         used_types = self._used_builtin_types()
         # `string` is a core language type and its runtime is always available.
         # This also guarantees sys:print/string helpers are defined even when
@@ -2394,27 +2944,53 @@ class CodeGen:
             BUILTIN_TYPEDEFS[t] for t in ORDERED_BUILTIN_TYPES if t in used_types
         ]
         pair_lines = self._pair_typedefs()
+        alias_lines = []
+        for item in self.program.items:
+            if isinstance(item, TypeAliasDecl):
+                fp = _function_type_parts(item.target)
+                if fp is not None:
+                    params, ret = fp
+                    p = ", ".join(c_type(x) for x in params) if params else "void"
+                    alias_lines.append(f"typedef {c_type(ret)} (*{item.name})({p});")
+                else:
+                    alias_lines.append(f"typedef {self._decl_c_type(item.target)} {item.name};")
 
         parts = []
+        # c_type() maps Jaguar fixed-width types (u32, i64, ...) back to
+        # the generated C ABI. The runtime header owns the builtin typedefs
+        # when direct compilation is requested.
+        if not split_runtime and any(t in used_types for t in ("i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64")):
+            parts.append("#include <stdint.h>")
         needs_new = any(isinstance(x, NewExpr) for x in self._walk_expressions())
-        if self.classes or needs_new:
+        if not split_runtime and (self.classes or needs_new or self.structs):
             parts.append("#include <stdlib.h>")
-        if needs_new:
+        if not split_runtime and (needs_new or self.structs):
             parts.append("#include <string.h>")
             parts.append("#include <stdio.h>")
             parts.append("static void *_j_alloc_value(size_t size, const void *src) { void *p = malloc(size); if (!p) { fprintf(stderr, \"Jaguar runtime error: allocation failed\\n\"); abort(); } memcpy(p, src, size); return p; }")
+        runtime_chunks = []
+        runtime_typedefs = []
+        if split_runtime:
+            runtime_chunks.append("static void *_j_alloc_value(size_t size, const void *src) { void *p = malloc(size); if (!p) { fprintf(stderr, \"Jaguar runtime error: allocation failed\\n\"); abort(); } memcpy(p, src, size); return p; }") if needs_new else ""
         # All named class/struct types get an early C forward declaration so
         # pointers and prototypes may refer to them before their definition.
         known_class_names = set(self.classes) - {"string"}
         known_struct_names = {x.name for x in self.program.items if isinstance(x, StructDecl)}
+        known_union_names = {x.name for x in self.program.items if isinstance(x, UnionDecl)}
         forward_lines = []
         for kind, name in self.forward_decls:
             if kind == "class":
                 forward_lines.append(f"typedef struct {name} {name};")
             elif kind == "struct":
                 forward_lines.append(f"typedef struct {name} {name};")
+            elif kind == "union":
+                forward_lines.append(f"typedef union {name} {name};")
         for name in sorted(known_class_names | known_struct_names):
             line = f"typedef struct {name} {name};"
+            if line not in forward_lines:
+                forward_lines.append(line)
+        for name in sorted(known_union_names):
+            line = f"typedef union {name} {name};"
             if line not in forward_lines:
                 forward_lines.append(line)
         if forward_lines:
@@ -2427,35 +3003,83 @@ class CodeGen:
             enum_lines.append(f"}} {cname};")
         if enum_lines:
             parts.append("\n".join(enum_lines))
-        # Le runtime doit apparaître après les typedefs : fs:read retourne
-        # `string`, donc son helper C a besoin de ce type.
-        if typedef_lines:
+        # Le runtime est normalement inline pour conserver la compatibilité de
+        # transpile(). Avec split_runtime, il est externalisé dans
+        # jaguar_runtime.c / jaguar_runtime.h.
+        if typedef_lines and not split_runtime:
             parts.append("\n".join(typedef_lines))
+        if alias_lines:
+            parts.append("\n".join(alias_lines))
         if pair_lines:
             parts.append("\n".join(pair_lines))
+
         runtime = _system_runtime(used_system, used_string)
         if runtime:
-            parts.append(runtime)
+            if split_runtime:
+                runtime_chunks.append(runtime)
+            else:
+                parts.append(runtime)
         collection_runtime = self._collection_runtime()
         if collection_runtime:
-            parts.append(collection_runtime)
+            if split_runtime:
+                c_lines = collection_runtime.splitlines()
+                runtime_typedefs.extend(line for line in c_lines if line.startswith("typedef "))
+                runtime_chunks.append("\n".join(line for line in c_lines if not line.startswith("typedef ")))
+            else:
+                parts.append(collection_runtime)
         reflection = self._native_reflection_runtime()
         if reflection:
-            parts.append(self._native_reflection_prelude())
+            reflection_prelude = self._native_reflection_prelude()
+            if split_runtime:
+                r_lines = reflection_prelude.splitlines()
+                runtime_typedefs.extend(line for line in r_lines if line.startswith("typedef "))
+                runtime_chunks.append("\n".join(line for line in r_lines if not line.startswith("typedef ")))
+            else:
+                parts.append(reflection_prelude)
             # La factory est une API runtime dynamique : son symbole doit
             # toujours être déclaré avant le code utilisateur dès que le
-            # runtime réflexion/factory est présent. On ne peut pas dépendre
-            # de la présence d'une classe @register ici, car l'appel
-            # `factory:construct(name)` peut utiliser un nom dynamique.
+            # runtime réflexion/factory est présent.
+            # factory/print are emitted in the program unit itself, while
+            # member_exists/set_member live in the split runtime.
             parts.append("static void *_j_factory_construct(string *name);")
-            "static void *_j_reflect_get_member(void *obj, const char *name) { _jReflectEntry *e=_j_reflect_find(obj,name); if(!e){fprintf(stderr,\"Jaguar runtime error: member '%s' does not exist or is not exposed\\n\",name?name:\"<null>\"); return 0;} return e->ptr; }",
-            parts.append("static _jBool _j_reflect_member_exists(void *obj, const char *name);")
-            parts.append("static void _j_reflect_set_member(void *obj, const char *name, const char *type_name, long long si, unsigned long long ui, double f, string *str, void *ptr);")
+            split_decl = "" if split_runtime else "static "
+            parts.append(split_decl + "_jBool _j_reflect_member_exists(void *obj, const char *name);")
+            parts.append(split_decl + "void _j_reflect_set_member(void *obj, const char *name, const char *type_name, long long si, unsigned long long ui, double f, string *str, void *ptr);")
             parts.append("static void _j_reflect_print(void *obj, const char *name);")
         for item in self.program.items:
             parts.append(self.gen_item(item))
         if reflection:
             parts.append(reflection)
+        if split_runtime:
+            import re
+            runtime_c_parts = []
+            for chunk in runtime_chunks:
+                if not chunk:
+                    continue
+                runtime_c_parts.append(re.sub(r"(?m)^static ", "", chunk))
+            runtime_c = '#include "jaguar_runtime.h"\n\n' + "\n\n".join(runtime_c_parts) + "\n"
+            proto_re = re.compile(r"(?m)^(?:const )?(?:unsigned |signed )?[A-Za-z_][A-Za-z0-9_]*(?:\s*\*)*\s*[A-Za-z_][A-Za-z0-9_]*\([^;{}]*\)\s*\{")
+            prototypes = []
+            for m in proto_re.finditer(runtime_c):
+                sig = m.group(0).rsplit("{", 1)[0].strip() + ";"
+                if sig not in prototypes:
+                    prototypes.append(sig)
+            header_lines = [
+                "#ifndef JAGUAR_RUNTIME_H",
+                "#define JAGUAR_RUNTIME_H",
+                "#include <stddef.h>",
+                "#include <stdio.h>",
+                "#include <stdlib.h>",
+                "#include <string.h>",
+            ]
+            if any(t in used_types for t in ("i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64")):
+                header_lines.append("#include <stdint.h>")
+            header_lines.extend(typedef_lines)
+            header_lines.extend(runtime_typedefs)
+            header_lines.extend(prototypes)
+            header_lines.append("#endif")
+            parts.insert(0, '#include "jaguar_runtime.h"')
+            return {"program": "\n\n".join(parts) + "\n", "runtime_h": "\n\n".join(header_lines) + "\n", "runtime_c": runtime_c}
 
         return "\n\n".join(parts) + "\n"
 
@@ -2594,6 +3218,17 @@ class CodeGen:
                             if st.type == "auto": used.update(("i32", "f32"))
             elif isinstance(item, VarDecl):     # variable globale
                 note(item.type)
+            elif isinstance(item, TypeAliasDecl):
+                # Function-pointer aliases can contain several builtin types.
+                # Scan both parameters and return type so their C typedefs are
+                # emitted before the alias itself.
+                fp = _function_type_parts(item.target)
+                if fp is not None:
+                    params, ret = fp
+                    note(ret)
+                    for p in params: note(p)
+                else:
+                    note(item.target)
         return used
 
 
@@ -2660,9 +3295,14 @@ class CodeGen:
                     scan(m.body.statements, env)
             elif isinstance(item, VarDecl): note(item.type)
         out=[]
-        for t in sorted(pairs):
+        # Nested pair types must be emitted from the innermost pair outward,
+        # and generic members (e.g. list<pair<...>>) must use their generated
+        # C container type instead of a raw Jaguar generic spelling.
+        for t in sorted(pairs, key=lambda x: (x.count("<"), x)):
             a,b=self._split_generic_args(self._generic_parts(t)[1]); cn=self._pair_c_type(t)
-            out.append(f"typedef struct {cn} {{ {c_type(a)} first; {c_type(b)} second; }} {cn};")
+            ac=self._collection_c_type(a) if self._generic_parts(a) else c_type(a)
+            bc=self._collection_c_type(b) if self._generic_parts(b) else c_type(b)
+            out.append(f"typedef struct {cn} {{ {ac} first; {bc} second; }} {cn};")
         return out
 
     def _collection_c_type(self,t):
@@ -2678,37 +3318,82 @@ class CodeGen:
     def _gen_collection_init(self,name,t,init,local_types):
         kind,inner=self._generic_parts(t); out=[]
         if kind=="dynamic_list":
+            if init is not None and not isinstance(init, ListLiteral):
+                init_type = self.infer_type(init, local_types)
+                self._check_assignable("dynamic_list", init_type, f"dynamic_list initializer for '{name}'", init)
+                out.append(f"{name} = {self.gen_expr(init,local_types)};")
+                return out
             out.append(f'_j_dynamic_list_init(&{name});')
             if init is not None:
-                if not isinstance(init,ListLiteral): raise CodeGenError("invalid dynamic_list initializer")
                 for x in init.items:
                     out.extend(self._gen_dynamic_list_push(name, x, local_types))
         elif kind=="list":
+            if init is not None and not isinstance(init, ListLiteral):
+                init_type = self.infer_type(init, local_types)
+                self._check_assignable(f"list<{inner}>", init_type, f"list initializer for '{name}'", init)
+                out.append(f"{name} = {self.gen_expr(init,local_types)};")
+                return out
             out.append(f'_j_list_init(&{name},{self._collection_elem_size(inner)},"{inner}");')
             if init is not None:
-                if not isinstance(init,ListLiteral): raise CodeGenError(f"invalid list<{inner}> initializer")
                 for x in init.items:
+                    xt=self.infer_type(x,local_types)
+                    self._check_assignable(inner, xt, f"item of list '{name}'", x)
                     ex=self.gen_expr(x,local_types); n=self._tmp_id; self._tmp_id+=1
-                    out.append(f'{self._collection_c_type(inner)} _jct{n} = {ex};')
-                    out.append(f'_j_list_push(&{name}, &_jct{n});')
+                    if self.c89:
+                        out.append("{")
+                        out.append(f'    {self._collection_c_type(inner)} _jct{n};')
+                        out.append(f'    _jct{n} = {ex};')
+                        out.append(f'    _j_list_push(&{name}, &_jct{n});')
+                        out.append("}")
+                    else:
+                        out.append(f'{self._collection_c_type(inner)} _jct{n} = {ex};')
+                        out.append(f'_j_list_push(&{name}, &_jct{n});')
         elif kind=="pair":
             parts=self._split_generic_args(inner)
             if len(parts)!=2: raise CodeGenError("pair must have two types")
             if init is not None:
-                if not isinstance(init,ListLiteral) or len(init.items)!=2: raise CodeGenError("invalid pair initializer: use {first, second}")
-                a,b=parts; out.append(f"{name}.first = {self.gen_expr(init.items[0],local_types)};"); out.append(f"{name}.second = {self.gen_expr(init.items[1],local_types)};")
+                if isinstance(init, ListLiteral):
+                    if len(init.items)!=2: raise CodeGenError("invalid pair initializer: use {first, second}")
+                    a,b=parts
+                    self._check_assignable(a, self.infer_type(init.items[0],local_types), f"first item of pair '{name}'", init.items[0])
+                    self._check_assignable(b, self.infer_type(init.items[1],local_types), f"second item of pair '{name}'", init.items[1])
+                    out.append(f"{name}.first = {self.gen_expr(init.items[0],local_types)};")
+                    out.append(f"{name}.second = {self.gen_expr(init.items[1],local_types)};")
+                else:
+                    # A pair is a plain value type: an existing pair of the
+                    # same type can initialize it directly, just like a
+                    # normal struct value.
+                    init_type = self.infer_type(init, local_types)
+                    self._check_assignable(f"pair<{parts[0]},{parts[1]}>", init_type, f"pair initializer for '{name}'", init)
+                    out.append(f"{name} = {self.gen_expr(init,local_types)};")
         elif kind=="map":
             parts=self._split_generic_args(inner)
             if len(parts)!=2: raise CodeGenError("map must have two types: map<key,value>")
+            if init is not None and not isinstance(init, ListLiteral):
+                init_type = self.infer_type(init, local_types)
+                self._check_assignable(f"map<{parts[0]},{parts[1]}>", init_type, f"map initializer for '{name}'", init)
+                out.append(f"{name} = {self.gen_expr(init,local_types)};")
+                return out
             kt,vt=parts; out.append(f'_j_map_init(&{name},{self._collection_elem_size(kt)},{self._collection_elem_size(vt)},"{kt}","{vt}");')
             if init is not None:
-                if not isinstance(init,ListLiteral) or len(init.items)%2: raise CodeGenError("invalid map initializer: use {key, value, ...}")
+                if len(init.items)%2: raise CodeGenError("invalid map initializer: use {key, value, ...}")
                 for i in range(0,len(init.items),2):
+                    self._check_assignable(kt, self.infer_type(init.items[i],local_types), f"key of map '{name}'", init.items[i])
+                    self._check_assignable(vt, self.infer_type(init.items[i+1],local_types), f"value of map '{name}'", init.items[i+1])
                     k=self.gen_expr(init.items[i],local_types); v=self.gen_expr(init.items[i+1],local_types)
                     nk=self._tmp_id; self._tmp_id+=1; nv=self._tmp_id; self._tmp_id+=1
-                    out.append(f'{c_type(kt)} _jck{nk} = {k};')
-                    out.append(f'{c_type(vt)} _jcv{nv} = {v};')
-                    out.append(f'_j_map_emplace(&{name}, &_jck{nk}, &_jcv{nv});')
+                    if self.c89:
+                        out.append("{")
+                        out.append(f'    {c_type(kt)} _jck{nk};')
+                        out.append(f'    {c_type(vt)} _jcv{nv};')
+                        out.append(f'    _jck{nk} = {k};')
+                        out.append(f'    _jcv{nv} = {v};')
+                        out.append(f'    _j_map_emplace(&{name}, &_jck{nk}, &_jcv{nv});')
+                        out.append("}")
+                    else:
+                        out.append(f'{c_type(kt)} _jck{nk} = {k};')
+                        out.append(f'{c_type(vt)} _jcv{nv} = {v};')
+                        out.append(f'_j_map_emplace(&{name}, &_jck{nk}, &_jcv{nv});')
         else:
             if init is None: out.append(f'_j_container_init(&{name},0,"{inner}",0);')
             elif isinstance(init,NewExpr):
@@ -2720,9 +3405,12 @@ class CodeGen:
                     out.append(f'_j_container_init(&{name},(void*){inner}_ctor({args}),"{inner}",(void(*)(void*)){inner}_destr);')
                 else:
                     if len(init.args)!=1: raise CodeGenError(f"new {inner}(...) expects a value")
-                    ex=self.gen_expr(init.args[0].expr if isinstance(init.args[0],NamedArg) else init.args[0],local_types)
+                    value = init.args[0].expr if isinstance(init.args[0],NamedArg) else init.args[0]
+                    self._check_assignable(inner, self.infer_type(value,local_types), f"container initializer for '{name}'", value)
+                    ex=self.gen_expr(value,local_types)
                     out.append(f'{{ {c_type(inner)} *_jtmp=( {c_type(inner)}*)malloc(sizeof({c_type(inner)})); if(!_jtmp)abort(); *_jtmp={ex}; _j_container_init(&{name},_jtmp,"{inner}",0); }}')
             else:
+                self._check_assignable(inner, self.infer_type(init,local_types), f"container initializer for '{name}'", init)
                 ex=self.gen_expr(init,local_types); out.append(f'{{ {c_type(inner)} *_jtmp=({c_type(inner)}*)malloc(sizeof({c_type(inner)})); if(!_jtmp)abort(); *_jtmp={ex}; _j_container_init(&{name},_jtmp,"{inner}",0); }}')
         return out
 
@@ -2782,17 +3470,18 @@ class CodeGen:
             "typedef struct _jMap { _jMapEntry *items; size_t size; size_t cap; size_t key_size; size_t value_size; const char *key_type; const char *value_type; } _jMap;",
             "typedef struct _jContainer { void *data; const char *type; void (*destroy)(void*); } _jContainer;",
             "static void *_j_memdup(const void *src,size_t n){void*p=malloc(n);if(p&&src)memcpy(p,src,n);return p;}",
-            "static void _j_destroy_string_value(void*p){if(p){string_destr((string*)p);free(p);}}",
+            "static void _j_destroy_string_value(void*p){if(p)_j_untrack_literal((string*)p);}",
             "static void _j_dynamic_list_init(_jDynamicList*l){l->items=0;l->size=0;l->cap=0;}",
             "static void _j_dynamic_list_grow(_jDynamicList*l){if(l->size==l->cap){size_t nc=l->cap?l->cap*2:4;_jDynamicItem*ni=(_jDynamicItem*)realloc(l->items,nc*sizeof(_jDynamicItem));if(!ni)abort();l->items=ni;l->cap=nc;}}",
             "static void _j_dynamic_list_push_copy(_jDynamicList*l,const void*v,size_t n,const char*t){_j_dynamic_list_grow(l);l->items[l->size].data=_j_memdup(v,n);if(!l->items[l->size].data)abort();l->items[l->size].size=n;l->items[l->size].type=t;l->items[l->size].destroy=0;l->size++;}",
             "static void _j_dynamic_list_push_owned(_jDynamicList*l,void*v,const char*t,void(*destroy)(void*)){_j_dynamic_list_grow(l);l->items[l->size].data=v;l->items[l->size].size=sizeof(void*);l->items[l->size].type=t;l->items[l->size].destroy=destroy;l->size++;}",
-            "static void _j_dynamic_list_push_borrowed(_jDynamicList*l,void*v,const char*t){_j_dynamic_list_push_owned(l,v,t,0);}",
+            "static void _j_dynamic_list_push_borrowed(_jDynamicList*l,void*v,const char*t){_j_dynamic_list_push_owned(l,v,t,_j_dynamic_list_borrowed);}",
             "static void *_j_dynamic_list_get(_jDynamicList*l,size_t i){if(!l||i>=l->size){fprintf(stderr,\"Jaguar runtime error: dynamic_list index %lu out of range\\n\",(unsigned long)i);abort();}return l->items[i].data;}",
             "static const char *_j_dynamic_list_type(_jDynamicList*l,size_t i){if(!l||i>=l->size){fprintf(stderr,\"Jaguar runtime error: dynamic_list index %lu out of range\\n\",(unsigned long)i);abort();}return l->items[i].type;}",
-            "static void _j_dynamic_list_destroy(_jDynamicList*l){size_t i;if(!l)return;for(i=0;i<l->size;i++)if(l->items[i].destroy)l->items[i].destroy(l->items[i].data);free(l->items);l->items=0;l->size=0;l->cap=0;}",
+            "static void _j_dynamic_list_borrowed(void*p){(void)p;}",
+            "static void _j_dynamic_list_destroy(_jDynamicList*l){size_t i;if(!l)return;for(i=0;i<l->size;i++){if(l->items[i].destroy!=_j_dynamic_list_borrowed){if(l->items[i].destroy)l->items[i].destroy(l->items[i].data);free(l->items[i].data);}}free(l->items);l->items=0;l->size=0;l->cap=0;}",
             "static void _j_list_init(_jList*l,size_t es,const char*t){l->items=0;l->size=0;l->cap=0;l->elem_size=es;l->elem_type=t;}",
-            "static void _j_destroy_string_slot(void*p){string*s=p?*(string**)p:0;if(s){string_destr(s);free(s);}}",
+            "static void _j_destroy_string_slot(void*p){string*s=p?*(string**)p:0;if(s){string_destr(s);}}",
             "static void _j_list_push(_jList*l,const void*v){void*p;if(l->size==l->cap){size_t nc=l->cap?l->cap*2:4;void**ni=(void**)realloc(l->items,nc*sizeof(void*));if(!ni)abort();l->items=ni;l->cap=nc;}p=_j_memdup(v,l->elem_size);if(!p)abort();l->items[l->size++]=p;}",
             "static void *_j_list_get(_jList*l,size_t i){if(!l||i>=l->size){fprintf(stderr,\"Jaguar runtime error: list index %lu out of range\\n\",(unsigned long)i);abort();}return l->items[i];}",
             "static void _j_list_destroy(_jList*l,void(*destroy)(void*)){size_t i;if(!l)return;for(i=0;i<l->size;i++){if(destroy)destroy(l->items[i]);free(l->items[i]);}free(l->items);l->items=0;l->size=0;l->cap=0;}",
@@ -2800,6 +3489,7 @@ class CodeGen:
             "static int _j_map_keyeq(const void*a,const void*b,size_t n,const char*t){if(!strcmp(t,\"string\")){string*sa=*(string**)a;string*sb=*(string**)b;return sa&&sb&&sa->data&&sb->data&&!strcmp(sa->data,sb->data);}return memcmp(a,b,n)==0;}",
             "static void *_j_map_get(_jMap*m,const void*k){size_t i;for(i=0;i<m->size;i++)if(_j_map_keyeq(m->items[i].key,k,m->key_size,m->key_type))return m->items[i].value;return 0;}",
             "static void *_j_map_get_string(_jMap*m,string*k){size_t i;for(i=0;i<m->size;i++){string*sk=*(string**)m->items[i].key;if(sk&&k&&sk->data&&k->data&&!strcmp(sk->data,k->data))return m->items[i].value;}fprintf(stderr,\"Jaguar runtime error: map key not found\\n\");abort();return 0;}",
+            "static void *_j_map_get_string_cstr(_jMap*m,const char*k){size_t i;for(i=0;i<m->size;i++){string*sk=*(string**)m->items[i].key;if(sk&&sk->data&&k&&!strcmp(sk->data,k))return m->items[i].value;}fprintf(stderr,\"Jaguar runtime error: map key not found\\n\");abort();return 0;}",
             "static void _j_map_emplace(_jMap*m,const void*k,const void*v){size_t i;void*kp;void*vp;for(i=0;i<m->size;i++)if(_j_map_keyeq(m->items[i].key,k,m->key_size,m->key_type)){memcpy(m->items[i].value,v,m->value_size);return;}if(m->size==m->cap){size_t nc=m->cap?m->cap*2:4;_jMapEntry*ni=(_jMapEntry*)realloc(m->items,nc*sizeof(_jMapEntry));if(!ni)abort();m->items=ni;m->cap=nc;}kp=_j_memdup(k,m->key_size);vp=_j_memdup(v,m->value_size);if(!kp||!vp)abort();m->items[m->size].key=kp;m->items[m->size].value=vp;m->size++;}",
             "static void _j_map_destroy(_jMap*m,void(*kd)(void*),void(*vd)(void*)){size_t i;if(!m)return;for(i=0;i<m->size;i++){if(kd)kd(m->items[i].key);if(vd)vd(m->items[i].value);free(m->items[i].key);free(m->items[i].value);}free(m->items);m->items=0;m->size=0;m->cap=0;}",
             "static void _j_container_init(_jContainer*c,void*d,const char*t,void(*destroy)(void*)){c->data=d;c->type=t;c->destroy=destroy;}",
@@ -2838,7 +3528,13 @@ class CodeGen:
         # Jaguar qui n'utilise pas la réflexion.
         if not any(name != "string" for name in self.classes):
             return ""
-        registered=[c for c in self.classes.values() if c.name!="string" and c.is_registered]
+        registered=[]
+        for c in self.classes.values():
+            if c.name == "string" or not c.is_registered:
+                continue
+            ctor = next((m for m in c.methods if m.is_constructor), None)
+            if ctor is None or all(p.default is not None for p in ctor.params):
+                registered.append(c)
         exposed_any=any(getattr(f,"is_exposed",False) for c in self.classes.values() for f in c.fields)
         # Le runtime factory doit exister même lorsqu'aucune classe n'est
         # actuellement enregistrée : `factory:construct()` est résolu au
@@ -2866,7 +3562,13 @@ class CodeGen:
             "    }",
         ]
         for c in registered:
-            lines.append(f'    if(strcmp(name->data,"{c.name}")==0)return(void*){c.name}_ctor();')
+            ctor = next((m for m in c.methods if m.is_constructor), None)
+            if ctor is None:
+                ctor_args = ""
+            else:
+                ordered = self._ordered_call_args([], ctor.params, f"constructeur '{c.name}'")
+                ctor_args = ", ".join(self.gen_expr(arg, {}) for arg in ordered)
+            lines.append(f'    if(strcmp(name->data,"{c.name}")==0)return(void*){c.name}_ctor({ctor_args});')
         lines += [
             '    fprintf(stderr, "Jaguar runtime error: cannot construct class \'%s\': class is not registered\\n", name->data);',
             "    abort();",
@@ -2877,6 +3579,8 @@ class CodeGen:
 
     # -- déclarations --
     def gen_item(self, item) -> str:
+        if hasattr(item, "namespace"):
+            self._current_namespace = getattr(item, "namespace", None)
         self._current_source_line = getattr(item, "_jaguar_line", 1)
         if isinstance(item, PreprocLine):
             return item.text
@@ -2884,12 +3588,14 @@ class CodeGen:
             return ""
         if isinstance(item, StructDecl):
             return self.gen_struct(item)
+        if isinstance(item, UnionDecl):
+            return self.gen_union(item)
         if isinstance(item, ClassDecl):
             return self.gen_class(item)
         if isinstance(item, FunctionDecl):
             if item.is_prototype:
                 params_str = ", ".join(self._param_c_decl(p) for p in item.params)
-                return f"{c_type(item.ret_type)} {item.mangled_name}({params_str});"
+                return f"{self._decl_c_type(item.ret_type)} {item.mangled_name}({params_str});"
             return self.gen_function(item)
         if isinstance(item, VarDecl):
             return self.gen_global_var(item)
@@ -2918,6 +3624,10 @@ class CodeGen:
         return False   # Call, NamespacedIdent, ...
 
     def gen_global_var(self, v: VarDecl) -> str:
+        if v.is_extern:
+            if v.init is not None:
+                raise CodeGenError(f"extern global variable '{v.name}' cannot have an initializer")
+            return "extern " + self._var_c_decl(v) + ";"
         if self._generic_parts(v.type):
             raise CodeGenError("list/map/container must currently be local variables")
         ctype = c_type(v.type)
@@ -2950,11 +3660,46 @@ class CodeGen:
             )
         return f"{self._var_c_decl(v)} = {self.gen_expr(v.init, {})};"
 
+    def _field_c_decl(self, f) -> str:
+        # Fields may contain C function-pointer aliases/types. A raw c_type()
+        # would leave `fn(...) -> T` in the generated C, which is invalid.
+        fp = self._function_ptr_c_decl(f.type, f.name)
+        if fp is not None:
+            return fp
+        base_type = self._collection_c_type(f.type) if self._generic_parts(f.type) else c_type(f.type)
+        if getattr(f, "type", "").endswith("*") and getattr(f, "pointee_const", False):
+            return "const " + c_type(f.type[:-1]) + " * " + f.name
+        if getattr(f, "type", "").endswith("*") and getattr(f, "is_const", False):
+            return c_type(f.type) + " const " + f.name
+        if getattr(f, "is_const", False):
+            return "const " + base_type + " " + f.name
+        return base_type + " " + f.name
+
     def gen_struct(self, s: StructDecl) -> str:
         lines = [f"struct {s.name} {{"]
         for f in s.fields:
-            lines.append(f"    {c_type(f.type)} {f.name};")
+            lines.append(f"    {self._field_c_decl(f)};")
         lines.append("};")
+        lines.append(
+            f"static {s.name} _j_struct_{s.name}_default(void) {{ "
+            f"{s.name} value; memset(&value, 0, sizeof(value)); return value; }}"
+        )
+        lines.append(
+            f"static {s.name} *_j_struct_{s.name}_new(void) {{ "
+            f"{s.name} *value = ({s.name}*)calloc(1, sizeof({s.name})); "
+            "if (!value) abort(); return value; }"
+        )
+        return "\n".join(lines)
+
+    def gen_union(self, u: UnionDecl) -> str:
+        lines = [f"union {u.name} {{"]
+        for f in u.fields:
+            lines.append(f"    {self._field_c_decl(f)};")
+        lines.append("};")
+        # Jaguar's named union declaration exposes one global union value with
+        # the same name. This is what makes `val.a = 5` valid after
+        # `union val { int a; float b; }`.
+        lines.append(f"union {u.name} _j_union_{u.name};")
         return "\n".join(lines)
 
     def _class_all_fields(self, cls):
@@ -2973,6 +3718,7 @@ class CodeGen:
         return None,None
 
     def gen_class(self, cls: ClassDecl) -> str:
+        self._current_namespace = cls.namespace
         # Emit a C struct with an explicit vtable. Inheritance is represented
         # by embedding the base object as `_base`, preserving public layout.
         lines=[f"typedef struct {cls.name}_vtable {cls.name}_vtable;"]
@@ -2982,15 +3728,7 @@ class CodeGen:
         if any(getattr(f, "is_exposed", False) for _, f in self._class_all_fields(cls)):
             lines.append("    _jReflectMap _reflect_map;")
         for f in cls.fields:
-            if f.pointee_const and f.type.endswith("*"):
-                decl="const " + c_type(f.type[:-1]) + " *"
-            elif f.is_const and f.type.endswith("*"):
-                decl=c_type(f.type) + " const"
-            elif f.is_const:
-                decl="const " + c_type(f.type)
-            else:
-                decl=c_type(f.type)
-            lines.append(f"    {decl} {f.name};")
+            lines.append(f"    {self._field_c_decl(f)};")
         lines.append("};")
         lines.append(f"struct {cls.name}_vtable {{")
         # Keep reflection metadata first so every class vtable has the same
@@ -3000,8 +3738,8 @@ class CodeGen:
         virt=[]
         for m in self._all_virtual_methods(cls):
             virt.append(m)
-            ps=", ".join(["void *self"] + [("const " if p.is_const else "") + f"{c_type(p.type)} {p.name}" for p in m.params])
-            lines.append(f"    {c_type(m.ret_type)} (*{m.name})({ps});")
+            ps=", ".join(["void *self"] + [("const " if p.is_const else "") + f"{self._decl_c_type(p.type)} {p.name}" for p in m.params])
+            lines.append(f"    {self._decl_c_type(m.ret_type)} (*{m.name})({ps});")
         lines.append("};")
         # Native reflection: each registered/exposed class gets a typed member lookup.
         exposed = [f for f in self._class_all_fields(cls) if getattr(f[1], "is_exposed", False)]
@@ -3017,8 +3755,8 @@ class CodeGen:
         # constructors/prototypes are needed before method bodies
         for m in cls.methods:
             if m.is_constructor or m.is_destructor: continue
-            ps=", ".join([f"{cls.name} *self"]+[("const " if p.is_const else "") + f"{c_type(p.type)} {p.name}" for p in m.params])
-            lines.append(f"{c_type(m.ret_type)} {cls.name}_{m.name}({ps});")
+            ps=", ".join([f"{cls.name} *self"]+[("const " if p.is_const else "") + f"{self._decl_c_type(p.type)} {p.name}" for p in m.params])
+            lines.append(f"{self._decl_c_type(m.ret_type)} {cls.name}_{m.name}({ps});")
         # Every Jaguar class gets a destructor entry point, even when the
         # user did not explicitly write `destr()`. This lets automatic scope
         # cleanup always call `<Class>_destr()` and lets an implicit derived
@@ -3027,7 +3765,7 @@ class CodeGen:
         lines.append(f"{cls.name} *{cls.name}_new(void);")
         for m in cls.methods:
             if m.is_constructor:
-                ps=", ".join(f"{c_type(p.type)} {p.name}" for p in m.params)
+                ps=", ".join(f"{self._decl_c_type(p.type)} {p.name}" for p in m.params)
                 lines.append(f"{cls.name} *{cls.name}_ctor({ps});")
         if not any(m.is_constructor for m in cls.methods):
             lines.append(f"{cls.name} *{cls.name}_ctor(void);")
@@ -3040,18 +3778,30 @@ class CodeGen:
         lines.append("};")
         # methods
         old=self._current_class; old_const=self._current_class_method_const; self._current_class=cls
+        old_return=getattr(self, "_current_return_type", None)
         for m in cls.methods:
             if m.is_constructor or m.is_destructor: continue
-            ps=", ".join([f"{cls.name} *self"]+[("const " if p.is_const else "")+f"{c_type(p.type)} {p.name}" for p in m.params])
+            ps=", ".join([f"{cls.name} *self"]+[("const " if p.is_const else "")+f"{self._decl_c_type(p.type)} {p.name}" for p in m.params])
             self._current_class_method_const=m.is_const
+            self._current_return_type=m.ret_type
+            self._current_source_line=getattr(m, "_jaguar_line", self._current_source_line)
             self._readonly_vars.update(p.name for p in m.params if p.is_const)
-            lines.append(f"{c_type(m.ret_type)} {cls.name}_{m.name}({ps}) {self.gen_block(m.body, {p.name:p.type for p in m.params})}")
+            body = self.gen_block(m.body, {p.name:p.type for p in m.params})
+            if m.ret_type != "void" and not self._block_guarantees_return(m.body):
+                err = CodeGenError(
+                    f"non-void function '{m.name}' may exit without returning a value of type '{m.ret_type}'"
+                )
+                err._jaguar_line = getattr(m, "_jaguar_line", self._current_source_line)
+                err._jaguar_column = getattr(m, "_jaguar_column", 0)
+                err._jaguar_end_column = getattr(m, "_jaguar_end_column", err._jaguar_column + len(m.name))
+                raise err
+            lines.append(f"{self._decl_c_type(m.ret_type)} {cls.name}_{m.name}({ps}) {body}")
         # ctor allocates and initializes vptr/base/default fields
         ctor=next((m for m in cls.methods if m.is_constructor),None)
         if ctor or True:
             ctor_params = ctor.params if ctor else []
             ctor_body = ctor.body if ctor else Block([])
-            ps=", ".join(f"{c_type(p.type)} {p.name}" for p in ctor_params)
+            ps=", ".join(f"{self._decl_c_type(p.type)} {p.name}" for p in ctor_params)
             lines.append(f"{cls.name} *{cls.name}_ctor({ps}) {{")
             lines.append(f"    {cls.name} *self = ({cls.name}*)calloc(1, sizeof({cls.name}));")
             lines.append("    if (!self) return 0;")
@@ -3077,11 +3827,17 @@ class CodeGen:
                     lines.append(f"    self->_reflect_map.entries[{idx}].ptr = (void*)&{access_expr};")
                     lines.append(f'    self->_reflect_map.entries[{idx}].type_name = "{f.type}";')
             for f in cls.fields:
-                if f.init is not None: lines.append(f"    self->{f.name} = {self.gen_expr(f.init, {p.name:p.type for p in ctor_params})};")
+                field_local_types = {p.name:p.type for p in ctor_params}
+                if self._generic_parts(f.type):
+                    for field_line in self._gen_collection_init(f"self->{f.name}", f.type, f.init, field_local_types):
+                        lines.append("    " + field_line)
+                elif f.init is not None:
+                    lines.append(f"    self->{f.name} = {self.gen_expr(f.init, field_local_types)};")
             # user ctor body
             old2=self._current_class; self._current_class=cls
+            old2_return=getattr(self, "_current_return_type", None); self._current_return_type="void"
             for line in self._gen_body_lines(ctor_body.statements, {p.name:p.type for p in ctor_params}): lines.append("    "+line)
-            self._current_class=old2
+            self._current_class=old2; self._current_return_type=old2_return
             lines.append("    return self;"); lines.append("}")
         destr=next((m for m in cls.methods if m.is_destructor),None)
         # A destructor is always generated. If the user supplied one, its
@@ -3089,18 +3845,57 @@ class CodeGen:
         # This means `destr()` is optional and inheritance remains safe.
         lines.append(f"void {cls.name}_destr({cls.name} *self) {{")
         old3=self._current_class; self._current_class=cls
+        old3_return=getattr(self, "_current_return_type", None); self._current_return_type="void"
         if destr:
             for line in self._gen_body_lines(
                 destr.body.statements,
                 {p.name:p.type for p in destr.params}
             ):
                 lines.append("    "+line)
+        for field_cleanup in self._class_field_cleanup_lines(cls):
+            lines.append("    " + field_cleanup)
         if cls.base:
             lines.append(f"    {cls.base}_destr(&self->_base);")
-        self._current_class=old3
+        self._current_class=old3; self._current_return_type=old3_return
         lines.append("}")
-        self._current_class=old; self._current_class_method_const=old_const
+        self._current_class=old; self._current_class_method_const=old_const; self._current_return_type=old_return
         return "\n".join(lines)
+
+    def _class_field_cleanup_lines(self, cls):
+        """Nettoyage automatique des champs dont la classe possède la mémoire."""
+        lines = []
+        for f in reversed(cls.fields):
+            name = f"self->{f.name}"
+            gp = self._generic_parts(f.type)
+            if gp:
+                kind, inner = gp
+                if kind == "dynamic_list":
+                    lines.append(f"_j_dynamic_list_destroy(&{name});")
+                elif kind == "list":
+                    d = "_j_destroy_string_slot" if inner == "string" else "0"
+                    lines.append(f"_j_list_destroy(&{name},{d});")
+                elif kind == "map":
+                    parts = self._split_generic_args(inner)
+                    kd = "_j_destroy_string_slot" if parts and parts[0] == "string" else "0"
+                    vd = "_j_destroy_string_slot" if len(parts) > 1 and parts[1] == "string" else "0"
+                    lines.append(f"_j_map_destroy(&{name},{kd},{vd});")
+                elif kind == "container":
+                    lines.append(f"_j_container_destroy(&{name});")
+                elif kind == "pair":
+                    parts = self._split_generic_args(inner)
+                    if len(parts) == 2:
+                        if parts[0] == "string":
+                            lines.append(f"if ({name}.first) string_destr({name}.first);")
+                        if parts[1] == "string":
+                            lines.append(f"if ({name}.second) string_destr({name}.second);")
+                continue
+            if f.type == "string":
+                lines.append(f"if ({name}) string_destr({name});")
+            elif isinstance(f.type, str) and f.type.endswith("*") and f.type[:-1] in self.classes:
+                base = f.type[:-1]
+                lines.append(f"if ({name}) {base}_destr({name});")
+                lines.append(f"if ({name}) free({name});")
+        return lines
 
     def _all_virtual_methods(self, cls):
         ordered=[]
@@ -3118,6 +3913,40 @@ class CodeGen:
         if namespace:
             return f"{namespace.replace(':', '_')}_{name}"
         return name
+
+    def _resolve_class_name(self, name: str, namespace: Optional[str] = None) -> Optional[str]:
+        if name in self.classes:
+            return name
+        ns = namespace if namespace is not None else self._current_namespace
+        if ns:
+            q = f"{ns.replace(':', '_')}_{name}"
+            if q in self.classes: return q
+        for imported in self.using_namespaces:
+            q = f"{imported.replace(':', '_')}_{name}"
+            if q in self.classes: return q
+        return None
+
+    def _resolve_global_name(self, name: str, namespace: Optional[str] = None) -> Optional[str]:
+        if name in self.global_types: return name
+        ns = namespace if namespace is not None else self._current_namespace
+        if ns:
+            q = f"{ns.replace(':', '_')}_{name}"
+            if q in self.global_types: return q
+        for imported in self.using_namespaces:
+            q = f"{imported.replace(':', '_')}_{name}"
+            if q in self.global_types: return q
+        return None
+
+    def _resolve_struct_name(self, name: str, namespace: Optional[str] = None) -> Optional[str]:
+        if name in self.structs: return name
+        ns = namespace if namespace is not None else self._current_namespace
+        if ns:
+            q = f"{ns.replace(':', '_')}_{name}"
+            if q in self.structs: return q
+        for imported in self.using_namespaces:
+            q = f"{imported.replace(':', '_')}_{name}"
+            if q in self.structs: return q
+        return None
 
     # -- cas spécial : la fonction main() ------------------------------
     #
@@ -3138,18 +3967,50 @@ class CodeGen:
     def _is_special_main(fn: FunctionDecl) -> bool:
         return fn.namespace is None and fn.name == "main"
 
+    @staticmethod
+    def _function_type_parts(t: str):
+        m = re.fullmatch(r"fn\((.*)\) -> (.+)", t)
+        if not m:
+            return None
+        raw_params, ret = m.group(1), m.group(2).strip()
+        params = [] if not raw_params.strip() else [x.strip() for x in raw_params.split(",")]
+        return params, ret
+
+    def _decl_c_type(self, t: str) -> str:
+        """Type C utilisable dans une déclaration/signature Jaguar.
+
+        Les types génériques ont déjà un représentant C runtime (`_jList`,
+        `_jMap`, `_jContainer`, `_jDynamicList` ou un typedef de pair).
+        `c_type()` seul laisserait leur syntaxe Jaguar brute dans le C généré.
+        """
+        return self._collection_c_type(t) if self._generic_parts(t) else c_type(t)
+
+    def _function_ptr_c_decl(self, t: str, name: str) -> Optional[str]:
+        parts = self._function_type_parts(t)
+        if not parts:
+            return None
+        params, ret = parts
+        cparams = ", ".join(self._decl_c_type(x) for x in params) if params else "void"
+        return f"{c_type(ret)} (*{name})({cparams})"
+
     def _param_c_decl(self, p: Param) -> str:
+        fp = self._function_ptr_c_decl(p.type, p.name)
+        if fp is not None:
+            return fp
         if p.type.endswith("*") and p.pointee_const:
-            base = "const " + c_type(p.type[:-1]) + " *"
+            base = "const " + self._decl_c_type(p.type[:-1]) + " *"
         elif p.type.endswith("*") and p.is_const:
-            base = c_type(p.type) + " const"
+            base = self._decl_c_type(p.type) + " const"
         elif p.is_const:
-            base = "const " + c_type(p.type)
+            base = "const " + self._decl_c_type(p.type)
         else:
-            base = c_type(p.type)
+            base = self._decl_c_type(p.type)
         return f"{base} {p.name}"
 
     def _var_c_decl(self, v: VarDecl) -> str:
+        fp = self._function_ptr_c_decl(v.type, v.name)
+        if fp is not None:
+            return fp
         if v.type.endswith("*") and v.pointee_const:
             base = "const " + c_type(v.type[:-1]) + " *"
         elif v.type.endswith("*") and v.is_const:
@@ -3160,21 +4021,63 @@ class CodeGen:
             base = c_type(v.type)
         return f"{base} {v.name}"
 
+    @staticmethod
+    def _statement_guarantees_return(stmt) -> bool:
+        if isinstance(stmt, ReturnStmt):
+            return stmt.expr is not None
+        if isinstance(stmt, IfStmt):
+            if not CodeGen._block_guarantees_return(stmt.then_block):
+                return False
+            if isinstance(stmt.else_branch, Block):
+                return CodeGen._block_guarantees_return(stmt.else_branch)
+            if isinstance(stmt.else_branch, IfStmt):
+                return CodeGen._statement_guarantees_return(stmt.else_branch)
+            return False
+        if isinstance(stmt, LoopStmt):
+            # `loop` is unconditional. If every path through its body returns,
+            # execution cannot reach the statement after the loop. A loop body
+            # containing `break` is therefore correctly treated as fallible.
+            return CodeGen._block_guarantees_return(stmt.body)
+        return False
+
+    @staticmethod
+    def _block_guarantees_return(block) -> bool:
+        for stmt in getattr(block, "statements", []):
+            if CodeGen._statement_guarantees_return(stmt):
+                return True
+        return False
+
     def gen_function(self, fn: FunctionDecl) -> str:
+        self._current_namespace = fn.namespace
         self._current_source_line = getattr(fn, "_jaguar_line", 1)
         if self._is_special_main(fn):
             return self._gen_main(fn)
 
         self._change_handlers = {}
         params_str = ", ".join(self._param_c_decl(p) for p in fn.params)
-        header = f"{c_type(fn.ret_type)} {fn.mangled_name}({params_str})"
+        header = f"{self._decl_c_type(fn.ret_type)} {fn.mangled_name}({params_str})"
         local_types = {p.name: p.type for p in fn.params}
         self._readonly_vars = {p.name for p in fn.params if p.is_const}
         self._pointee_const_vars = {p.name for p in fn.params if p.pointee_const}
         self._current_return_type = fn.ret_type
-        return f"{header} {self.gen_block(fn.body, local_types)}"
+        body = self.gen_block(fn.body, local_types)
+        if fn.ret_type != "void" and not self._block_guarantees_return(fn.body):
+            err = CodeGenError(
+                f"non-void function '{fn.name}' may exit without returning a value of type '{fn.ret_type}'"
+            )
+            err._jaguar_line = getattr(fn, "_jaguar_line", 1)
+            err._jaguar_column = getattr(fn, "_jaguar_column", 0)
+            err._jaguar_end_column = getattr(fn, "_jaguar_end_column", err._jaguar_column + len(fn.name))
+            raise err
+        return f"{header} {body}"
 
     def _gen_main(self, fn: FunctionDecl) -> str:
+        if fn.ret_type != "void":
+            err = CodeGenError("main() must use return type 'void' in Jaguar")
+            err._jaguar_line = getattr(fn, "_jaguar_line", 1)
+            err._jaguar_column = getattr(fn, "_jaguar_column", 0)
+            err._jaguar_end_column = getattr(fn, "_jaguar_end_column", err._jaguar_column + len(fn.name))
+            raise err
         if len(fn.params) == 0:
             header = "int main(void)"
             prelude_lines: List[str] = []
@@ -3242,9 +4145,12 @@ class CodeGen:
     def _is_owned_class_type(self, type_name: str) -> bool:
         return type_name in self.classes
 
-    def _scope_cleanup_lines(self, owned) -> List[str]:
+    def _scope_cleanup_lines(self, owned, exclude_names=None) -> List[str]:
         out = []
+        exclude_names = exclude_names or set()
         for name, type_name in reversed(owned):
+            if name in exclude_names:
+                continue
             gp=self._generic_parts(type_name)
             if gp:
                 kind,inner=gp
@@ -3261,11 +4167,13 @@ class CodeGen:
                 elif kind=="pair":
                     parts=self._split_generic_args(inner)
                     if len(parts)==2:
-                        if parts[0]=="string": out.extend([f"if ({name}.first) {{ string_destr({name}.first); free({name}.first); }}"])
-                        if parts[1]=="string": out.extend([f"if ({name}.second) {{ string_destr({name}.second); free({name}.second); }}"])
+                        if parts[0]=="string": out.extend([f"if ({name}.first) {{ string_destr({name}.first); }}"])
+                        if parts[1]=="string": out.extend([f"if ({name}.second) {{ string_destr({name}.second); }}"])
                 else: out.append(f"_j_container_destroy(&{name});")
             else:
-                if isinstance(type_name, str) and type_name.endswith("*"):
+                if type_name == "string":
+                    out.append(f"if ({name}) string_destr({name});")
+                elif isinstance(type_name, str) and type_name.endswith("*"):
                     base = type_name[:-1]
                     if base in self.classes:
                         out.append(f"if ({name}) {base}_destr({name});")
@@ -3275,10 +4183,11 @@ class CodeGen:
                     out.append(f"free({name});")
         return out
 
-    def _all_active_cleanup_lines(self) -> List[str]:
+    def _all_active_cleanup_lines(self, exclude_names=None) -> List[str]:
         out = []
+        exclude_names = exclude_names or set()
         for owned in reversed(self._scope_owned):
-            out.extend(self._scope_cleanup_lines(owned))
+            out.extend(self._scope_cleanup_lines(owned, exclude_names))
         return out
 
     def _loop_cleanup_lines(self) -> List[str]:
@@ -3329,7 +4238,11 @@ class CodeGen:
                 # `auto` is resolved from its initializer.
                 if s.type == "auto":
                     s.type = self._resolve_auto_type(s.init, local_types)
-                if s.init is not None and s.type != "auto":
+                # A brace literal (`{...}`) initializing a generic container
+                # (list<T>, map<K,V>, pair<A,B>, dynamic_list) has no type of
+                # its own to infer here: it is validated and consumed by the
+                # dedicated _gen_collection_init() logic below instead.
+                if s.init is not None and s.type != "auto" and not (isinstance(s.init, ListLiteral) and self._generic_parts(s.type)):
                     init_type = self._check_expression_types(s.init, local_types)
                     self._target_pointee_const = s.pointee_const
                     self._check_assignable(s.type, init_type, f"initializer of variable '{s.name}'", s.init)
@@ -3350,9 +4263,15 @@ class CodeGen:
                     init = self.gen_expr(s.init, local_types) if s.init is not None else None
                 if self._generic_parts(s.type):
                     local_types[s.name] = s.type
-                    stmt_lines.append(f"{self._collection_c_type(s.type)} {s.name};")
+                    decl = f"{self._collection_c_type(s.type)} {s.name};"
+                    if self.c89:
+                        decl_lines.append(decl)
+                    else:
+                        stmt_lines.append(decl)
                     stmt_lines.extend(self._gen_collection_init(s.name,s.type,s.init,local_types))
                     owned.append((s.name,s.type))
+                    if self.c89 and s.init is not None:
+                        in_prefix = False
                     continue
                 local_types[s.name] = s.type
                 if not hasattr(self, "_pointee_const_vars"): self._pointee_const_vars = set()
@@ -3363,9 +4282,27 @@ class CodeGen:
                     owned.append((s.name, s.type))
                 ctype = c_type(s.type)
                 is_class = s.type in self.classes
-                if is_class: ctype = s.type + " *"
+                if is_class:
+                    # Une variable de classe Jaguar est une propriété possédée
+                    # par pointeur, comme les objets alloués par le runtime.
+                    # Sans initialiseur explicite, construire l'objet par le
+                    # constructeur sans arguments (ou avec ses valeurs par
+                    # défaut) évite tout pointeur indéfini au nettoyage de portée.
+                    if s.init is None:
+                        cls = self.classes[s.type]
+                        ctor = next((m for m in cls.methods if m.is_constructor), None)
+                        ordered = self._ordered_call_args(
+                            [], ctor.params if ctor else [],
+                            f"constructeur '{s.type}'"
+                        )
+                        s.init = Call(Ident(s.type), ordered)
+                        init = self.gen_expr(s.init, local_types)
+                    ctype = s.type + " *"
 
-                cdecl = self._var_c_decl(s)
+                if is_class:
+                    cdecl = f"{ctype} {s.name}"
+                else:
+                    cdecl = self._var_c_decl(s)
                 if s.is_const:
                     self._readonly_vars.add(s.name)
                 if not self.c89:
@@ -3379,7 +4316,17 @@ class CodeGen:
                     else:
                         decl_lines.append(f"{cdecl};")
                 else:
-                    decl_lines.append(f"{cdecl};")
+                    # C89 cannot assign to a `const` object after its
+                    # declaration. Jaguar has already enforced constness at
+                    # the language level, so for a late declaration we keep
+                    # the Jaguar semantic restriction but emit a mutable C
+                    # declaration that can receive its initialization at the
+                    # original source position. This preserves evaluation
+                    # order instead of hoisting a side-effecting initializer.
+                    late_cdecl = cdecl
+                    if s.is_const and not s.pointee_const and not self._function_ptr_c_decl(s.type, s.name):
+                        late_cdecl = f"{c_type(s.type)} {s.name}"
+                    decl_lines.append(f"{late_cdecl};")
                     if init is not None:
                         stmt_lines.append(f"{s.name} = {init};")
                 continue
@@ -3468,6 +4415,8 @@ class CodeGen:
         if target_type in INTEGER_TYPES and source_type in INTEGER_TYPES: return
         if target_type in FLOAT_TYPES and source_type in INTEGER_TYPES | FLOAT_TYPES: return
         if target_type == "string" and source_type == "string": return
+        gp = self._generic_parts(target_type)
+        if gp and gp[0] == "container" and isinstance(source_type, str) and source_type == gp[1] + "*": return
         if target_type in self.classes and source_type == target_type: return
         if target_type in getattr(self, "enums", {}) and source_type == target_type: return
         raise CodeGenError(f"type mismatch: cannot assign '{source_type}' to '{target_type}' ({context})")
@@ -3500,6 +4449,14 @@ class CodeGen:
         elif isinstance(e, Call):
             self.infer_type(e,local_types)
             for a in e.args: self._check_expression_types(a.expr if isinstance(a,NamedArg) else a,local_types)
+        elif isinstance(e, Ident):
+            inferred = self.infer_type(e, local_types)
+            if inferred is None and not self.groups.get((None, e.name)):
+                raise CodeGenError(f"unknown identifier '{e.name}'")
+        elif isinstance(e, NamespacedIdent):
+            inferred = self.infer_type(e, local_types)
+            if inferred is None:
+                raise CodeGenError(f"unknown identifier '{e.namespace}:{e.name}'")
         elif isinstance(e, MemberAccess): self.infer_type(e,local_types); self._check_expression_types(e.obj,local_types)
         elif isinstance(e, IndexAccess): self.infer_type(e,local_types); self._check_expression_types(e.obj,local_types); self._check_expression_types(e.index,local_types)
         elif isinstance(e, CastExpr): self._check_expression_types(e.operand,local_types)
@@ -3512,13 +4469,19 @@ class CodeGen:
         seule ligne ; if / while / for_loop en donnent plusieurs, dont les
         lignes de corps portent déjà 4 espaces d'indentation."""
         if isinstance(s, ReturnStmt):
-            cleanup = self._all_active_cleanup_lines()
+            transfer_name = None
+            if isinstance(s.expr, Ident):
+                for owned_scope in reversed(self._scope_owned):
+                    if any(name == s.expr.name for name, _ in owned_scope):
+                        transfer_name = s.expr.name
+                        break
+            cleanup = self._all_active_cleanup_lines({transfer_name} if transfer_name else set())
             if s.expr is None:
                 if self._current_return_type not in ("void", "int") and not self._in_main:
                     raise CodeGenError(f"non-void function must return a value of type '{self._current_return_type}'")
                 return cleanup + ["return 0;" if self._in_main else "return;"]
             expr_type=self._check_expression_types(s.expr, local_types)
-            self._check_assignable(self._current_return_type, expr_type, "return statement")
+            self._check_assignable(self._current_return_type, expr_type, "return statement", s.expr)
             expr = self.gen_expr(s.expr, local_types)
             return cleanup + [f"return {expr};"]
         if isinstance(s, VariableChangeHandler):
@@ -3547,6 +4510,8 @@ class CodeGen:
             ot = self.infer_type(s.target.obj, local_types)
             if isinstance(ot, str) and ot.endswith("*"): ot = ot[:-1]
             owner, member = self._find_class_member(ot, s.target.name, "field") if ot in self.classes else (None, None)
+            if member is None and ot in self.structs and not any(f.name == s.target.name for f in self.structs[ot].fields):
+                raise CodeGenError(f"member '{s.target.name}' is absent from '{ot}'")
             if member is not None and getattr(member, "is_const", False):
                 raise CodeGenError(f"const member '{s.target.name}' cannot be modified")
             if member is not None and getattr(member, "pointee_const", False):
@@ -3556,7 +4521,7 @@ class CodeGen:
                 raise CodeGenError(f"a const method cannot modify member '{s.target.name}'")
             target_type = self.infer_type(s.target, local_types)
             value_type = self._check_expression_types(s.expr, local_types)
-            self._check_assignable(target_type, value_type, f"assignment to member '{s.target.name}'")
+            self._check_assignable(target_type, value_type, f"assignment to member '{s.target.name}'", s.target)
             target = self.gen_member_access(s.target, local_types)
             return [f"{target} = {self.gen_expr(s.expr, local_types)};"]
         if isinstance(s, PointerAssignStmt):
@@ -3574,10 +4539,21 @@ class CodeGen:
             if target_type is None:
                 raise CodeGenError("cannot determine the type of the pointer target")
             value_type=self._check_expression_types(s.expr,local_types)
-            self._check_assignable(target_type, value_type, "pointer dereference assignment")
+            self._check_assignable(target_type, value_type, "pointer dereference assignment", s.target)
             return [f"{self.gen_expr(s.target, local_types)} = {self.gen_expr(s.expr, local_types)};"]
         if isinstance(s, AssignStmt):
             if s.name not in local_types and s.name not in self.global_types:
+                # Dans une méthode/constructeur, `field = value;` est le
+                # raccourci Jaguar pour `this.field = value;`. Réutiliser le
+                # chemin MemberAssignStmt conserve les contrôles d'accès, de
+                # constance, de type et de méthode const.
+                if self._current_class:
+                    owner, member = self._find_class_member(self._current_class.name, s.name, "field")
+                    if member is not None:
+                        return self.gen_stmt(
+                            MemberAssignStmt(MemberAccess(Ident("this"), s.name), s.expr),
+                            local_types
+                        )
                 raise CodeGenError(
                     f"assignment to '{s.name}': variable is not declared"
                 )
@@ -3607,6 +4583,7 @@ class CodeGen:
                 lines.append(f"{s.name} = {self.gen_expr(s.expr, local_types)};")
             return lines
         if isinstance(s, ExprStmt):
+            self._check_expression_types(s.expr, local_types)
             return [f"{self.gen_expr(s.expr, local_types)};"]
         if isinstance(s, IfStmt):
             ct=self._check_expression_types(s.cond, local_types)
@@ -3765,14 +4742,30 @@ class CodeGen:
         return ["{", f"    size_t _jmi{n};", f"    {pcn} {s.var_name};", f"    for (_jmi{n}=0; _jmi{n}<{obj}.size; ++_jmi{n}) {{", f"        {s.var_name}.first = *({c_type(kt)}*){obj}.items[_jmi{n}].key;", f"        {s.var_name}.second = *({c_type(vt)}*){obj}.items[_jmi{n}].value;"] + ["    "+x for x in body] + ["    }", "}"]
 
     # -- primitives sys:* ------------------------------------------------
-    @staticmethod
-    def _system_builtin(callee):
+    def _system_builtin(self, callee, call=None):
+        """Resolve a sys:* primitive, including through `using namespace sys;`.
+
+        Builtins are not normal Jaguar FunctionDecls, so they must be resolved
+        here rather than by Resolver.resolve_call_target().  An unqualified
+        `print(...)` therefore means `sys:print(...)` when `sys` is imported.
+        """
         if isinstance(callee, NamespacedIdent):
             return SYSTEM_BUILTINS.get((callee.namespace, callee.name))
+        if isinstance(callee, Ident):
+            namespaces = getattr(call, "_using_namespaces", self.using_namespaces) if call is not None else self.using_namespaces
+            matches = []
+            for ns in namespaces:
+                info = SYSTEM_BUILTINS.get((ns, callee.name))
+                if info is not None:
+                    matches.append(info)
+            if len(matches) == 1:
+                return matches[0]
+            if len(matches) > 1:
+                raise CodeGenError(f"ambiguous system function '{callee.name}' imported from multiple namespaces")
         return None
 
     def _validate_system_call(self, call):
-        info = self._system_builtin(call.callee)
+        info = self._system_builtin(call.callee, call)
         if info is None:
             return None
         c_name, argc, ret_type = info
@@ -3820,22 +4813,38 @@ class CodeGen:
         ordered = [None] * len(params)
         by_name = {p.name:i for i,p in enumerate(params)}
         next_pos = 0; named_seen = False
+
+        def arg_error(message, arg):
+            err = CodeGenError(message)
+            node = arg.expr if isinstance(arg, NamedArg) else arg
+            line = getattr(arg, "_jaguar_line", None) or getattr(node, "_jaguar_line", None)
+            col = getattr(arg, "_jaguar_name_column", None) if isinstance(arg, NamedArg) else None
+            end = getattr(arg, "_jaguar_name_end_column", None) if isinstance(arg, NamedArg) else None
+            if col is None:
+                col = getattr(node, "_jaguar_column", None)
+                end = getattr(node, "_jaguar_end_column", None)
+            if line is not None and col is not None:
+                err._jaguar_line = line
+                err._jaguar_column = col
+                err._jaguar_end_column = end if end is not None else col + 1
+            raise err
+
         for arg in args:
             if isinstance(arg, NamedArg):
                 named_seen = True
                 if arg.name not in by_name:
-                    raise CodeGenError(f"unknown named parameter '{arg.name}' for {callee_name}")
+                    arg_error(f"unknown named parameter '{arg.name}' for {callee_name}", arg)
                 i = by_name[arg.name]
             else:
                 if named_seen:
-                    raise CodeGenError("a positional argument cannot follow a named argument")
+                    arg_error("a positional argument cannot follow a named argument", arg)
                 while next_pos < len(ordered) and ordered[next_pos] is not None:
                     next_pos += 1
                 if next_pos >= len(ordered):
-                    raise CodeGenError(f"too many arguments for {callee_name}")
+                    arg_error(f"too many arguments for {callee_name}", arg)
                 i = next_pos; next_pos += 1
             if ordered[i] is not None:
-                raise CodeGenError(f"parameter '{params[i].name}' provided more than once")
+                arg_error(f"parameter '{params[i].name}' provided more than once", arg)
             ordered[i] = arg.expr if isinstance(arg, NamedArg) else arg
         missing = [params[i].name for i,x in enumerate(ordered) if x is None and params[i].default is None]
         if missing:
@@ -3890,16 +4899,38 @@ class CodeGen:
         if not candidates:
             return None
         prepared = []
-        for fn in candidates:
-            try: ordered = self._ordered_call_args(call.args, fn.params, f"'{name}'")
-            except CodeGenError: continue
-            for arg, param in zip(ordered, fn.params):
-                at=self.infer_type(arg.expr if isinstance(arg,NamedArg) else arg, local_types)
-                self._check_assignable(param.type, at, f"argument '{param.name}' of function '{name}'")
-            prepared.append((fn, ordered))
+        # For a single visible candidate, keep the exact argument diagnostic
+        # instead of collapsing it into the generic "no overload" error.
+        # With real overloads, incompatible candidates are still skipped so
+        # that another signature can be selected.
         if len(candidates) == 1:
-            self._ordered_call_args(call.args, candidates[0].params, f"'{name}'")
-            return candidates[0]
+            fn = candidates[0]
+            ordered = self._ordered_call_args(call.args, fn.params, f"'{name}'")
+            for arg, param in zip(ordered, fn.params):
+                at = self.infer_type(arg.expr if isinstance(arg, NamedArg) else arg, local_types)
+                self._check_assignable(
+                    param.type, at,
+                    f"argument '{param.name}' of function '{name}'"
+                )
+            return fn
+
+        for fn in candidates:
+            try:
+                ordered = self._ordered_call_args(call.args, fn.params, f"'{name}'")
+                for arg, param in zip(ordered, fn.params):
+                    at = self.infer_type(arg.expr if isinstance(arg, NamedArg) else arg, local_types)
+                    self._check_assignable(
+                        param.type, at,
+                        f"argument '{param.name}' of function '{name}'",
+                        arg.expr if isinstance(arg, NamedArg) else arg
+                    )
+            except CodeGenError:
+                # Une surcharge incompatible ne doit pas bloquer la recherche
+                # des autres signatures possibles.
+                continue
+            prepared.append((fn, ordered))
+        if len(prepared) == 1:
+            return prepared[0][0]
 
         scored = []
         for fn, ordered in prepared:
@@ -3944,19 +4975,46 @@ class CodeGen:
                 if m is not None:
                     self._check_member_access(mowner, m, e.name)
                     return m.ret_type
-            t = local_types.get(e.name) or self.global_types.get(e.name) or (e.name if e.name in self.classes else None)
+            global_name = self._resolve_global_name(e.name)
+            class_name = self._resolve_class_name(e.name)
+            if global_name and global_name in self.global_types:
+                decl_line = self.global_decl_lines.get(global_name, 1)
+                use_line = getattr(e, "_jaguar_line", getattr(self, "_current_source_line", decl_line))
+                if use_line < decl_line:
+                    raise CodeGenError(f"global variable '{e.name}' must be declared before use")
+            t = local_types.get(e.name) or (self.global_types.get(global_name) if global_name else None) or class_name or self.macros.get(e.name)
             if t is not None: return t
+            # Function identifiers are first-class values for callback/function-pointer assignments.
+            candidates = self.groups.get((None, e.name), [])
+            if len(candidates) == 1:
+                fn = candidates[0]
+                return f"fn({', '.join(p.type for p in fn.params)}) -> {fn.ret_type}"
+            # Global enum values are first-class typed constants.
+            for en in getattr(self.program, "_enums", {}).values():
+                if en.namespace is None and e.name in en.values:
+                    return en.name
             symbols = getattr(self.program, "_using_symbols", {})
             imported = symbols.get(e.name)
             if imported:
                 ns, name = imported
+                imported_fns = self.groups.get((ns, name), [])
+                if len(imported_fns) == 1:
+                    fn = imported_fns[0]
+                    return f"fn({', '.join(p.type for p in fn.params)}) -> {fn.ret_type}"
                 for key, en in getattr(self.program, "_enums", {}).items():
                     if key == f"{ns}:{en.name}" and name in en.values:
                         return f"{ns}_{en.name}" if ns else en.name
+            namespace_function_matches = []
             for ns in getattr(self.program, "_using_namespaces", []):
+                ns_fns = self.groups.get((ns, e.name), [])
+                if len(ns_fns) == 1:
+                    namespace_function_matches.append(ns_fns[0])
                 for key, en in getattr(self.program, "_enums", {}).items():
                     if key == f"{ns}:{en.name}" and e.name in en.values:
                         return f"{ns}_{en.name}"
+            if len(namespace_function_matches) == 1:
+                fn = namespace_function_matches[0]
+                return f"fn({', '.join(p.type for p in fn.params)}) -> {fn.ret_type}"
             return None
         if isinstance(e, IndexAccess):
             ot=self.infer_type(e.obj, local_types); gp=self._generic_parts(ot)
@@ -3972,8 +5030,12 @@ class CodeGen:
             gp=self._generic_parts(ot)
             if gp:
                 kind,inner=gp
-                if kind=="list" and e.name=="push": return "void"
-                if kind=="map" and e.name=="emplace": return "void"
+                if kind=="list" and e.name in ("push", "get", "size"):
+                    return "void" if e.name=="push" else ("i32" if e.name=="size" else inner)
+                if kind=="map" and e.name in ("emplace", "size"):
+                    return "void" if e.name=="emplace" else "i32"
+                if kind=="dynamic_list" and e.name in ("push", "get", "type", "size"):
+                    return {"push":"void","get":"void_ptr","type":"string","size":"i32"}[e.name]
                 if kind=="container" and e.name=="get": return inner
                 if kind=="pair":
                     a,b=self._split_generic_args(inner)
@@ -3984,16 +5046,54 @@ class CodeGen:
                     if f: return f.type
                     _, m=self._find_class_member(inner,e.name,"method")
                     if m: return m.ret_type
-            _, f=self._find_class_member(ot,e.name,"field") if ot in self.classes else (None,None)
-            if f: return f.type
-            _, m=self._find_class_member(ot,e.name,"method") if ot in self.classes else (None,None)
-            if m: return m.ret_type
-            return None
+                raise CodeGenError(f"member '{e.name}' is not available on '{ot}'")
+            if ot == "string":
+                valid = {
+                    "length": "i32", "empty": "bool",
+                    "equals": "bool", "contains": "bool",
+                    "starts_with": "bool", "ends_with": "bool",
+                    "concat": "string", "substring": "string",
+                    "char_at": "i32", "to_upper": "string", "to_lower": "string",
+                }
+                if e.name in valid: return valid[e.name]
+                raise CodeGenError(f"unknown string member '{e.name}'")
+            if ot in self.unions:
+                for f in self.unions[ot].fields:
+                    if f.name == e.name:
+                        return f.type
+                raise CodeGenError(f"member '{e.name}' is absent from union '{ot}'")
+            if ot in self.structs:
+                for f in self.structs[ot].fields:
+                    if f.name == e.name:
+                        return f.type
+                raise CodeGenError(f"member '{e.name}' is absent from struct '{ot}'")
+            if ot in self.classes:
+                _, f=self._find_class_member(ot,e.name,"field")
+                if f: return f.type
+                _, m=self._find_class_member(ot,e.name,"method")
+                if m: return m.ret_type
+                raise CodeGenError(f"member '{e.name}' is absent from class '{ot}'")
+            raise CodeGenError(f"member '{e.name}' is not available on expression of type '{ot}'")
         if isinstance(e, NamespacedIdent):
             enums = getattr(self.program, "_enums", {})
             for key, en in enums.items():
                 if (en.namespace == e.namespace and e.name in en.values) or (en.name == e.namespace and e.name in en.values):
                     return en.name if not en.namespace else f"{en.namespace}_{en.name}"
+            q = f"{e.namespace.replace(':', '_')}_{e.name}"
+            if q in self.global_types:
+                decl_line = self.global_decl_lines.get(q, 1)
+                use_line = getattr(e, "_jaguar_line", getattr(self, "_current_source_line", decl_line))
+                if use_line < decl_line:
+                    raise CodeGenError(f"global variable '{e.namespace}:{e.name}' must be declared before use")
+                return self.global_types[q]
+            if q in self.classes:
+                return q
+            if q in self.unions:
+                return q
+            candidates = self.groups.get((e.namespace, e.name), [])
+            if len(candidates) == 1:
+                fn = candidates[0]
+                return f"fn({', '.join(p.type for p in fn.params)}) -> {fn.ret_type}"
             return None
         if isinstance(e, CastExpr):
             return e.target_type
@@ -4005,6 +5105,8 @@ class CodeGen:
             operand_type = self.infer_type(e.operand, local_types)
             if e.op == "&":
                 if operand_type is None: return None
+                if not isinstance(e.operand, (Ident, MemberAccess, IndexAccess, UnaryOp)) or (isinstance(e.operand, UnaryOp) and e.operand.op != "*"):
+                    raise CodeGenError("cannot take the address of this expression; '&' requires a variable, member, element, or dereferenced pointer")
                 return operand_type + "*"
             if e.op == "*":
                 if isinstance(operand_type, str) and operand_type.endswith("*"):
@@ -4027,12 +5129,59 @@ class CodeGen:
             if self._is_reflection_set_member_call(e):
                 self._validate_set_member_call(e, local_types)
                 return "void"
-            if isinstance(e.callee, Ident) and e.callee.name in self.classes:
-                cls = self.classes[e.callee.name]
+            callee_type = self.infer_type(e.callee, local_types)
+            fp_parts = self._function_type_parts(callee_type) if isinstance(callee_type, str) else None
+            direct_function_call = False
+            if isinstance(e.callee, Ident):
+                direct_function_call = bool(self.groups.get((None, e.callee.name)))
+                if not direct_function_call:
+                    imported = getattr(self.program, "_using_symbols", {}).get(e.callee.name)
+                    if imported:
+                        direct_function_call = bool(self.groups.get(imported))
+            elif isinstance(e.callee, NamespacedIdent):
+                direct_function_call = bool(self.groups.get((e.callee.namespace, e.callee.name)))
+            if fp_parts is not None and not direct_function_call:
+                if any(isinstance(a, NamedArg) for a in e.args):
+                    raise CodeGenError("named parameters are not available for function-pointer calls")
+                params, ret_type = fp_parts
+                if len(e.args) != len(params):
+                    raise CodeGenError(
+                        f"function pointer expects {len(params)} argument(s), {len(e.args)} provided"
+                    )
+                for param_type, arg in zip(params, e.args):
+                    at = self.infer_type(arg, local_types)
+                    self._check_assignable(
+                        param_type, at, f"argument of function pointer call", arg
+                    )
+                return ret_type
+            if isinstance(e.callee, Ident):
+                class_name = self._resolve_class_name(e.callee.name)
+            elif isinstance(e.callee, NamespacedIdent):
+                class_name = self._resolve_class_name(e.callee.name, e.callee.namespace)
+            else:
+                class_name = None
+            if class_name is not None:
+                cls = self.classes[class_name]
                 ctor = next((m for m in cls.methods if m.is_constructor), None)
                 if ctor is None and e.args:
                     raise CodeGenError(f"'{cls.name}' has no constructor taking arguments")
                 return cls.name
+            if isinstance(e.callee, Ident):
+                struct_name = self._resolve_struct_name(e.callee.name)
+            elif isinstance(e.callee, NamespacedIdent):
+                struct_name = self._resolve_struct_name(e.callee.name, e.callee.namespace)
+            else:
+                struct_name = None
+            if struct_name is not None:
+                if e.args:
+                    raise CodeGenError(f"struct '{struct_name}' construction currently takes no arguments")
+                return struct_name
+            if isinstance(e.callee, Ident) and self._current_class:
+                owner, method = self._find_class_member(self._current_class.name, e.callee.name, "method")
+                if method is not None:
+                    self._check_member_access(owner, method, e.callee.name)
+                    ordered = self._ordered_call_args(e.args, method.params, f"'{e.callee.name}'")
+                    return method.ret_type
             if self._is_reflection_member_exists_call(e):
                 self._validate_member_exists_call(e, local_types)
                 obj=self.gen_expr(e.callee.obj,local_types); name=self.gen_expr(e.args[0],local_types)
@@ -4055,13 +5204,57 @@ class CodeGen:
                 gp=self._generic_parts(ot)
                 if gp:
                     kind,inner=gp
-                    if kind=="dynamic_list" and e.callee.name=="push": return "void"
-                    if kind=="dynamic_list" and e.callee.name=="get": return "void_ptr"
-                    if kind=="dynamic_list" and e.callee.name=="type": return "string"
-                    if kind=="dynamic_list" and e.callee.name=="size": return "i32"
-                    if kind=="list" and e.callee.name=="push": return "void"
-                    if kind=="map" and e.callee.name=="emplace": return "void"
-                    if kind=="container" and e.callee.name=="get": return inner
+                    if kind=="dynamic_list" and e.callee.name=="push":
+                        if len(e.args) != 1: raise CodeGenError("dynamic_list::push expects 1 argument")
+                        return "void"
+                    if kind=="dynamic_list" and e.callee.name=="get":
+                        if len(e.args) != 1: raise CodeGenError("dynamic_list::get expects 1 argument")
+                        return "void_ptr"
+                    if kind=="dynamic_list" and e.callee.name=="type":
+                        if len(e.args) != 1: raise CodeGenError("dynamic_list::type expects 1 argument")
+                        return "string"
+                    if kind=="dynamic_list" and e.callee.name=="size":
+                        if len(e.args) != 0: raise CodeGenError("dynamic_list::size expects 0 arguments")
+                        return "i32"
+                    if kind=="list" and e.callee.name=="push":
+                        if len(e.args) != 1: raise CodeGenError("list::push expects 1 argument")
+                        at = self.infer_type(e.args[0], local_types)
+                        self._check_assignable(inner, at, "argument of list::push", e.args[0])
+                        return "void"
+                    if kind=="list" and e.callee.name=="size":
+                        if len(e.args) != 0: raise CodeGenError("list::size expects 0 arguments")
+                        return "i32"
+                    if kind=="map" and e.callee.name=="emplace":
+                        if len(e.args) != 2: raise CodeGenError("map::emplace expects 2 arguments")
+                        kt,vt=self._split_generic_args(inner)
+                        self._check_assignable(kt, self.infer_type(e.args[0], local_types), "key argument of map::emplace", e.args[0])
+                        self._check_assignable(vt, self.infer_type(e.args[1], local_types), "value argument of map::emplace", e.args[1])
+                        return "void"
+                    if kind=="map" and e.callee.name=="size":
+                        if len(e.args) != 0: raise CodeGenError("map::size expects 0 arguments")
+                        return "i32"
+                    if kind=="container" and e.callee.name=="get":
+                        if len(e.args) != 0: raise CodeGenError("container::get expects 0 arguments")
+                        return inner
+                if ot == "string":
+                    specs = {
+                        "length": ("i32", []), "empty": ("bool", []),
+                        "equals": ("bool", [Param("string", "other")]),
+                        "contains": ("bool", [Param("string", "needle")]),
+                        "starts_with": ("bool", [Param("string", "prefix")]),
+                        "ends_with": ("bool", [Param("string", "suffix")]),
+                        "concat": ("string", [Param("string", "other")]),
+                        "substring": ("string", [Param("i32", "start"), Param("i32", "length")]),
+                        "char_at": ("i32", [Param("i32", "index")]),
+                        "to_upper": ("string", []), "to_lower": ("string", []),
+                    }
+                    if e.callee.name not in specs:
+                        raise CodeGenError(f"unknown string::{e.callee.name} method")
+                    ret_type, params = specs[e.callee.name]
+                    ordered = self._ordered_call_args(e.args, params, f"string::{e.callee.name}")
+                    for arg, param in zip(ordered, params):
+                        self._check_assignable(param.type, self.infer_type(arg, local_types), f"argument '{param.name}' of string::{e.callee.name}", arg)
+                    return ret_type
                 owner, m = self._find_class_member(ot, e.callee.name, "method") if ot in self.classes else (None, None)
                 if m is not None:
                     self._check_member_access(owner, m, e.callee.name)
@@ -4077,7 +5270,18 @@ class CodeGen:
             if system is not None:
                 return system[2]
             target = self.resolve_call_target(e, local_types)
-            return target.ret_type if target else None
+            if target is not None:
+                return target.ret_type
+            if callee_type is not None:
+                if isinstance(callee_type, str) and callee_type.endswith("*"):
+                    # Pointer values are not callable unless they are Jaguar
+                    # function-pointer types, which were handled above.
+                    raise CodeGenError(f"expression of type '{callee_type}' is not callable")
+                if isinstance(e.callee, Ident):
+                    raise CodeGenError(f"expression of type '{callee_type}' is not callable")
+                if isinstance(e.callee, MemberAccess):
+                    raise CodeGenError(f"member '{e.callee.name}' is not callable")
+            return None
         return None
 
     def _gen_operand(self, e, parent_prec: int, local_types: dict, is_right: bool) -> str:
@@ -4107,6 +5311,24 @@ class CodeGen:
             else:
                 break
         raise CodeGenError(f"member '{name}' not found in class '{cls.name}'")
+
+
+    def _base_object_ptr_expr(self, root, cls, owner):
+        """Retourne un pointeur vers le sous-objet `owner` d'un objet `cls`."""
+        if cls.name == owner.name:
+            return root
+        cur = cls
+        expr = root
+        while cur and cur.name != owner.name:
+            if not cur.base:
+                break
+            expr = f"&(({expr})->_base)"
+            cur = self.classes.get(cur.base)
+        if cur is not None and cur.name == owner.name:
+            return expr
+        raise CodeGenError(
+            f"cannot resolve base-class object '{owner.name}' from '{cls.name}'"
+        )
 
     def _class_can_access(self, owner, member) -> bool:
         """Vérifie l'accès à un membre de classe depuis le contexte courant."""
@@ -4146,9 +5368,19 @@ class CodeGen:
             if kind=="pair":
                 if e.name not in ("first", "second"): raise CodeGenError(f"member '{e.name}' is not available on {ot}")
                 return f"{obj}.{e.name}"
-            if kind=="container" and e.name=="get": return f"(*(({c_type(inner)}*)_j_container_get(&{obj})))"
+            if kind=="container" and e.name=="get": return f"(*(({self._collection_c_type(inner) if self._generic_parts(inner) else c_type(inner)}*)_j_container_get(&{obj})))"
             if kind=="container" and inner in self.classes: return f"(({inner}*)_j_container_get(&{obj}))->%s" % e.name
             raise CodeGenError(f"member '{e.name}' is not available on {ot}")
+        if ot in self.unions:
+            if not any(f.name == e.name for f in self.unions[ot].fields):
+                raise CodeGenError(f"member '{e.name}' is absent from '{ot}'")
+            obj = self.gen_expr(e.obj, local_types)
+            return f"{obj}.{e.name}"
+        if ot in self.structs:
+            if not any(f.name == e.name for f in self.structs[ot].fields):
+                raise CodeGenError(f"member '{e.name}' is absent from '{ot}'")
+            obj = self.gen_expr(e.obj, local_types)
+            return (f"{obj}->{e.name}" if pointer_object else f"{obj}.{e.name}")
         if ot not in self.classes:
             raise CodeGenError(f"'{ot}' is not a class")
         owner, member=self._find_class_member(ot,e.name,"field")
@@ -4158,9 +5390,16 @@ class CodeGen:
         if not getattr(member, "is_exposed", False):
             self._check_member_access(owner, member, e.name)
         if isinstance(member, ClassField):
-            if isinstance(e.obj, Ident) and self._current_class and e.obj.name=="this": return self._base_member_expr("self", self._current_class, e.name)
-            return self.gen_expr(e.obj,local_types)+"->"+e.name if owner.name==ot else self.gen_expr(e.obj,local_types)+"->_base."+e.name
-        return self.gen_expr(e.obj,local_types)+"->"+e.name
+            if isinstance(e.obj, Ident) and self._current_class and e.obj.name=="this":
+                return self._base_member_expr("self", self._current_class, e.name)
+            obj = self.gen_expr(e.obj, local_types)
+            if owner.name == ot:
+                return obj + "->" + e.name
+            return self._base_member_expr(obj, self.classes[ot], e.name)
+        obj = self.gen_expr(e.obj, local_types)
+        if owner.name == ot:
+            return obj + "->" + e.name
+        return f"{owner.name}_{e.name}({self._base_object_ptr_expr(obj, self.classes[ot], owner)})"
 
     def _is_reflection_call(self, e):
         return (isinstance(e, Call) and isinstance(e.callee, MemberAccess)
@@ -4225,22 +5464,46 @@ class CodeGen:
         if isinstance(e, FloatLit):
             return e.value
         if isinstance(e, StringLit):
-            return f"string_from_cstr({e.value})"
+            return f"string_from_literal({e.value})"
         if isinstance(e, BoolLit):
             return "1" if e.value else "0"     # pas de <stdbool.h> en C89
         if isinstance(e, UnaryOp):
-            return f"({e.op}{self.gen_expr(e.operand, local_types)})"
+            inner = self.gen_expr(e.operand, local_types)
+            # Keep unary operators bound to the complete operand. Without
+            # these parentheses, `!(a == b)` could become `(!a == b)` in C.
+            if isinstance(e.operand, (BinOp, UnaryOp)):
+                inner = f"({inner})"
+            return f"({e.op}{inner})"
         if isinstance(e, NewExpr):
             if e.type in self.classes:
                 cls=self.classes[e.type]; ctor=next((m for m in cls.methods if m.is_constructor),None)
-                ordered=self._ordered_call_args(e.args,ctor.params if ctor else [],f"constructor '{e.type}'") if ctor else []
+                ctor_args = e.args
+                # `T* p => T(args)` is parsed as `new T(T(args))`; unwrap the
+                # constructor call so the arrow shorthand invokes T's
+                # constructor exactly once.
+                if (len(e.args) == 1 and isinstance(e.args[0], Call)
+                        and ((isinstance(e.args[0].callee, Ident) and self._resolve_class_name(e.args[0].callee.name) == e.type)
+                             or (isinstance(e.args[0].callee, NamespacedIdent) and self._resolve_class_name(e.args[0].callee.name, e.args[0].callee.namespace) == e.type))):
+                    ctor_args = e.args[0].args
+                ordered=self._ordered_call_args(ctor_args,ctor.params if ctor else [],f"constructor '{e.type}'") if ctor else []
                 return f"{e.type}_ctor(" + ", ".join(self.gen_expr(a,local_types) for a in ordered) + ")"
+            if e.type in self.structs:
+                if not e.args:
+                    return f"_j_struct_{e.type}_new()"
+                if len(e.args) == 1:
+                    value = e.args[0].expr if isinstance(e.args[0], NamedArg) else e.args[0]
+                    if isinstance(value, Call) and not value.args:
+                        if isinstance(value.callee, Ident) and self._resolve_struct_name(value.callee.name) == e.type:
+                            return f"_j_struct_{e.type}_new()"
+                        if isinstance(value.callee, NamespacedIdent) and self._resolve_struct_name(value.callee.name, value.callee.namespace) == e.type:
+                            return f"_j_struct_{e.type}_new()"
+                raise CodeGenError(f"new {e.type} expects an empty constructor")
             if e.type in BUILTIN_TYPEDEFS or e.type in INTEGER_TYPES or e.type in FLOAT_TYPES or e.type == "bool":
                 if len(e.args) != 1:
                     raise CodeGenError(f"new {e.type}(value) expects exactly one initializer")
                 value=e.args[0].expr if isinstance(e.args[0],NamedArg) else e.args[0]
                 vt=self.infer_type(value,local_types)
-                self._check_assignable(e.type, vt, f"initializer of new {e.type}")
+                self._check_assignable(e.type, vt, f"initializer of new {e.type}", e.args[0] if e.args else e)
                 n=self._tmp_id; self._tmp_id+=1
                 return f"(({c_type(e.type)}*)({self.gen_expr(value,local_types)}))" if False else f"((({c_type(e.type)}*)_j_alloc_value(sizeof({c_type(e.type)}), &( {c_type(e.type)} ){{ {self.gen_expr(value,local_types)} }})))"
             raise CodeGenError(f"cannot allocate value of unknown type '{e.type}' with new")
@@ -4251,11 +5514,14 @@ class CodeGen:
             if not gp: raise CodeGenError(f"'[]' cannot be used on '{ot}'")
             obj=self.gen_expr(e.obj,local_types); idx=self.gen_expr(e.index,local_types)
             if gp[0]=="dynamic_list": return f"_j_dynamic_list_get(&{obj},(size_t)({idx}))"
-            if gp[0]=="list": return f"(*({c_type(gp[1])}*)_j_list_get(&{obj},(size_t)({idx})))"
+            if gp[0]=="list": return f"(*({self._collection_c_type(gp[1])}*)_j_list_get(&{obj},(size_t)({idx})))"
             if gp[0]=="dynamic_list": return f"_j_dynamic_list_get(&{obj},(size_t)({idx}))"
             if gp[0]=="map":
                 kt,vt=self._split_generic_args(gp[1])
-                if kt=="string": return f"(*({c_type(vt)}*)_j_map_get_string(&{obj},{idx}))"
+                if kt=="string":
+                    if isinstance(e.index, StringLit):
+                        return f"(*({self._collection_c_type(vt) if self._generic_parts(vt) else c_type(vt)}*)_j_map_get_string_cstr(&{obj},{e.index.value}))"
+                    return f"(*({self._collection_c_type(vt) if self._generic_parts(vt) else c_type(vt)}*)_j_map_get_string(&{obj},{idx}))"
                 n=self._tmp_id; self._tmp_id+=1
                 raise CodeGenError("map indexing with a non-string key requires a key variable")
             raise CodeGenError("a container cannot be indexed")
@@ -4277,13 +5543,33 @@ class CodeGen:
             imported = symbols.get(e.name)
             if imported:
                 ns, name = imported
+                imported_fns = self.groups.get((ns, name), [])
+                if len(imported_fns) == 1:
+                    return imported_fns[0].mangled_name or self.default_mangle(name, ns)
                 for key, en in getattr(self.program, "_enums", {}).items():
                     if key == f"{ns}:{en.name}" and name in en.values:
                         return f"{ns}_{en.name}_{name}" if ns else f"{en.name}_{name}"
+            namespace_function_matches = []
             for ns in getattr(self.program, "_using_namespaces", []):
+                ns_fns = self.groups.get((ns, e.name), [])
+                if len(ns_fns) == 1:
+                    namespace_function_matches.append(ns_fns[0])
                 for key, en in getattr(self.program, "_enums", {}).items():
                     if key == f"{ns}:{en.name}" and e.name in en.values:
                         return f"{ns}_{en.name}_{e.name}"
+            if len(namespace_function_matches) == 1:
+                return namespace_function_matches[0].mangled_name or self.default_mangle(e.name, namespace_function_matches[0].namespace)
+            for en in getattr(self.program, "_enums", {}).values():
+                if en.namespace is None and e.name in en.values:
+                    return f"{en.name}_{e.name}"
+            if e.name in self.union_globals:
+                return self.union_globals[e.name]
+            gname = self._resolve_global_name(e.name)
+            if gname and gname in self.union_globals:
+                return self.union_globals[gname]
+            if gname: return gname
+            cname = self._resolve_class_name(e.name)
+            if cname: return cname
             return e.name
         if isinstance(e, MemberAccess):
             return self.gen_member_access(e, local_types)
@@ -4295,10 +5581,19 @@ class CodeGen:
                     return f"{cname}_{e.name}"
             if e.namespace == "factory" and e.name == "construct":
                 return "_j_factory_construct"
+            q = f"{e.namespace.replace(':', '_')}_{e.name}"
+            if q in self.global_types:
+                if q in self.union_globals: return self.union_globals[q]
+                return q
+            if q in self.classes:
+                return q
             if self._current_class and e.namespace in self.classes:
                 owner, m = self._find_class_member(e.namespace, e.name, "method")
                 if m is not None and self._current_class.base == e.namespace:
                     return f"{e.namespace}_{e.name}(self" + (", " if m.params else "") + ", ".join(p.name for p in m.params) + ")"
+            candidates = self.groups.get((e.namespace, e.name), [])
+            if len(candidates) == 1:
+                return candidates[0].mangled_name or self.default_mangle(e.name, e.namespace)
             return self.default_mangle(e.name, e.namespace)
         if isinstance(e, CastExpr):
             # dynamic_list stocke les valeurs primitives par adresse et les objets
@@ -4345,6 +5640,21 @@ class CodeGen:
                 # Pour les types pointeurs/classes, GetMember() fournit déjà
                 # directement l'adresse/valeur stockée.
                 return f"({c_type(target)}){ptr}"
+            # A union value is not directly castable in C. Jaguar allows a
+            # union value to be viewed through the member whose type matches
+            # the cast target, e.g. `(int)val` for `union val { int a; ... }`.
+            if isinstance(e.operand, Ident):
+                union_type = self.infer_type(e.operand, local_types)
+                if union_type in self.unions:
+                    target = canonical_type(e.target_type)
+                    for field in self.unions[union_type].fields:
+                        if canonical_type(field.type) == target:
+                            obj = self.gen_expr(e.operand, local_types)
+                            return f"({c_type(e.target_type)})({obj}.{field.name})"
+                    raise CodeGenError(
+                        f"cannot cast union '{union_type}' to '{e.target_type}': "
+                        "the target type is not one of its members"
+                    )
             # Casts ordinaires : forme C classique.
             return f"({c_type(e.target_type)}){self.gen_expr(e.operand, local_types)}"
         if isinstance(e, UnaryOp):
@@ -4359,14 +5669,44 @@ class CodeGen:
             right = self._gen_operand(e.right, prec, local_types, is_right=True)
             return f"{left} {e.op} {right}"
         if isinstance(e, Call):
+            callee_type = self.infer_type(e.callee, local_types)
+            fp_parts = self._function_type_parts(callee_type) if isinstance(callee_type, str) else None
+            # A uniquely-resolved named/namespace function also has a
+            # function type when used as a value. In a call position it must
+            # still go through normal overload/default/named-argument
+            # resolution rather than being mistaken for a function pointer.
+            direct_function_call = False
+            if isinstance(e.callee, Ident):
+                direct_function_call = bool(self.groups.get((None, e.callee.name)))
+                if not direct_function_call:
+                    imported = getattr(self.program, "_using_symbols", {}).get(e.callee.name)
+                    if imported:
+                        direct_function_call = bool(self.groups.get(imported))
+            elif isinstance(e.callee, NamespacedIdent):
+                direct_function_call = bool(self.groups.get((e.callee.namespace, e.callee.name)))
+            if fp_parts is not None and not direct_function_call:
+                if any(isinstance(a, NamedArg) for a in e.args):
+                    raise CodeGenError("named parameters are not available for function-pointer calls")
+                params, _ = fp_parts
+                if len(e.args) != len(params):
+                    raise CodeGenError(
+                        f"function pointer expects {len(params)} argument(s), {len(e.args)} provided"
+                    )
+                for param_type, arg in zip(params, e.args):
+                    at = self.infer_type(arg, local_types)
+                    self._check_assignable(param_type, at, "argument of function pointer call", arg)
+                callee = self.gen_expr(e.callee, local_types)
+                args = ", ".join(self.gen_expr(a, local_types) for a in e.args)
+                return f"{callee}({args})"
             if self._is_reflection_call(e):
                 self._validate_reflection_call(e, local_types)
                 obj=self.gen_expr(e.callee.obj,local_types); name=self.gen_expr(e.args[0],local_types)
                 return f"_j_reflect_get_member((void*){obj},{name}->data)"
-            # Appel direct à une méthode de la classe courante :
-            # `printff()` doit devenir `MyClass_printff(self, ...)` et non
-            # un appel C libre à `printff()`. Cela doit aussi passer par la
-            # résolution normale des paramètres (y compris les paramètres
+            # Appel direct à une méthode de la classe courante (ou héritée) :
+            # `printff()` doit devenir `MyClass_printff(self, ...)` et, pour
+            # une méthode définie dans une classe de base, recevoir l'adresse
+            # du sous-objet `_base` correspondant. Cela doit aussi passer par
+            # la résolution normale des paramètres (y compris les paramètres
             # nommés).
             if isinstance(e.callee, Ident) and self._current_class:
                 owner, method = self._find_class_member(
@@ -4378,9 +5718,24 @@ class CodeGen:
                         e.args, method.params, f"'{e.callee.name}'"
                     )
                     args = ", ".join(self.gen_expr(a, local_types) for a in ordered_args)
-                    if method.is_virtual:
-                        return f"self->_vptr->{method.name}((void*)self" + (", " + args if args else "") + ")"
-                    return f"{owner.name}_{method.name}(self" + (", " + args if args else "") + ")"
+                    if owner.name == self._current_class.name:
+                        if method.is_virtual:
+                            return f"self->_vptr->{method.name}((void*)self" + (", " + args if args else "") + ")"
+                        return f"{owner.name}_{method.name}(self" + (", " + args if args else "") + ")"
+                    base_self = "self"
+                    cur = self._current_class
+                    first_base = True
+                    while cur is not None and cur.name != owner.name:
+                        if not cur.base:
+                            break
+                        base_self += ("->_base" if first_base else "._base")
+                        first_base = False
+                        cur = self.classes.get(cur.base)
+                    if cur is not None and cur.name == owner.name:
+                        return f"{owner.name}_{method.name}(&{base_self}" + (", " + args if args else "") + ")"
+                    raise CodeGenError(
+                        f"cannot resolve base-class method '{e.callee.name}' from class '{self._current_class.name}'"
+                    )
 
             if isinstance(e.callee, NamespacedIdent) and e.callee.namespace == "factory" and e.callee.name == "construct":
                 if len(e.args) != 1 or isinstance(e.args[0], NamedArg):
@@ -4426,21 +5781,29 @@ class CodeGen:
                     if kind=="dynamic_list" and e.callee.name=="size":
                         if len(e.args)!=0: raise CodeGenError("dynamic_list::size expects 0 arguments")
                         return f"(i32){obj}.size"
+                    if kind=="list" and e.callee.name=="size":
+                        if len(e.args)!=0: raise CodeGenError("list::size expects 0 arguments")
+                        return f"(i32){obj}.size"
                     if kind=="list" and e.callee.name=="push":
                         if isinstance(e.callee.obj, Ident) and e.callee.obj.name in self._readonly_vars:
                             raise CodeGenError(f"list '{e.callee.obj.name}' is read-only during loop_list")
                         if len(e.args)!=1: raise CodeGenError("list::push expects 1 argument")
+                        ex_type = self.infer_type(e.args[0], local_types)
+                        self._check_assignable(inner, ex_type, "argument of list::push", e.args[0])
                         ex=self.gen_expr(e.args[0],local_types); n=self._tmp_id; self._tmp_id+=1
                         return f"{{ {c_type(inner)} _jcp{n} = {ex}; _j_list_push(&{obj}, &_jcp{n}); }}"
                     if kind=="map" and e.callee.name=="emplace":
                         if isinstance(e.callee.obj, Ident) and e.callee.obj.name in self._readonly_vars:
                             raise CodeGenError(f"map '{e.callee.obj.name}' is read-only during loop_map")
                         if len(e.args)!=2: raise CodeGenError("map::emplace expects 2 arguments")
-                        kt,vt=self._split_generic_args(inner); k=self.gen_expr(e.args[0],local_types); v=self.gen_expr(e.args[1],local_types); n=self._tmp_id; self._tmp_id+=1
+                        kt,vt=self._split_generic_args(inner)
+                        self._check_assignable(kt, self.infer_type(e.args[0], local_types), "key argument of map::emplace", e.args[0])
+                        self._check_assignable(vt, self.infer_type(e.args[1], local_types), "value argument of map::emplace", e.args[1])
+                        k=self.gen_expr(e.args[0],local_types); v=self.gen_expr(e.args[1],local_types); n=self._tmp_id; self._tmp_id+=1
                         return f"{{ {c_type(kt)} _jmk{n} = {k}; {c_type(vt)} _jmv{n} = {v}; _j_map_emplace(&{obj}, &_jmk{n}, &_jmv{n}); }}"
                     if kind=="container" and e.callee.name=="get":
                         if len(e.args)!=0: raise CodeGenError("container::get expects 0 arguments")
-                        return f"(*(({c_type(inner)}*)_j_container_get(&{obj})))"
+                        return f"(*(({self._collection_c_type(inner) if self._generic_parts(inner) else c_type(inner)}*)_j_container_get(&{obj})))"
                 if ot == "string":
                     obj = self.gen_expr(e.callee.obj, local_types)
                     args = ", ".join(self.gen_expr(a, local_types) for a in self._ordered_call_args(e.args, [Param("string", "other")] if e.callee.name in ("equals","contains","starts_with","ends_with","concat") else [Param("i32","start"),Param("i32","length")] if e.callee.name=="substring" else [Param("i32","index")] if e.callee.name=="char_at" else [], f"string::{e.callee.name}"))
@@ -4457,20 +5820,61 @@ class CodeGen:
                     fn, argc = mapping[e.callee.name]
                     if len(e.args) != argc:
                         raise CodeGenError(f"string::{e.callee.name} expects {argc} argument(s)")
+                    string_params = [Param("string", "other")] if e.callee.name in ("equals","contains","starts_with","ends_with","concat") else [Param("i32","start"), Param("i32","length")] if e.callee.name == "substring" else [Param("i32","index")] if e.callee.name == "char_at" else []
+                    ordered_args = self._ordered_call_args(e.args, string_params, f"string::{e.callee.name}")
+                    for arg, param in zip(ordered_args, string_params):
+                        self._check_assignable(param.type, self.infer_type(arg, local_types), f"argument '{param.name}' of string::{e.callee.name}", arg)
+                    args = ", ".join(self.gen_expr(a, local_types) for a in ordered_args)
                     return f"{fn}({obj}" + (", " + args if args else "") + ")"
-            if isinstance(e.callee, Ident) and e.callee.name in self.classes:
-                cls=self.classes[e.callee.name]
+            if isinstance(e.callee, Ident):
+                class_name = self._resolve_class_name(e.callee.name)
+            elif isinstance(e.callee, NamespacedIdent):
+                class_name = self._resolve_class_name(e.callee.name, e.callee.namespace)
+            else:
+                class_name = None
+            if class_name is not None:
+                cls=self.classes[class_name]
                 ctor=next((m for m in cls.methods if m.is_constructor),None)
                 if ctor is None and e.args: raise CodeGenError(f"'{cls.name}' has no constructor taking arguments")
                 ordered_args=self._ordered_call_args(e.args, ctor.params if ctor else [], f"constructeur '{cls.name}'")
                 args=", ".join(self.gen_expr(a,local_types) for a in ordered_args)
                 return f"{cls.name}_ctor({args})"
+            if isinstance(e.callee, Ident):
+                struct_name = self._resolve_struct_name(e.callee.name)
+            elif isinstance(e.callee, NamespacedIdent):
+                struct_name = self._resolve_struct_name(e.callee.name, e.callee.namespace)
+            else:
+                struct_name = None
+            if struct_name is not None:
+                if e.args:
+                    raise CodeGenError(f"struct '{struct_name}' construction currently takes no arguments")
+                return f"_j_struct_{struct_name}_default()"
             if isinstance(e.callee, NamespacedIdent) and self._current_class and e.callee.namespace in self.classes and self._current_class.base == e.callee.namespace:
                 owner,m=self._find_class_member(e.callee.namespace,e.callee.name,"method")
                 if m is not None:
                     ordered_args=self._ordered_call_args(e.args, m.params, f"'{e.callee.name}'")
                     args=", ".join(self.gen_expr(a,local_types) for a in ordered_args)
                     return f"{owner.name}_{m.name}(&self->_base" + (", "+args if args else "") + ")"
+            if isinstance(e.callee, Ident) and self._current_class:
+                owner, m = self._find_class_member(self._current_class.name, e.callee.name, "method")
+                if m is not None:
+                    self._check_member_access(owner, m, e.callee.name)
+                    ordered_args = self._ordered_call_args(e.args, m.params, f"'{e.callee.name}'")
+                    args = ", ".join(self.gen_expr(a, local_types) for a in ordered_args)
+                    if owner.name == self._current_class.name:
+                        return f"{owner.name}_{m.name}(self" + (", " + args if args else "") + ")"
+                    base_self = "self"
+                    cur = self._current_class
+                    while cur is not None and cur.name != owner.name:
+                        if not cur.base:
+                            break
+                        base_self += "->_base"
+                        cur = self.classes.get(cur.base)
+                    if cur is not None and cur.name == owner.name:
+                        return f"{owner.name}_{m.name}(&{base_self}" + (", " + args if args else "") + ")"
+                    raise CodeGenError(
+                        f"cannot resolve base-class method '{e.callee.name}' from class '{self._current_class.name}'"
+                    )
             if isinstance(e.callee, MemberAccess):
                 ot=self.infer_type(e.callee.obj,local_types)
                 if isinstance(ot, str) and ot.endswith("*"):
@@ -4485,13 +5889,17 @@ class CodeGen:
                     args=", ".join(self.gen_expr(a,local_types) for a in ordered_args)
                     if m.is_virtual:
                         return f"{obj}->_vptr->{m.name}((void*){obj}" + (", "+args if args else "") + ")"
-                    return f"{owner.name}_{m.name}({obj}" + (", "+args if args else "") + ")"
+                    receiver = obj if owner.name == ot else self._base_object_ptr_expr(obj, self.classes[ot], owner)
+                    return f"{owner.name}_{m.name}({receiver}" + (", "+args if args else "") + ")"
             system = self._validate_system_call(e)
             if system is not None:
                 # sys:print accepte les types primitifs imprimables.
-                if isinstance(e.callee, NamespacedIdent) and (
-                    e.callee.namespace, e.callee.name
-                ) == ("sys", "print"):
+                is_sys_print = (
+                    e.callee.name == "print"
+                    and isinstance(e.callee, (Ident, NamespacedIdent))
+                    and system == SYSTEM_BUILTINS.get(("sys", "print"))
+                )
+                if is_sys_print:
                     if self._is_reflection_call(e.args[0]):
                         self._validate_reflection_call(e.args[0], local_types)
                         robj=self.gen_expr(e.args[0].callee.obj,local_types); rname=self.gen_expr(e.args[0].args[0],local_types)
@@ -4529,45 +5937,236 @@ class CodeGen:
         raise NotImplementedError(f"unsupported expression: {e!r}")
 
 
+# Attach precise source spans to semantic CodeGen errors at the AST node that
+# triggered them. Parser nodes are annotated with expression/statement spans,
+# so this remains source-language aware and never guesses from generated C.
+def _attach_codegen_node_span(method, arg_index):
+    def wrapped(self, *args, **kwargs):
+        try:
+            return method(self, *args, **kwargs)
+        except CodeGenError as exc:
+            if not hasattr(exc, "_jaguar_column"):
+                node = args[arg_index] if len(args) > arg_index else None
+                if node is not None:
+                    # Statement-level errors should point at the actual offending
+                    # expression rather than the indentation/start of the statement.
+                    if isinstance(node, ReturnStmt) and node.expr is not None:
+                        node = node.expr
+                    elif isinstance(node, IfStmt) and "if condition" in str(exc):
+                        node = node.cond
+                    elif isinstance(node, WhileStmt) and "while condition" in str(exc):
+                        node = node.cond
+                    elif isinstance(node, MemberAssignStmt):
+                        node = node.target if "member" in str(exc) else node.expr
+                    elif isinstance(node, PointerAssignStmt):
+                        node = node.expr
+                    line = getattr(node, "_jaguar_line", None)
+                    col = getattr(node, "_jaguar_column", None)
+                    end = getattr(node, "_jaguar_end_column", None)
+                    if isinstance(node, MemberAccess) and "member '" in str(exc):
+                        col = getattr(node, "_jaguar_member_column", col)
+                        end = getattr(node, "_jaguar_member_end_column", end)
+                    if method.__name__ == "gen_member_access":
+                        col = getattr(node, "_jaguar_member_column", col)
+                        end = getattr(node, "_jaguar_member_end_column", end)
+                    if method.__name__ == "resolve_call_target":
+                        col = getattr(node, "_jaguar_callee_column", col)
+                        end = getattr(node, "_jaguar_callee_end_column", end)
+                    if line is not None and col is not None:
+                        exc._jaguar_line = line
+                        exc._jaguar_column = col
+                        exc._jaguar_end_column = end if end is not None else col + 1
+            raise
+    wrapped.__name__ = getattr(method, "__name__", "wrapped")
+    wrapped.__doc__ = getattr(method, "__doc__", None)
+    return wrapped
+
+CodeGen._check_assignable = _attach_codegen_node_span(CodeGen._check_assignable, 3)
+CodeGen._check_expression_types = _attach_codegen_node_span(CodeGen._check_expression_types, 0)
+CodeGen.resolve_call_target = _attach_codegen_node_span(CodeGen.resolve_call_target, 0)
+CodeGen.infer_type = _attach_codegen_node_span(CodeGen.infer_type, 0)
+CodeGen.gen_expr = _attach_codegen_node_span(CodeGen.gen_expr, 0)
+CodeGen.gen_stmt = _attach_codegen_node_span(CodeGen.gen_stmt, 0)
+CodeGen.gen_member_access = _attach_codegen_node_span(CodeGen.gen_member_access, 0)
+
 # =========================================================================
 # 6. POINT D'ENTRÉE
 # =========================================================================
 
-def _guess_error_line(source: str, message: str) -> int:
-    """Best-effort source line for semantic errors whose AST exception has no line.
+def _clean_diagnostic_message(message: str) -> str:
+    # Avoid exposing Python's internal literal-type tuple representation.
+    message = re.sub(r"got '\('literal', 'int'\)'", "got 'int literal'", message)
+    message = re.sub(r"got '\('literal', 'float'\)'", "got 'float literal'", message)
+    return message
 
-    Parser errors already carry their exact token line. Resolver errors historically
-    did not, so use the symbol named by the diagnostic and choose the relevant
-    declaration occurrence (the second one for duplicate declarations).
-    """
+
+def _guess_error_line(source: str, message: str) -> int:
     explicit = re.search(r"\bline\s+(\d+)", message)
     if explicit:
         return max(1, int(explicit.group(1)))
-
-    lines = source.splitlines()
-    name_match = re.search(r"['‘]([A-Za-z_]\w*)['’]", message)
-    name = name_match.group(1) if name_match else None
-    if not name:
-        return 1
-
-    if "declared multiple times" in message or "prototype" in message and "declared multiple times" in message:
-        matches = []
-        pat = re.compile(r"\b[A-Za-z_]\w*\s+" + re.escape(name) + r"\s*\(")
-        for i, line in enumerate(lines, 1):
-            if pat.search(line):
-                matches.append(i)
-        if len(matches) >= 2:
-            return matches[1]
-
-    if "class '" in message and "declared multiple times" in message:
-        matches = [i for i,l in enumerate(lines,1) if re.search(r"\bclass\s+"+re.escape(name)+r"\b",l)]
-        if len(matches) >= 2:
-            return matches[1]
-
-    for i, line in enumerate(lines, 1):
-        if re.search(r"\b" + re.escape(name) + r"\b", line):
-            return i
     return 1
+
+
+def _find_span_on_line(source: str, line: int, message: str):
+    lines = source.splitlines()
+    if not lines:
+        return max(1, line), 0, 1
+    line = max(1, min(line, len(lines)))
+    text = lines[line - 1]
+
+    patterns = [
+        r"unknown type '([^']+)'",
+        r"operator '([^']+)'",
+        r"unary '([^']+)'",
+        r"invalid override: [A-Za-z_][\w]*::([A-Za-z_]\w*)",
+        r"unknown base class '([^']+)'",
+        r"(?:unknown|ambiguous) function '([^']+)'",
+        r"function '([^']+)' declared",
+        r"prototype of '([^']+)' declared",
+        r"class '([^']+)' declared",
+        r"type alias '([^']+)' declared",
+        r"enum value '([^']+)' declared",
+        r"enum '([^']+)' declared",
+        r"member '([^']+)'",
+        r"string::([A-Za-z_]\w*)",
+        r"variable '([^']+)'",
+        r"parameter '([^']+)'",
+        r"function-pointer[^']*'([^']+)'",
+    ]
+    for pat in patterns:
+        m = re.search(pat, message)
+        if not m:
+            continue
+        needle = m.group(1).split("::")[-1]
+        if "operator '" in message or "unary '" in message:
+            op = needle
+            # Highlight the full unary expression when its operand is present.
+            om = re.search(re.escape(op) + r"\s*[A-Za-z_(]", text)
+            if om:
+                a = om.start()
+                if text[om.end()-1] == "(":
+                    close = text.find(")", om.end()-1)
+                    return line, a, max(a + len(op) + 1, close + 1 if close >= 0 else om.end())
+                return line, a, min(len(text), om.end() + max(0, len(text) - om.end()))
+            hit = text.find(op)
+            if hit >= 0: return line, hit, hit + len(op)
+        if "unknown base class" in message:
+            nm = re.search(r",\s*" + re.escape(needle) + r"\b", text)
+            if nm:
+                a = nm.start() + nm.group(0).rfind(needle); return line, a, a + len(needle)
+        for hit in re.finditer(r"\b" + re.escape(needle) + r"\b", text):
+            return line, hit.start(), hit.end()
+
+    if "expects " in message and ("provided" in message or "arguments" in message):
+        name_m = re.search(r"'([^']+)' expects", message)
+        if name_m:
+            needle=name_m.group(1).split(":")[-1]
+            hit=re.search(r"\b"+re.escape(needle)+r"\s*\(",text)
+            if hit: return line, hit.start(), hit.end()-1
+
+    if "initializer" in message and "cannot assign" in message:
+        eq = text.find("=")
+        if eq >= 0:
+            a = eq + 1
+            while a < len(text) and text[a].isspace(): a += 1
+            return line, a, max(a + 1, len(text.rstrip()))
+    if "if condition" in message:
+        m=re.search(r"\bif\s*\(",text)
+        if m:
+            a=m.end(); b=text.find(")",a); return line,a,max(a+1,b if b>=0 else len(text))
+    if "while condition" in message:
+        m=re.search(r"\bwhile\s*\(",text)
+        if m:
+            a=m.end(); b=text.find(")",a); return line,a,max(a+1,b if b>=0 else len(text))
+    for keyword in ("break", "continue", "return", "constr", "destr"):
+        if keyword in message:
+            hit=re.search(r"\b"+keyword+r"\b",text)
+            if hit: return line, hit.start(), hit.end()
+
+    return line, 0, max(1, len(text))
+
+
+def _diagnostic_from_exception(source: str, exc: Exception):
+    message = _clean_diagnostic_message(str(exc))
+    line = getattr(exc, "_jaguar_line", None)
+    if line is None:
+        line = _guess_error_line(source, message)
+    column = getattr(exc, "_jaguar_column", None)
+    end_column = getattr(exc, "_jaguar_end_column", None)
+    symbol = getattr(exc, "_jaguar_symbol", None)
+    if symbol and line and 1 <= line <= len(source.splitlines()):
+        text = source.splitlines()[line - 1]
+        preferred_start = column if column is not None else 0
+        hit = re.search(r"\b" + re.escape(symbol) + r"\b", text[preferred_start:])
+        if hit:
+            column = preferred_start + hit.start()
+            end_column = column + len(symbol)
+    if column is None:
+        _, column, end_column = _find_span_on_line(source, line, message)
+    elif end_column is None:
+        end_column = column + 1
+    return {
+        "message": message,
+        "line": max(1, int(line)),
+        "column": max(0, int(column)),
+        "end_column": max(max(0, int(column)) + 1, int(end_column)),
+        "severity": 1,
+        "kind": type(exc).__name__,
+    }
+
+
+def diagnose_source(source: str, c89: bool = False):
+    """Run exactly the same lexer/parser/resolver/codegen checks as compilation.
+
+    Returns one structured diagnostic for the first Jaguar error, or an empty
+    list when the source reaches code generation successfully.
+    """
+    try:
+        tokens = tokenize(source)
+        program = Parser(tokens).parse_program()
+        groups = Resolver(program).resolve()
+        cg = CodeGen(program, groups, c89=c89)
+        try:
+            cg.gen()
+        except CodeGenError as exc:
+            if not hasattr(exc, "_jaguar_line"):
+                exc._jaguar_line = getattr(cg, "_current_source_line", 1)
+            raise
+    except (LexError, ParseError, ResolverError, CodeGenError) as exc:
+        return [_diagnostic_from_exception(source, exc)]
+    return []
+
+
+def format_diagnostic(diagnostic, filename=None, prefix="Jaguar Error"):
+    location = f"{filename}:{diagnostic['line']}:{diagnostic['column'] + 1}" if filename else f"<stdin>:{diagnostic['line']}:{diagnostic['column'] + 1}"
+    return f"{prefix}: {location}: {diagnostic['message']}"
+
+
+def _map_source_location(source: str, line: int):
+    lines = source.splitlines()
+    if not lines or line < 1:
+        return None, max(1, line)
+    # JBS emits one exact source marker immediately before each original line.
+    for idx in range(min(line - 1, len(lines) - 1), -1, -1):
+        marker = re.match(r"\s*//\s*jbs:source\s+(.+?):(\d+)\s*$", lines[idx])
+        if marker:
+            return marker.group(1), int(marker.group(2))
+    current_file = None
+    current_source_line = 1
+    for idx, text in enumerate(lines, 1):
+        m_file = re.match(r"\s*//\s*=+\s*([^=\n]+?)\s*=+\s*$", text)
+        m_using = re.match(r"\s*//\s*jbs:\s*using\s+.*?->\s*(.+?)\s*$", text)
+        if m_file:
+            candidate = m_file.group(1).strip()
+            if candidate and candidate != "Fichier généré par Jaguar Build System (JBS 1.0)":
+                current_file = candidate; current_source_line = 1
+        elif m_using:
+            current_file = m_using.group(1).strip(); current_source_line = 1
+        elif current_file is not None:
+            if idx == line:
+                return current_file, current_source_line
+            current_source_line += 1
+    return current_file, max(1, current_source_line if current_file else line)
 
 
 def transpile(source: str, c89: bool = False) -> str:
@@ -4576,13 +6175,42 @@ def transpile(source: str, c89: bool = False) -> str:
     try:
         groups = Resolver(program).resolve()
     except ResolverError as e:
-        setattr(e, "_jaguar_line", _guess_error_line(source, str(e)))
+        if not hasattr(e, "_jaguar_line"):
+            d = _diagnostic_from_exception(source, e)
+            e._jaguar_line = d["line"]; e._jaguar_column = d["column"]; e._jaguar_end_column = d["end_column"]
         raise
     cg = CodeGen(program, groups, c89=c89)
     try:
         return cg.gen()
     except CodeGenError as e:
-        setattr(e, "_jaguar_line", getattr(cg, "_current_source_line", 1))
+        if not hasattr(e, "_jaguar_line"):
+            e._jaguar_line = getattr(cg, "_current_source_line", 1)
+        if not hasattr(e, "_jaguar_column"):
+            d = _diagnostic_from_exception(source, e)
+            e._jaguar_column = d["column"]; e._jaguar_end_column = d["end_column"]
+        raise
+
+
+def transpile_files(source: str, c89: bool = False):
+    """Compile Jaguar source into the program C file plus the shared runtime C/H files."""
+    tokens = tokenize(source)
+    program = Parser(tokens).parse_program()
+    try:
+        groups = Resolver(program).resolve()
+    except ResolverError as e:
+        if not hasattr(e, "_jaguar_line"):
+            d = _diagnostic_from_exception(source, e)
+            e._jaguar_line = d["line"]; e._jaguar_column = d["column"]; e._jaguar_end_column = d["end_column"]
+        raise
+    cg = CodeGen(program, groups, c89=c89)
+    try:
+        return cg.gen(split_runtime=True)
+    except CodeGenError as e:
+        if not hasattr(e, "_jaguar_line"):
+            e._jaguar_line = getattr(cg, "_current_source_line", 1)
+        if not hasattr(e, "_jaguar_column"):
+            d = _diagnostic_from_exception(source, e)
+            e._jaguar_column = d["column"]; e._jaguar_end_column = d["end_column"]
         raise
 
 
@@ -4590,6 +6218,7 @@ def main(argv):
     out_path = None
     in_path = None
     c89 = False
+    emit_c = False
     args = argv[1:]
     i = 0
     while i < len(args):
@@ -4598,6 +6227,9 @@ def main(argv):
             i += 2
         elif args[i] == "--c89":
             c89 = True
+            i += 1
+        elif args[i] == "--emit-c":
+            emit_c = True
             i += 1
         else:
             in_path = args[i]
@@ -4610,14 +6242,15 @@ def main(argv):
         src = sys.stdin.read()
 
     try:
-        c_code = transpile(src, c89=c89)
+        generated = transpile_files(src, c89=c89) if out_path else transpile(src, c89=c89)
     except (LexError, ParseError, ResolverError, CodeGenError) as e:
-        line = getattr(e, "_jaguar_line", None)
-        if line is None:
-            m = re.search(r"\bline\s+(\d+)", str(e))
-            line = int(m.group(1)) if m else 1
-        location = f"{in_path}:{line}" if in_path else f"<stdin>:{line}"
-        print(f"Jaguar Error: {location}: {e}", file=sys.stderr)
+        d = _diagnostic_from_exception(src, e)
+        mapped_file, mapped_line = _map_source_location(src, d["line"])
+        if mapped_file:
+            location = f"{mapped_file}:{mapped_line}:{d['column'] + 1}"
+        else:
+            location = f"{in_path}:{d['line']}:{d['column'] + 1}" if in_path else f"<stdin>:{d['line']}:{d['column'] + 1}"
+        print(f"Jaguar Error: {location}: {d['message']}", file=sys.stderr)
         return 1
 
     if out_path:
@@ -4625,23 +6258,42 @@ def main(argv):
             print("Jaguar Error: output name must be given without the .c extension (e.g. -o out)", file=sys.stderr)
             return 1
 
-        c_path = out_path + ".c"
+        out_base = Path(out_path)
+        out_base.parent.mkdir(parents=True, exist_ok=True)
+        c_path = out_base.with_suffix(out_base.suffix + ".c") if out_base.suffix else Path(str(out_base) + ".c")
+        # The runtime files intentionally have fixed names: they are the
+        # compiler-generated Jaguar runtime for this translation unit.
+        runtime_h_path = out_base.parent / "jaguar_runtime.h"
+        runtime_c_path = out_base.parent / "jaguar_runtime.c"
         with open(c_path, "w", encoding="utf-8") as f:
-            f.write(c_code)
+            f.write(generated["program"])
+        with open(runtime_h_path, "w", encoding="utf-8") as f:
+            f.write(generated["runtime_h"])
+        with open(runtime_c_path, "w", encoding="utf-8") as f:
+            f.write(generated["runtime_c"])
 
         print(f"Jaguar: C generated at {c_path}")
+        print(f"Jaguar: runtime C generated at {runtime_c_path}")
+        print(f"Jaguar: runtime header generated at {runtime_h_path}")
+        if emit_c:
+            return 0
         print(f"Jaguar: GCC compilation -> {out_path}")
         try:
-            gcc_path = Path(__file__).resolve().parent / "toolchain" / "mingw64" / "bin" / ("gcc.exe" if os.name == "nt" else "gcc")
+            gcc_path = Path(__file__).resolve().parent / "toolchain" / "bin" / ("gcc.exe" if os.name == "nt" else "gcc")
             if not gcc_path.is_file():
                 print(f"Jaguar Error: GCC toolchain not found: {gcc_path}", file=sys.stderr)
-                try:
-                    Path(c_path).unlink()
-                except OSError:
-                    pass
+                for generated_path in (c_path, runtime_c_path, runtime_h_path):
+                    try:
+                        generated_path.unlink()
+                    except OSError:
+                        pass
                 return 1
+            gcc_args = [str(gcc_path)]
+            if c89:
+                gcc_args += ["-std=c89"]
+            gcc_args += [str(c_path), str(runtime_c_path), "-o", out_path, "-lm"]
             result = subprocess.run(
-                [str(gcc_path), c_path, "-o", out_path, "-lm"],
+                gcc_args,
                 check=False,
             )
         except OSError as e:
@@ -4650,13 +6302,14 @@ def main(argv):
 
         if result.returncode != 0:
             print(f"Jaguar Error: gcc failed with exit code {result.returncode}", file=sys.stderr)
-            try:
-                Path(c_path).unlink()
-            except OSError:
-                pass
+            for generated_path in (c_path, runtime_c_path, runtime_h_path):
+                try:
+                    generated_path.unlink()
+                except OSError:
+                    pass
             return result.returncode
     else:
-        sys.stdout.write(c_code)
+        sys.stdout.write(generated)
     return 0
 
 

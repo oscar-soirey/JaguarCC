@@ -54,7 +54,12 @@ from pathlib import Path
 
 
 class JBSError(Exception):
-    pass
+    def __init__(self, message: str, file: str | None = None, line: int | None = None, column: int | None = None, end_column: int | None = None):
+        super().__init__(message)
+        self.file = file
+        self.line = line
+        self.column = column
+        self.end_column = end_column
 
 
 @dataclass
@@ -63,6 +68,8 @@ class BuildTarget:
     files: list[str]
     kind: str = "compile"  # compile, compile_static, compile_shared
     links: list[str] | None = None
+    entry_locations: list[tuple[int, int, int]] | None = None
+    declaration_location: tuple[int, int, int] | None = None
 
 
 @dataclass
@@ -85,9 +92,16 @@ USING_RE = re.compile(r"^\s*using\s+(?!namespace\b)([A-Za-z_][A-Za-z0-9_]*)\s*;\
 
 
 def strip_jbs_comments(text: str) -> str:
-    # Les commentaires JBS sont volontairement simples : // jusqu'à la fin
-    # de la ligne. Les chemins de fichiers ne sont pas censés contenir //.
-    return re.sub(r"//.*", "", text)
+    # Preserve character offsets so diagnostics can point to the exact source
+    # location even after comments have been removed from the grammar input.
+    return re.sub(r"//[^\n]*", lambda m: " " * len(m.group(0)), text)
+
+
+def _source_position(text: str, offset: int, length: int = 1):
+    line = text.count("\n", 0, offset) + 1
+    line_start = text.rfind("\n", 0, offset) + 1
+    column = offset - line_start
+    return line, column, column + max(1, length)
 
 
 def parse_jbs(text: str) -> JBSConfig:
@@ -95,17 +109,25 @@ def parse_jbs(text: str) -> JBSConfig:
 
     version_match = re.search(r"^\s*version\s+([^\s]+)\s*$", clean, re.MULTILINE)
     if not version_match:
-        raise JBSError("missing JBS version (expected: 'version 1.0')")
+        first = re.search(r"^\s*\S.*$", clean, re.MULTILINE)
+        if first:
+            line, col, end = _source_position(text, first.start(0), len(first.group(0).strip()))
+        else:
+            line, col, end = 1, 0, 1
+        raise JBSError("missing JBS version (expected: 'version 1.0')", line=line, column=col, end_column=end)
     version = version_match.group(1)
     if version != "1.0":
-        raise JBSError(f"unsupported JBS version: {version} (only 1.0 is supported)")
+        line, col, end = _source_position(text, version_match.start(1), len(version))
+        raise JBSError(f"unsupported JBS version: {version} (only 1.0 is supported)", line=line, column=col, end_column=end)
 
     output_dir: str | None = None
-    out_matches = re.findall(r"^\s*out\s+([^\s{}]+)\s*$", clean, re.MULTILINE)
+    out_matches = list(re.finditer(r"^\s*out\s+([^\s{}]+)\s*$", clean, re.MULTILINE))
     if len(out_matches) > 1:
-        raise JBSError("'out' directive defined multiple times")
+        m = out_matches[1]
+        line, col, end = _source_position(text, m.start(0), len(m.group(0).strip()))
+        raise JBSError("'out' directive defined multiple times", line=line, column=col, end_column=end)
     if out_matches:
-        output_dir = out_matches[0]
+        output_dir = out_matches[0].group(1)
 
     c89 = bool(re.search(r"^\s*c89\s*$", clean, re.MULTILINE))
     keep_c = bool(re.search(r"^\s*keep_c\s*$", clean, re.MULTILINE))
@@ -117,10 +139,14 @@ def parse_jbs(text: str) -> JBSConfig:
         defines.append(f"#define {name}" + (f" {value}" if value else ""))
 
     include_dirs: list[str] = []
-    for match in re.finditer(r"^\s*include\s+([^\s{}]+)\s*$", clean, re.MULTILINE):
+    include_matches = list(re.finditer(r"^\s*include\s+([^\s{}]+)\s*$", clean, re.MULTILINE))
+    for match in include_matches:
         include_dirs.append(match.group(1))
     if len(include_dirs) != len(set(include_dirs)):
-        raise JBSError("'include' directive defined multiple times for the same path")
+        seen = set()
+        duplicate = next(m for m in include_matches if m.group(1) in seen or seen.add(m.group(1)))
+        line, col, end = _source_position(text, duplicate.start(1), len(duplicate.group(1)))
+        raise JBSError("'include' directive defined multiple times for the same path", line=line, column=col, end_column=end)
 
     targets: list[BuildTarget] = []
 
@@ -135,30 +161,39 @@ def parse_jbs(text: str) -> JBSConfig:
             if block_kind == "target":
                 kind = match.group(1)
                 name = match.group(2)
+                name_start = match.start(2)
             else:
                 kind = "link"
                 name = match.group(1)
+                name_start = match.start(1)
 
+            decl_line, decl_col, decl_end = _source_position(text, name_start, len(name))
             brace_start = clean.find("{", match.start(), match.end())
             depth = 1
             i = brace_start + 1
             while i < len(clean) and depth:
-                if clean[i] == "{":
-                    depth += 1
-                elif clean[i] == "}":
-                    depth -= 1
+                if clean[i] == "{": depth += 1
+                elif clean[i] == "}": depth -= 1
                 i += 1
             if depth != 0:
-                raise JBSError(f"{kind} block '{name}' is not closed")
+                line, col, end = _source_position(text, brace_start, 1)
+                raise JBSError(f"{kind} block '{name}' is not closed", line=line, column=col, end_column=end)
 
             body = clean[brace_start + 1:i - 1]
             entries = []
-            for raw_line in body.splitlines():
-                line = raw_line.strip()
-                if line:
-                    entries.append(line)
+            entry_locations = []
+            local = 0
+            for raw_line in body.splitlines(keepends=True):
+                stripped = raw_line.strip()
+                if stripped:
+                    leading = len(raw_line) - len(raw_line.lstrip())
+                    abs_start = brace_start + 1 + local + leading
+                    line_no, col, end = _source_position(text, abs_start, len(stripped))
+                    entries.append(stripped)
+                    entry_locations.append((line_no, col, end))
+                local += len(raw_line)
 
-            blocks.append((name, kind, entries))
+            blocks.append((name, kind, entries, entry_locations, (decl_line, decl_col, decl_end)))
             pos = i
         return blocks
 
@@ -166,37 +201,44 @@ def parse_jbs(text: str) -> JBSConfig:
     link_blocks = parse_blocks(LINK_RE, "link")
 
     if not target_blocks:
+        line = 1
+        nonempty = re.search(r"^\s*\S.*$", text, re.MULTILINE)
+        if nonempty:
+            line, _, _ = _source_position(text, nonempty.start(0), 1)
         raise JBSError(
             "no 'compile <name> { ... }', "
             "'compile_static <name> { ... }' or "
-            "'compile_shared <name> { ... }' block found"
+            "'compile_shared <name> { ... }' block found",
+            line=line, column=0, end_column=max(1, len(text.splitlines()[line-1].strip()) if text.splitlines() else 1)
         )
 
     link_map: dict[str, list[str]] = {}
-    for name, _, entries in link_blocks:
+    for name, _, entries, _, decl_loc in link_blocks:
         if name in link_map:
-            raise JBSError(f"link block '{name}' defined multiple times")
+            raise JBSError(f"link block '{name}' defined multiple times", line=decl_loc[0], column=decl_loc[1], end_column=decl_loc[2])
         link_map[name] = entries
 
-    for name, kind, entries in target_blocks:
+    for name, kind, entries, entry_locations, decl_loc in target_blocks:
         files: list[str] = []
-        for line in entries:
+        for idx, line in enumerate(entries):
             if Path(line).suffix.lower() not in (".ja", ".jah"):
+                loc = entry_locations[idx]
                 raise JBSError(
                     f"invalid entry in {kind} {name}: '{line}' "
-                    f"(expected: a .ja or .jah file)"
+                    f"(expected: a .ja or .jah file)",
+                    line=loc[0], column=loc[1], end_column=loc[2]
                 )
             files.append(line)
 
         if not files:
-            raise JBSError(f"{kind} block '{name}' contains no .ja or .jah files")
+            raise JBSError(f"{kind} block '{name}' contains no .ja or .jah files", line=decl_loc[0], column=decl_loc[1], end_column=decl_loc[2])
 
-        targets.append(BuildTarget(name, files, kind, link_map.get(name, [])))
+        targets.append(BuildTarget(name, files, kind, link_map.get(name, []), entry_locations, decl_loc))
 
     return JBSConfig(version, output_dir, c89, keep_c, include_dirs, defines, targets)
 
 
-def find_ja(base_dir: Path, requested: str, include_dirs: list[Path] | None = None) -> Path:
+def find_ja(base_dir: Path, requested: str, include_dirs: list[Path] | None = None, origin=None) -> Path:
     candidates = [base_dir / requested]
     for directory in include_dirs or []:
         candidates.append(directory / requested)
@@ -208,40 +250,45 @@ def find_ja(base_dir: Path, requested: str, include_dirs: list[Path] | None = No
             if variant.is_file():
                 return variant
 
+    if origin:
+        raise JBSError(f"Jaguar file not found: {requested}", file=origin[0], line=origin[1], column=origin[2], end_column=origin[3])
     raise JBSError(f"Jaguar file not found: {requested}")
 
 
-def expand_using(source_path: Path, source_text: str, loaded: set[Path], stack: list[Path], include_dirs: list[Path] | None = None) -> str:
-    """Expandit récursivement les `using name;`.
-
-    Le fichier courant est conservé sans sa directive `using`. Le contenu du
-    fichier importé est placé à l'endroit du using. Les imports déjà chargés
-    ne sont pas réinsérés, ce qui évite les doublons lorsque plusieurs fichiers
-    importent le même module.
-    """
+def expand_using(source_path: Path, source_text: str, loaded: set[Path], stack: list[Path], include_dirs: list[Path] | None = None, origin=None) -> str:
+    """Expandit récursivement les `using name;` et conserve la provenance exacte de chaque ligne Jaguar."""
     source_path = source_path.resolve()
     if source_path in stack:
         cycle = " -> ".join(p.name for p in stack + [source_path])
+        if origin:
+            raise JBSError(f"using cycle detected: {cycle}", file=origin[0], line=origin[1], column=origin[2], end_column=origin[3])
         raise JBSError(f"using cycle detected: {cycle}")
 
     stack.append(source_path)
     output: list[str] = []
 
+    line_no = 0
     for line in source_text.splitlines(keepends=True):
+        line_no += 1
         match = USING_RE.match(line)
         if not match:
+            output.append(f"// jbs:source {source_path.name}:{line_no}\n")
             output.append(line)
             continue
 
         module_name = match.group(1)
-        import_path = find_ja(source_path.parent, module_name, include_dirs)
+        leading = len(line) - len(line.lstrip())
+        using_col = leading
+        using_end = using_col + len(match.group(0).strip())
+        imported_origin = (source_path.name, line_no, using_col, max(using_col + 1, using_end))
+        import_path = find_ja(source_path.parent, module_name, include_dirs, imported_origin)
         if import_path in loaded:
             continue
 
         loaded.add(import_path)
         imported_text = import_path.read_text(encoding="utf-8")
         output.append(f"// jbs: using {module_name}; -> {import_path.name}\n")
-        output.append(expand_using(import_path, imported_text, loaded, stack, include_dirs))
+        output.append(expand_using(import_path, imported_text, loaded, stack, include_dirs, imported_origin))
         output.append("\n")
 
     stack.pop()
@@ -283,8 +330,12 @@ def build_target(
     if defines:
         combined_parts.append("\n")
 
-    for filename in target.files:
-        path = find_ja(base_dir, filename, include_dirs)
+    for file_index, filename in enumerate(target.files):
+        origin = None
+        if target.entry_locations and file_index < len(target.entry_locations):
+            line, col, end = target.entry_locations[file_index]
+            origin = (jbs_path.name, line, col, end)
+        path = find_ja(base_dir, filename, include_dirs, origin)
         if path in loaded:
             continue
         loaded.add(path)
@@ -584,7 +635,12 @@ def main(argv: list[str]) -> int:
                 return result
         return 0
     except (OSError, JBSError) as e:
-        print(f"JBS Error: {e}", file=sys.stderr)
+        if isinstance(e, JBSError) and e.line is not None:
+            file_name = e.file or jbs_path.name
+            column = (e.column or 0) + 1
+            print(f"JBS Error: {file_name}:{e.line}:{column}: {e}", file=sys.stderr)
+        else:
+            print(f"JBS Error: {e}", file=sys.stderr)
         return 1
 
 

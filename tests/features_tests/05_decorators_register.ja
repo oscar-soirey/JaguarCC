@@ -1,0 +1,17 @@
+@register
+class Player {
+    int health;
+
+    Player(int h = 100) {
+        health = h;
+    }
+
+    int getHealth() {
+        return health;
+    }
+}
+
+void main() {
+    Player* p => Player();
+    sys:print(p.getHealth());
+}

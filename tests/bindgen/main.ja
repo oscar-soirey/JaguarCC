@@ -1,0 +1,34 @@
+struct MyStruct {
+  int a;
+}
+
+void Show(int a) { sys:print(a); }
+void Show(string a) { sys:print(a); }
+
+void main()
+{
+  list<int> l = {1,2,3,4,5};
+  int s = (int)l.size();  //Jaguar Error: main.ja:12: unknown function 'size'
+  
+  MyStruct st = MyStruct();  //Jaguar Error: main.ja:15: cannot assign an expression of unknown type to 'MyStruct' (initializer of variable 'st')
+  MyStruct* st => MyStruct();   //Jaguar Error: main.ja:17: cannot allocate value of unknown type 'MyStruct' with new
+
+  Show("hello");  //Jaguar Error: main.ja:22: type mismatch: cannot assign 'string' to 'i32' (argument 'a' of function 'Show')
+}
+
+
+using fptr = fn(int, int) -> int;
+int add(int a, int b) { return a + b; }
+
+int main(string args) 
+{
+    fptr f = add;
+    int r = f(1, 2);  //Jaguar Error: ...: cannot assign an expression of unknown type to 'i32' (initializer of variable 'r')
+    return 0;
+}
+
+//Affectation implicite à un champ (age = a; sans this.) échoue dans un constructeur spécifiquement (marche dans une méthode normale).
+
+//Animal a; (variable de type classe sans construction explicite) génère du C invalide : a est traité comme une valeur alors que tout le runtime de classe attend un pointeur (Animal_destr(a)/free(a) sur une valeur).
+
+//jbs.py : -std=c89 appliqué seulement pour compile_static, pas pour compile/compile_shared.

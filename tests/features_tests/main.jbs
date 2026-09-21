@@ -1,0 +1,16 @@
+version 1.0
+
+out out
+
+keep_c
+
+
+compile _01 {
+  //02_function_pointers.ja
+  //03_namespace_struct_union.ja
+  //04_classes_constructors_methods.ja
+  //05_decorators_register.ja
+  //06_big_stress.ja
+  //07_implicit_member_assignment.ja
+  08_class_without_explicit_constructor.ja
+}

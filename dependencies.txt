@@ -1,0 +1,7 @@
+python 3.14 {
+
+	python -m pip install pycparser
+	python -m pip install requests packaging
+	python -m pip install tomli
+
+}

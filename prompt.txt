@@ -1,22 +1,43 @@
+Salut, je dfeveloppe mon compilateur vers du C, Analyse tous ces fichiers et je vais te demander de les modifier et de me les renvoyer a chaque modification.
+
+
 -extension pour Jetbrains et Visual Studio
 
--outil de gestion de packages comme pip avec python
+
+
+-icone jaguar dans l'installer au lieu de l'icone par defaut
+
+-faire un installateur custom pour installer python 3.14 si besoin, detecter si on a vscode, et installer l'extension si besoin.
+
+-ecrire un livre sur le langage, avec des exemples, la doc complete, des guides, l'histoire du langage, le plan de devlopment et tout ce qu'il faut savoir quoi
+
+-multithreading
+
+-diviser le compilateur en pleins de scripts dans un dossier script/ et garder le point d'entré à jcc.py
+
+-ecris la lib jcc en C (avec les vraies fonctions C), et utiliser Jaguar Bindgen pour l'api jcc
+
+-surcharge d'operateurs
+
+-jbs doit gerer c -> jaguar, mais aussi jaguar -> c
+
+-convertir une api complete, pas juste un single file
+
+
+-messages d'erreurs plus clair
+-essayer de plus souvent devancer gcc en detection d'erreurs
+
+
+-crimson (le package manager de jaguar)
+
+-ajouter des directives a jbs et un systeme de version réelement utile
+directectives : executer un script shell, script python, trouver un package dans jaguar package manager (crimson), etc...
+
+-commentaires multiligne en jbs
 
 
 
-
--utiliser des fonctions C (convertion automatique des headers C et compilation des fichiers C)
-
--optional
-
--defer keyword
-
-
-
-
--extension vscode : Compile & run compile bien mais ne run pas (il faut run le exe généré dans le bon dossier out (géré par jbs)). si aucun exe généré, alors build et s'arreter
 
 
 
 Bugs connus:
--pas de coloration sur mode debug dans les fichiers .jbs

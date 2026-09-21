@@ -1,0 +1,90 @@
+namespace game {
+    struct Vec3 {
+        float x;
+        float y;
+        float z;
+    }
+
+    union Number {
+        int i;
+        float f;
+    }
+
+    int add(int a, int b) {
+        return a + b;
+    }
+
+    void printValue(int v) {
+        sys:print(v);
+    }
+
+    class Entity {
+        int id;
+        fn(int, int) -> int operation;
+
+        constr(int value = 1) {
+            id = value;
+            operation = add;
+        }
+
+        int getId() {
+            return id;
+        }
+
+        int calculate(int a, int b) {
+            return operation(a, b);
+        }
+    }
+
+    class Character, Entity {
+        int health;
+
+        constr(int h = 100) {
+            health = h;
+        }
+
+        int getHealth() {
+            return health;
+        }
+
+        int readId() {
+            return getId();
+        }
+    }
+}
+
+@exposed
+void Show(int a) {
+    sys:print(a);
+}
+
+void Show(string a) {
+    sys:print(a);
+}
+
+void main() {
+    list<int> values = {1, 2, 3, 4, 5};
+    int count = (int)values.size();
+    sys:print(count);
+
+    game:Vec3 position = game:Vec3();
+    position.x = 10.0;
+    position.y = 20.0;
+    position.z = 30.0;
+
+    game:Number number;
+    number.i = 42;
+
+    game:Entity entity = game:Entity(7);
+    sys:print(entity.getId());
+    sys:print(entity.calculate(3, 4));
+
+    game:Character character = game:Character(250);
+    sys:print(character.getHealth());
+    sys:print(character.readId());
+
+    Show(123);
+    Show("hello");
+
+    game:printValue(count);
+}

@@ -1,0 +1,35 @@
+class Animal {
+    int age;
+
+    constr(int a = 5) {
+        age = a;
+    }
+
+    int $getAge() {
+        return age;
+    }
+
+    void $setAge(int a) {
+        age = a;
+    }
+}
+
+class Dog, Animal {
+    string name;
+
+    constr(string n = "Rex") {
+        name = n;
+    }
+
+    int $readAge() {
+        return getAge();
+    }
+}
+
+void main() {
+    Dog* d => Dog("Buddy");
+
+    sys:print(d.getAge());
+    d.setAge(12);
+    sys:print(d.readAge());
+}

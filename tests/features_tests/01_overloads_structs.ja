@@ -1,0 +1,28 @@
+struct MyStruct {
+    int a;
+}
+
+void Show(int a) {
+    sys:print(a);
+}
+
+void Show(string a) {
+    sys:print(a);
+}
+
+void main() {
+    list<int> l = {1, 2, 3, 4, 5};
+    int s = (int)l.size();
+    sys:print(s);
+
+    MyStruct st = MyStruct();
+    st.a = 42;
+    sys:print(st.a);
+
+    MyStruct* pst => MyStruct();
+    pst.a = 77;
+    sys:print(pst.a);
+
+    Show(123);
+    Show("hello");
+}
