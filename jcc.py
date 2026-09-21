@@ -214,6 +214,9 @@ KEYWORDS = TYPE_KEYWORDS | {
     "if", "else", "while", "break", "continue", "for_loop", "this", "auto", "signal", "new",
 }
 
+# tokens à trois caractères (testés avant les tokens à deux caractères)
+THREE_CHAR_TOKENS = {"..."}
+
 # tokens à deux caractères (testés AVANT les tokens à un caractère)
 TWO_CHAR_TOKENS = {"==", "!=", "<=", ">=", "&&", "||", "=>", "->"}
 
@@ -349,6 +352,14 @@ def tokenize(src: str) -> List[Token]:
             tokens.append(Token(kind, word, start_line, start_column, start_column + len(word)))
             column += len(word)
             i = j
+            continue
+
+        # --- tokens à trois caractères : ... ---
+        if src[i:i + 3] in THREE_CHAR_TOKENS:
+            three = src[i:i + 3]
+            tokens.append(Token(three, three, start_line, start_column, start_column + 3))
+            i += 3
+            column += 3
             continue
 
         # --- opérateurs à deux caractères : == != <= >= && || ---
@@ -631,6 +642,7 @@ class EnumDecl:
     name: str
     values: List[str]
     namespace: Optional[str] = None
+    initializers: Optional[Dict[str, object]] = None
 
 
 @dataclass
@@ -693,6 +705,7 @@ class FunctionDecl:
     is_prototype: bool = False
     # rempli par le Resolver (nom final choisi pour le C généré)
     mangled_name: Optional[str] = None
+    is_variadic: bool = False
 
 
 @dataclass
@@ -977,11 +990,14 @@ class Parser:
         name = name_tok.value
         self.expect("{")
         values = []
+        initializers = {}
         while self.peek().kind != "}":
-            values.append(self.expect("IDENT").value)
-            # Explicit enum values are deliberately not supported yet: enum
-            # members are sequential Jaguar values, keeping the feature safe
-            # and deterministic.
+            value_tok = self.expect("IDENT")
+            value_name = value_tok.value
+            values.append(value_name)
+            if self.peek().kind == "=":
+                self.advance()
+                initializers[value_name] = self.parse_expr()
             if self.peek().kind == ",":
                 self.advance()
                 if self.peek().kind == "}":
@@ -990,7 +1006,7 @@ class Parser:
                 self._parse_error(f"expected ',' or '}}' after enum value (line {self.peek().line})", self.peek())
         self.expect("}")
         if self.peek().kind == ";": self.advance()
-        node = self._mark_line(EnumDecl(name, values), line)
+        node = self._mark_line(EnumDecl(name, values, None, initializers), line)
         setattr(node, "_jaguar_name_column", name_tok.column); setattr(node, "_jaguar_name_end_column", name_tok.end_column)
         return node
 
@@ -1224,13 +1240,19 @@ class Parser:
             self.advance()
             self.expect("(")
             params = []
+            variadic = False
             if self.peek().kind != ")":
                 params.append(self.parse_type())
                 while self.peek().kind == ",":
-                    self.advance(); params.append(self.parse_type())
+                    self.advance()
+                    if self.peek().kind == "...":
+                        self.advance(); variadic = True; break
+                    params.append(self.parse_type())
             self.expect(")")
             self.expect("->")
             ret = self.parse_type()
+            if variadic:
+                params.append("...")
             result = f"fn({', '.join(params)}) -> {ret}"
             last = self.tokens[self.pos - 1] if self.pos else start_tok
             self._last_type_span = (start_tok.line, start_tok.column, last.end_column or last.column + 1)
@@ -1262,7 +1284,15 @@ class Parser:
             pointers = 0
             while self.peek().kind == "*":
                 self.advance(); pointers += 1
-            result = base + "*" * pointers
+            dims = []
+            while self.peek().kind == "[":
+                self.advance()
+                dim = self.expect("INT")
+                self.expect("]")
+                if pointers:
+                    self._parse_error("fixed arrays of pointers are not supported yet", dim)
+                dims.append(dim.value)
+            result = base + "*" * pointers + "".join(f"[{d}]" for d in dims)
             last = self.tokens[self.pos - 1] if self.pos else start_tok
             self._last_type_span = (start_tok.line, start_tok.column, last.end_column or last.column + 1)
             return result
@@ -1307,10 +1337,13 @@ class Parser:
         name_tok = self.expect("IDENT")
         self.expect("(")
         params = []
+        is_variadic = False
         if self.peek().kind != ")":
             params.append(self.parse_param())
             while self.peek().kind == ",":
                 self.advance()
+                if self.peek().kind == "...":
+                    self.advance(); is_variadic = True; break
                 params.append(self.parse_param())
         self.expect(")")
         suffix_const = False
@@ -1323,11 +1356,11 @@ class Parser:
             self.advance()
             node = FunctionDecl(
                 ret_type, name_tok.value, params, Block([]), namespace,
-                is_extern, prefix_const or suffix_const, True
+                is_extern, prefix_const or suffix_const, True, None, is_variadic
             )
         else:
             body = self.parse_block()
-            node = FunctionDecl(ret_type, name_tok.value, params, body, namespace, is_extern, prefix_const or suffix_const, False)
+            node = FunctionDecl(ret_type, name_tok.value, params, body, namespace, is_extern, prefix_const or suffix_const, False, None, is_variadic)
         if ret_type_span:
             setattr(node, "_jaguar_type_column", ret_type_span[1]); setattr(node, "_jaguar_type_end_column", ret_type_span[2])
         setattr(node, "_jaguar_name_column", name_tok.column); setattr(node, "_jaguar_name_end_column", name_tok.end_column)
@@ -1851,6 +1884,10 @@ class Resolver:
         def resolve_decl_type(t, namespace=None, seen=None):
             seen = set() if seen is None else seen
             if not isinstance(t, str): return t
+            arr = re.match(r"^(.*?)(\[(?:\d+)\])+$", t)
+            if arr:
+                base = arr.group(1)
+                return resolve_decl_type(base, namespace, seen) + t[len(base):]
             if t.endswith("*"):
                 base = t.rstrip("*")
                 return resolve_decl_type(base, namespace, seen) + "*" * (len(t) - len(base))
@@ -1954,11 +1991,15 @@ class Resolver:
             if not isinstance(t, str): return True
             t = t.strip()
             while t.endswith('*'): t = t[:-1]
+            array_match = re.match(r"^(.*?)(?:\[(?:\d+)\])+$", t)
+            if array_match:
+                return type_known(array_match.group(1), namespace, seen)
             if t.startswith("fn(") and ") -> " in t:
                 close = t.rfind(") -> ")
                 inner=t[3:close]
                 params=[]
                 if inner.strip(): params=split_generic_args("x<"+inner+">")
+                params=[x for x in params if x != "..."]
                 return all(type_known(x, namespace, seen) for x in params) and type_known(t[close+5:].strip(), namespace, seen)
             if "<" in t and t.endswith(">"):
                 head=t[:t.index("<")].strip()
@@ -2431,12 +2472,12 @@ class Resolver:
                 if overloaded:
                     if fn.params:
                         suffix = "_".join(
-                            p.type.replace("*", "_ptr")
+                            [p.type.replace("*", "_ptr")
                                  .replace("<", "_")
                                  .replace(">", "_")
                                  .replace(",", "_")
                                  .replace(":", "_")
-                            for p in fn.params
+                             for p in fn.params] + (["variadic"] if fn.is_variadic else [])
                         )
                     else:
                         suffix = "void"
@@ -2449,8 +2490,8 @@ class Resolver:
             if item.mangled_name is not None:
                 continue
             key = (item.namespace, item.name)
-            sig = tuple(p.type for p in item.params)
-            rep = next(fn for fn in self.groups[key] if tuple(p.type for p in fn.params) == sig)
+            sig = (tuple(p.type for p in item.params), item.is_variadic)
+            rep = next(fn for fn in self.groups[key] if (tuple(p.type for p in fn.params), fn.is_variadic) == sig)
             item.mangled_name = rep.mangled_name
         return self.groups
 
@@ -3129,7 +3170,14 @@ class CodeGen:
         for en in [x for x in self.program.items if isinstance(x, EnumDecl)]:
             cname = f"{en.namespace}_{en.name}" if en.namespace else en.name
             enum_lines.append("typedef enum " + cname + " {")
-            enum_lines.extend(f"    {cname}_{v}{',' if i < len(en.values)-1 else ''}" for i,v in enumerate(en.values))
+            initializers = getattr(en, "initializers", None) or {}
+            for i, v in enumerate(en.values):
+                suffix = "," if i < len(en.values)-1 else ""
+                if v in initializers:
+                    expr = self.gen_expr(initializers[v], {})
+                    enum_lines.append(f"    {cname}_{v} = {expr}{suffix}")
+                else:
+                    enum_lines.append(f"    {cname}_{v}{suffix}")
             enum_lines.append(f"}} {cname};")
         if enum_lines:
             parts.append("\n".join(enum_lines))
@@ -3762,6 +3810,8 @@ class CodeGen:
         if isinstance(item, FunctionDecl):
             if item.is_prototype:
                 params = [self._param_c_decl(p) for p in item.params]
+                if item.is_variadic:
+                    params.append("...")
                 return self._function_return_c_decl(item.ret_type, item.mangled_name, params) + ";"
             return self.gen_function(item)
         if isinstance(item, VarDecl):
@@ -3833,6 +3883,11 @@ class CodeGen:
         fp = self._function_ptr_c_decl(f.type, f.name)
         if fp is not None:
             return fp
+        arr = self._fixed_array_parts(f.type)
+        if arr is not None:
+            base, dims = arr
+            suffix = "".join(f"[{d}]" for d in dims)
+            return f"{self._decl_c_type(base)} {f.name}{suffix}"
         base_type = self._collection_c_type(f.type) if self._generic_parts(f.type) else c_type(f.type)
         if getattr(f, "type", "").endswith("*") and getattr(f, "pointee_const", False):
             return "const " + c_type(f.type[:-1]) + " * " + f.name
@@ -4322,6 +4377,17 @@ class CodeGen:
         params = [] if not raw_params.strip() else [x.strip() for x in raw_params.split(",")]
         return params, ret
 
+    @staticmethod
+    def _fixed_array_parts(t):
+        if not isinstance(t, str):
+            return None
+        m = re.match(r"^(.*?)(?:\[(\d+)\])+$", t)
+        if not m:
+            return None
+        base = m.group(1)
+        dims = [int(x) for x in re.findall(r"\[(\d+)\]", t)]
+        return base, dims
+
     def _decl_c_type(self, t: str) -> str:
         """Lower a Jaguar type at a C ABI boundary.
 
@@ -4340,7 +4406,11 @@ class CodeGen:
         if not parts:
             return None
         params, ret = parts
-        cparams = ", ".join(self._decl_c_type(x) for x in params) if params else "void"
+        variadic = bool(params and params[-1] == "...")
+        fixed = params[:-1] if variadic else params
+        cparams = ", ".join(self._decl_c_type(x) for x in fixed) if fixed else "void"
+        if variadic:
+            cparams = (cparams + ", " if cparams != "void" else "") + "..."
         return f"{self._decl_c_type(ret)} (*{name})({cparams})"
 
     def _function_return_c_decl(self, ret_type: str, name: str, params: list[str]) -> str:
@@ -4387,6 +4457,10 @@ class CodeGen:
         fp = self._function_ptr_c_decl(p.type, p.name)
         if fp is not None:
             return fp
+        arr = self._fixed_array_parts(p.type)
+        if arr is not None:
+            base, _dims = arr
+            return f"{self._decl_c_type(base)} * {p.name}"
         if p.type.endswith("*") and p.pointee_const:
             base = "const " + self._pointee_c_type(p.type[:-1]) + " *"
         elif p.type.endswith("*") and p.is_const:
@@ -4401,6 +4475,11 @@ class CodeGen:
         fp = self._function_ptr_c_decl(v.type, v.name)
         if fp is not None:
             return fp
+        arr = self._fixed_array_parts(v.type)
+        if arr is not None:
+            base, dims = arr
+            suffix = "".join(f"[{d}]" for d in dims)
+            return f"{self._decl_c_type(base)} {v.name}{suffix}"
         if v.type.endswith("*") and v.pointee_const:
             base = "const " + self._pointee_c_type(v.type[:-1]) + " *"
         elif v.type.endswith("*") and v.is_const:
@@ -4487,7 +4566,11 @@ class CodeGen:
             return self._gen_main(fn)
 
         self._change_handlers = {}
+        if fn.is_variadic and not fn.is_prototype:
+            raise CodeGenError("variadic Jaguar functions must currently be prototypes/@extern; Jaguar does not expose va_list yet")
         params = [self._param_c_decl(p) for p in fn.params]
+        if fn.is_variadic:
+            params.append("...")
         header = self._function_return_c_decl(fn.ret_type, fn.mangled_name, params)
         local_types = {p.name: p.type for p in fn.params}
         self._readonly_vars = {p.name for p in fn.params if p.is_const}
@@ -4896,15 +4979,17 @@ class CodeGen:
         would blur the distinction between Jaguar strings and C strings.
         """
         if isinstance(expr, StringLit) and canonical_type(expected_type) == "i8*":
-            return expr.value
+            return f"((int8_t*)({expr.value}))"
         return self.gen_expr(expr, local_types)
 
-    def _gen_ordered_call_args(self, ordered_args, params, local_types):
-        """Emit already-ordered call arguments using their parameter types."""
-        return ", ".join(
-            self._gen_expr_for_expected_type(arg, param.type, local_types)
-            for arg, param in zip(ordered_args, params)
-        )
+    def _gen_ordered_call_args(self, ordered_args, params, local_types, variadic=False):
+        """Emit fixed args contextually and variadic tail args as normal expressions."""
+        fixed_params = params
+        fixed_args = ordered_args[:len(fixed_params)]
+        out = [self._gen_expr_for_expected_type(arg, param.type, local_types) for arg, param in zip(fixed_args, fixed_params)]
+        if variadic:
+            out.extend(self.gen_expr(arg, local_types) for arg in ordered_args[len(fixed_params):])
+        return ", ".join(out)
 
     def _check_assignable(self, target_type, source_type, context="assignment", source_expr=None):
         target_type = canonical_type(target_type) if isinstance(target_type, str) else target_type
@@ -4937,6 +5022,7 @@ class CodeGen:
                 return
             raise CodeGenError(f"cannot assign '{source_type}' to pointer type '{target_type}' ({context}); use an explicit cast if this is intentional")
         if target_type in INTEGER_TYPES and source_type in INTEGER_TYPES: return
+        if target_type in INTEGER_TYPES and isinstance(source_type, str) and source_type in getattr(self, "enums", {}): return
         if target_type in FLOAT_TYPES and source_type in INTEGER_TYPES | FLOAT_TYPES: return
         if target_type == "string" and source_type == "string": return
         gp = self._generic_parts(target_type)
@@ -5017,7 +5103,13 @@ class CodeGen:
             return []
         if isinstance(s, MemberAssignStmt):
             if isinstance(s.target, IndexAccess):
-                raise CodeGenError("operator [] is read-only for list/map: it cannot create or modify an entry")
+                indexed_type = self.infer_type(s.target.obj, local_types)
+                if self._fixed_array_parts(indexed_type) is None:
+                    raise CodeGenError("operator [] is read-only for list/map: it cannot create or modify an entry")
+                target_type = self.infer_type(s.target, local_types)
+                expr_type = self._check_expression_types(s.expr, local_types)
+                self._check_assignable(target_type, expr_type, "array element assignment", s.expr)
+                return [f"{self.gen_expr(s.target, local_types)} = {self.gen_expr(s.expr, local_types)};"]
             if self._is_reflection_call(s.target):
                 self._validate_reflection_call(s.target, local_types)
                 obj=self.gen_expr(s.target.callee.obj,local_types); name=self.gen_expr(s.target.args[0],local_types)
@@ -5351,10 +5443,12 @@ class CodeGen:
         }.get(arg_type)
 
     # -- résolution d'appel (choix de la bonne surcharge) --
-    def _ordered_call_args(self, args, params, callee_name="function"):
-        """Réordonne les arguments et insère les valeurs par défaut."""
-        ordered = [None] * len(params)
-        by_name = {p.name:i for i,p in enumerate(params)}
+    def _ordered_call_args(self, args, params, callee_name="function", variadic=False):
+        """Réordonne les paramètres fixes et conserve les arguments variadiques en fin."""
+        fixed_params = params
+        ordered = [None] * len(fixed_params)
+        by_name = {p.name:i for i,p in enumerate(fixed_params)}
+        variadic_args = []
         next_pos = 0; named_seen = False
 
         def arg_error(message, arg):
@@ -5384,18 +5478,21 @@ class CodeGen:
                 while next_pos < len(ordered) and ordered[next_pos] is not None:
                     next_pos += 1
                 if next_pos >= len(ordered):
+                    if variadic:
+                        variadic_args.append(arg)
+                        continue
                     arg_error(f"too many arguments for {callee_name}", arg)
                 i = next_pos; next_pos += 1
             if ordered[i] is not None:
-                arg_error(f"parameter '{params[i].name}' provided more than once", arg)
+                arg_error(f"parameter '{fixed_params[i].name}' provided more than once", arg)
             ordered[i] = arg.expr if isinstance(arg, NamedArg) else arg
-        missing = [params[i].name for i,x in enumerate(ordered) if x is None and params[i].default is None]
+        missing = [fixed_params[i].name for i,x in enumerate(ordered) if x is None and fixed_params[i].default is None]
         if missing:
             raise CodeGenError(f"missing parameters for {callee_name}: {', '.join(missing)}")
         for i, x in enumerate(ordered):
             if x is None:
-                ordered[i] = params[i].default
-        return ordered
+                ordered[i] = fixed_params[i].default
+        return ordered + variadic_args
 
     @staticmethod
     def _implicit_type_match(param_type, arg_type):
@@ -5448,8 +5545,9 @@ class CodeGen:
         # that another signature can be selected.
         if len(candidates) == 1:
             fn = candidates[0]
-            ordered = self._ordered_call_args(call.args, fn.params, f"'{name}'")
-            for arg, param in zip(ordered, fn.params):
+            ordered = self._ordered_call_args(call.args, fn.params, f"'{name}'", fn.is_variadic)
+            fixed_params = fn.params
+            for arg, param in zip(ordered, fixed_params):
                 at = self.infer_type(arg.expr if isinstance(arg, NamedArg) else arg, local_types)
                 self._check_assignable(
                     param.type, at,
@@ -5460,8 +5558,9 @@ class CodeGen:
 
         for fn in candidates:
             try:
-                ordered = self._ordered_call_args(call.args, fn.params, f"'{name}'")
-                for arg, param in zip(ordered, fn.params):
+                ordered = self._ordered_call_args(call.args, fn.params, f"'{name}'", fn.is_variadic)
+                fixed_params = fn.params
+                for arg, param in zip(ordered, fixed_params):
                     at = self.infer_type(arg.expr if isinstance(arg, NamedArg) else arg, local_types)
                     self._check_assignable(
                         param.type, at,
@@ -5479,8 +5578,9 @@ class CodeGen:
         scored = []
         for fn, ordered in prepared:
             arg_types = [self.infer_type(a, local_types) for a in ordered]
-            if len(fn.params) == len(ordered):
-                scores = [self._implicit_type_match(p.type, at) for p, at in zip(fn.params, arg_types)]
+            fixed_params = fn.params
+            if (len(ordered) >= len(fixed_params)) and (fn.is_variadic or len(fn.params) == len(ordered)):
+                scores = [self._implicit_type_match(p.type, at) for p, at in zip(fixed_params, arg_types)]
                 if all(scores):
                     scored.append((sum(scores), fn))
         if scored:
@@ -5532,7 +5632,7 @@ class CodeGen:
             candidates = self.groups.get((None, e.name), [])
             if len(candidates) == 1:
                 fn = candidates[0]
-                return f"fn({', '.join(p.type for p in fn.params)}) -> {fn.ret_type}"
+                return f"fn({', '.join([p.type for p in fn.params] + (["..."] if fn.is_variadic else []))}) -> {fn.ret_type}"
             # Global enum values are first-class typed constants.
             for en in getattr(self.program, "_enums", {}).values():
                 if en.namespace is None and e.name in en.values:
@@ -5544,7 +5644,7 @@ class CodeGen:
                 imported_fns = self.groups.get((ns, name), [])
                 if len(imported_fns) == 1:
                     fn = imported_fns[0]
-                    return f"fn({', '.join(p.type for p in fn.params)}) -> {fn.ret_type}"
+                    return f"fn({', '.join([p.type for p in fn.params] + (["..."] if fn.is_variadic else []))}) -> {fn.ret_type}"
                 for key, en in getattr(self.program, "_enums", {}).items():
                     if key == f"{ns}:{en.name}" and name in en.values:
                         return f"{ns}_{en.name}" if ns else en.name
@@ -5558,10 +5658,14 @@ class CodeGen:
                         return f"{ns}_{en.name}"
             if len(namespace_function_matches) == 1:
                 fn = namespace_function_matches[0]
-                return f"fn({', '.join(p.type for p in fn.params)}) -> {fn.ret_type}"
+                return f"fn({', '.join([p.type for p in fn.params] + (["..."] if fn.is_variadic else []))}) -> {fn.ret_type}"
             return None
         if isinstance(e, IndexAccess):
             ot=self.infer_type(e.obj, local_types); gp=self._generic_parts(ot)
+            arr = self._fixed_array_parts(ot) if isinstance(ot, str) else None
+            if arr is not None:
+                base, dims = arr
+                return base + ("".join(f"[{d}]" for d in dims[1:]) if len(dims) > 1 else "")
             if not gp: raise CodeGenError(f"'[]' cannot be used on '{ot}'")
             if gp[0]=="list": return gp[1]
             if gp[0]=="map": return self._split_generic_args(gp[1])[1]
@@ -5637,7 +5741,7 @@ class CodeGen:
             candidates = self.groups.get((e.namespace, e.name), [])
             if len(candidates) == 1:
                 fn = candidates[0]
-                return f"fn({', '.join(p.type for p in fn.params)}) -> {fn.ret_type}"
+                return f"fn({', '.join([p.type for p in fn.params] + (["..."] if fn.is_variadic else []))}) -> {fn.ret_type}"
             return None
         if isinstance(e, CastExpr):
             return e.target_type
@@ -5688,11 +5792,12 @@ class CodeGen:
                 if any(isinstance(a, NamedArg) for a in e.args):
                     raise CodeGenError("named parameters are not available for function-pointer calls")
                 params, ret_type = fp_parts
-                if len(e.args) != len(params):
-                    raise CodeGenError(
-                        f"function pointer expects {len(params)} argument(s), {len(e.args)} provided"
-                    )
-                for param_type, arg in zip(params, e.args):
+                variadic = bool(params and params[-1] == "...")
+                fixed_params = params[:-1] if variadic else params
+                if (not variadic and len(e.args) != len(fixed_params)) or (variadic and len(e.args) < len(fixed_params)):
+                    expected = f"at least {len(fixed_params)}" if variadic else str(len(fixed_params))
+                    raise CodeGenError(f"function pointer expects {expected} argument(s), {len(e.args)} provided")
+                for param_type, arg in zip(fixed_params, e.args):
                     at = self.infer_type(arg, local_types)
                     self._check_assignable(
                         param_type, at, f"argument of function pointer call", arg
@@ -6090,8 +6195,11 @@ class CodeGen:
             raise CodeGenError("a {...} literal must be used as a list/map initializer")
         if isinstance(e, IndexAccess):
             ot=self.infer_type(e.obj,local_types); gp=self._generic_parts(ot)
-            if not gp: raise CodeGenError(f"'[]' cannot be used on '{ot}'")
+            arr = self._fixed_array_parts(ot) if isinstance(ot, str) else None
             obj=self.gen_expr(e.obj,local_types); idx=self.gen_expr(e.index,local_types)
+            if arr is not None:
+                return f"{obj}[{idx}]"
+            if not gp: raise CodeGenError(f"'[]' cannot be used on '{ot}'")
             if gp[0]=="dynamic_list": return f"_j_dynamic_list_get(&{obj},(size_t)({idx}))"
             if gp[0]=="list": return f"(*({self._collection_c_type(gp[1])}*)_j_list_get(&{obj},(size_t)({idx})))"
             if gp[0]=="dynamic_list": return f"_j_dynamic_list_get(&{obj},(size_t)({idx}))"
@@ -6308,17 +6416,18 @@ class CodeGen:
                 if any(isinstance(a, NamedArg) for a in e.args):
                     raise CodeGenError("named parameters are not available for function-pointer calls")
                 params, _ = fp_parts
-                if len(e.args) != len(params):
-                    raise CodeGenError(
-                        f"function pointer expects {len(params)} argument(s), {len(e.args)} provided"
-                    )
-                for param_type, arg in zip(params, e.args):
+                variadic = bool(params and params[-1] == "...")
+                fixed_params = params[:-1] if variadic else params
+                if (not variadic and len(e.args) != len(fixed_params)) or (variadic and len(e.args) < len(fixed_params)):
+                    expected = f"at least {len(fixed_params)}" if variadic else str(len(fixed_params))
+                    raise CodeGenError(f"function pointer expects {expected} argument(s), {len(e.args)} provided")
+                for param_type, arg in zip(fixed_params, e.args):
                     at = self.infer_type(arg, local_types)
                     self._check_assignable(param_type, at, "argument of function pointer call", arg)
                 callee = self.gen_expr(e.callee, local_types)
                 args = ", ".join(
-                    self._gen_expr_for_expected_type(a, param_type, local_types)
-                    for a, param_type in zip(e.args, params)
+                    [self._gen_expr_for_expected_type(a, param_type, local_types) for a, param_type in zip(e.args, fixed_params)]
+                    + ([self.gen_expr(a, local_types) for a in e.args[len(fixed_params):]] if variadic else [])
                 )
                 return f"{callee}({args})"
             if self._is_reflection_call(e):
@@ -6573,9 +6682,9 @@ class CodeGen:
             if system is not None:
                 ordered_args=e.args
             else:
-                ordered_args=self._ordered_call_args(e.args, target.params, f"'{target.name}'") if target is not None else e.args
+                ordered_args=self._ordered_call_args(e.args, target.params, f"'{target.name}'", target.is_variadic) if target is not None else e.args
             if target is not None:
-                args = self._gen_ordered_call_args(ordered_args, target.params, local_types)
+                args = self._gen_ordered_call_args(ordered_args, target.params, local_types, target.is_variadic)
             else:
                 args = ", ".join(self.gen_expr(a, local_types) for a in ordered_args)
             return f"{callee_str}({args})"

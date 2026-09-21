@@ -326,6 +326,8 @@ def prepare_c(
 # help pycparser understand common libc types; they must never be emitted
 # into the generated .jah file because the real C headers may already define
 # them (for example ssize_t/intptr_t on MinGW).
+PRELUDE_TYPEDEF_LINE_COUNT = 12
+
 PRELUDE_TYPEDEFS = {
     "size_t", "ssize_t", "intptr_t", "uintptr_t",
     "int8_t", "uint8_t", "int16_t", "uint16_t",
@@ -529,6 +531,49 @@ class TypeConverter:
 # AST -> Jaguar declarations
 # ---------------------------------------------------------------------------
 
+def _extract_c_comments(src: str):
+    """Return C comments with source start/end line positions, preserving text."""
+    comments = []
+    i = 0
+    n = len(src)
+    state = "normal"
+    while i < n:
+        c = src[i]
+        if state == "normal":
+            if c == '"': state = "string"; i += 1; continue
+            if c == "'": state = "char"; i += 1; continue
+            if c == '/' and i + 1 < n and src[i+1] == '/':
+                start = i; start_line = src.count("\n", 0, i) + 1
+                j = src.find("\n", i + 2)
+                if j < 0: j = n
+                comments.append((start_line, start_line, src[start:j]))
+                i = j; continue
+            if c == '/' and i + 1 < n and src[i+1] == '*':
+                start = i; start_line = src.count("\n", 0, i) + 1
+                j = src.find("*/", i + 2)
+                if j < 0: break
+                end = j + 2
+                end_line = src.count("\n", 0, end) + 1
+                comments.append((start_line, end_line, src[start:end]))
+                i = end; continue
+            i += 1
+        elif state == "string":
+            if c == '\\': i += 2
+            else:
+                if c == '"': state = "normal"
+                i += 1
+        else:
+            if c == '\\': i += 2
+            else:
+                if c == "'": state = "normal"
+                i += 1
+    return comments
+
+
+def _comment_lines(text: str):
+    return text.splitlines() or [text]
+
+
 class BindGen:
     def __init__(self, ast: c_ast.FileAST):
         self.ast = ast
@@ -540,7 +585,47 @@ class BindGen:
         self.anon_enum_aliases: dict[str, c_ast.Enum] = {}
         self.generated_inline_types: set[str] = set()
         self.typedef_targets: dict[str, str] = {}
+        self.comments = []
+        self.source_lines: list[str] = []
+        self.used_comments: set[int] = set()
         self._collect_names()
+
+    def add_comments_before(self, node):
+        """Emit only comments that are immediately leading the AST node."""
+        coord = getattr(node, "coord", None)
+        if not coord or not coord.line or not self.comments:
+            return
+        line = coord.line - PRELUDE_TYPEDEF_LINE_COUNT
+        if line <= 0:
+            return
+
+        for idx in range(len(self.comments) - 1, -1, -1):
+            if idx in self.used_comments:
+                continue
+            start_line, end_line, text = self.comments[idx]
+            if end_line >= line:
+                continue
+            # Everything between the end of this comment and the declaration
+            # must be whitespace. This prevents a file-level doc comment from
+            # being incorrectly attached to the first field of a struct.
+            if self.source_lines:
+                gap = self.source_lines[end_line:line - 1]
+                if any(part.strip() for part in gap):
+                    break
+            # A small blank-line allowance keeps normal Doxygen formatting,
+            # while still requiring the comment to be the nearest source item.
+            for ln in _comment_lines(text):
+                self.emit(ln)
+            self.used_comments.add(idx)
+            self.emit("")
+            return
+
+    def add_comments_before_decl(self, node):
+        target = node
+        typ = getattr(node, "type", None)
+        if isinstance(typ, c_ast.TypeDecl) and isinstance(typ.type, (c_ast.Struct, c_ast.Enum, c_ast.Union)):
+            target = typ.type
+        self.add_comments_before(target)
 
     def _collect_names(self):
         for ext in self.ast.ext:
@@ -597,6 +682,7 @@ class BindGen:
         fields = []
         unsupported = False
         for decl in un.decls or []:
+            self.add_comments_before(decl)
             if not isinstance(decl, c_ast.Decl) or not decl.name:
                 self.warn(decl or un, "anonymous union member is not representable")
                 unsupported = True
@@ -631,6 +717,7 @@ class BindGen:
         used_names: set[str] = set()
         unsupported = False
         for decl in st.decls or []:
+            self.add_comments_before(decl)
             if not isinstance(decl, c_ast.Decl):
                 unsupported = True
                 continue
@@ -816,19 +903,24 @@ class BindGen:
         # API often uses a typedef before a function prototype.
         for ext in self.ast.ext:
             if isinstance(ext, c_ast.Typedef):
+                self.add_comments_before_decl(ext)
                 self.convert_typedef(ext)
             elif isinstance(ext, c_ast.Decl):
                 typ = ext.type
                 if isinstance(typ, c_ast.Struct) and typ.decls is not None and typ.name:
+                    self.add_comments_before_decl(ext)
                     self.convert_struct(typ)
                 elif isinstance(typ, c_ast.Enum) and typ.values is not None and typ.name:
+                    self.add_comments_before_decl(ext)
                     self.convert_enum(typ)
                 elif isinstance(typ, c_ast.Union) and typ.decls is not None and typ.name:
+                    self.add_comments_before_decl(ext)
                     self.convert_union(typ)
 
         # Second pass: functions and API globals.
         for ext in self.ast.ext:
             if isinstance(ext, c_ast.Decl):
+                self.add_comments_before(ext)
                 self.convert_decl(ext)
 
         # Remove excessive blank lines without losing section readability.
@@ -900,6 +992,8 @@ def generate(
         # Keep the original diagnostic, but do not emit bogus Jaguar.
         raise ValueError(f"C parse error: {exc}") from exc
     gen = BindGen(ast)
+    gen.comments = _extract_c_comments(src)
+    gen.source_lines = src.splitlines()
     text = gen.run()
     if macros:
         macro_block = "\n".join(f"#define {name} {value}" for name, value in macros)

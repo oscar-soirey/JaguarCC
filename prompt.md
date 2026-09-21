@@ -22,13 +22,9 @@
 
 \-faire un installateur custom pour installer python 3.14 si besoin, detecter si on a vscode, et installer l'extension si besoin.
 
-\-ecrire un livre sur le langage, avec des exemples, la doc complete, des guides, l'histoire du langage, le plan de devlopment et tout ce qu'il faut savoir quoi
-
 
 
 **Bugs connus:**
-
-\-La directive include include/ ne marche pas en jbs
 
 \-si le fichier jbs s'appelle juste .jbs, il le trouve pas, je veux que ca puisse marcher
 
@@ -97,4 +93,18 @@
 
 
 
+
+
+
+
+
+##### Livre:
+
+\-parler de l'extension vscode
+
+\-crimson et intégration à jbs
+
+\-histoire du langage (ca a été crée par moi meme qui est un developpeur de jeux videos/moteurs de jeux, et que pleins d'aspects pourraient etre natifs au langage, mais tu dois passer par des galeres pour les ajouter en c++ par exemple.
+
+le langage corrige les defaut du C++ qui sont vraiment chiant dans un moteur: factory native, reflexion native, container<>, signal:, dynamic\_list qui remplacent des aspects super chiants du C++ (lambdas, variant ou union, macros complexes, et plus)
 

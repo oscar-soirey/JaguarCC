@@ -1,0 +1,8 @@
+using CVariadicFn;
+
+@extern CVariadicFn get_variadic();
+
+void main() {
+    CVariadicFn fp = get_variadic();
+    fp("x=%d", 1, 2);
+}

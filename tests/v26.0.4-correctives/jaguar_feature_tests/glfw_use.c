@@ -1164,14 +1164,11 @@ int32_t glfwVulkanSupported(void);
 
 int8_t * * glfwGetRequiredInstanceExtensions(uint32_t * count);
 
-int main(int _j_main_argc, char *_j_main_argv[]) {
-    string *param = string_from_cstr((_j_main_argc > 1) ? _j_main_argv[1] : "");
-    int32_t ok = glfwInit();
-    GLFWwindow * win = glfwCreateWindow(800, 600, ((int8_t*)("Ma fenetre")), ((void*)0), ((void*)0));
-    while (glfwWindowShouldClose(win) == 0) {
-        glfwPollEvents();
-    }
-    glfwDestroyWindow(win);
-    glfwTerminate();
+int main(void) {
+    GLFWgamepadstate state;
+    int32_t ok = glfwGetGamepadState(0, (&state));
+    uint8_t button = state.buttons[0];
+    float axis = state.axes[0];
+    (void)ok;
     return 0;
 }

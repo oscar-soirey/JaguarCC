@@ -3,10 +3,11 @@
 ; Non-commercial use only.
 
 #define MyAppName "JaguarCC"
-#define MyAppVersion "v26.0.3"
+#define MyAppVersion "v26.0.4"
 #define MyAppPublisher "Oscar Soirey"
 #define MyAppURL "https://oscar-soirey.github.io/JaguarCC/"
 #define EscapeConstArgument(Value) StringChange(StringChange(StringChange(Value, "%", "%25"), ",", "%2c"), "}", "%7d")
+#define MyAppArchitecture "windows-x64"
 
 [Setup]
 ; NOTE: The value of AppId uniquely identifies this application. Do not use the same AppId value in installers for other applications.
@@ -24,10 +25,19 @@ DefaultGroupName={#MyAppName}
 ; Uncomment the following line to run in non administrative install mode (install for current user only).
 ;PrivilegesRequired=lowest
 OutputDir=C:\Users\User\Desktop\Jaguar\JaguarCC\dist
-OutputBaseFilename=jaguarcc-v26-setup
+OutputBaseFilename=jaguarcc-{#MyAppVersion}-{#MyAppArchitecture}
 SetupIconFile=C:\Users\User\Desktop\Jaguar\JaguarCC\docs\assets\logo.ico
+WizardImageFile=C:\Users\User\Desktop\Jaguar\JaguarCC\docs\assets\logo.bmp
+WizardSmallImageFile=C:\Users\User\Desktop\Jaguar\JaguarCC\docs\assets\logo.bmp
 SolidCompression=yes
 WizardStyle=modern stellar
+ChangesEnvironment=yes
+[Registry]
+Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environment"; \
+    ValueType: expandsz; ValueName: "Path"; \
+    ValueData: "{olddata};{app}"; \
+    Flags: preservestringtype
+    
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -41,3 +51,10 @@ Source: "C:\Users\User\Desktop\Jaguar\JaguarCC\jlanguage_server.py"; DestDir: "{
 Source: "C:\Users\User\Desktop\Jaguar\JaguarCC\toolchain\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; NOTE: Don't use "Flags: ignoreversion" on any shared system files.
 
+
+[Code]
+
+procedure InitializeWizard();
+begin
+  WizardForm.Color := $2A3B12;
+end;

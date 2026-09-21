@@ -419,7 +419,8 @@ struct GLFWimage {
 }
 
 struct GLFWgamepadstate {
-    u8 _jbg_opaque;
+    u8[15] buttons;
+    f32[6] axes;
 }
 
 struct GLFWallocator {
