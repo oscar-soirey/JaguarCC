@@ -1,0 +1,11 @@
+using glfw;
+
+int add(int a, int b)
+{
+	return a+b;
+}
+
+void main(string in)
+{
+	sys:print(add(1,3));
+}

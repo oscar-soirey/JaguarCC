@@ -3,7 +3,7 @@ using glfw;
 void main()
 {
   sys:print("ekip");
-  int ok = glfwInit();
+  i8 ok = glfwInit();
   sys:print("ekip");
 
   GLFWwindow* win = glfwCreateWindow(
