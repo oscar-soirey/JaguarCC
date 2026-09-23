@@ -5344,9 +5344,11 @@ class CodeGen:
             custom=self._resolve_operator(e.op, lt, rt)
             if custom is None:
                 if e.op in ("+","-","*","/","%"):
-                    if lt == "string" or rt == "string":
+                    if e.op == "+" and lt == "string" and rt == "string":
+                        pass
+                    elif lt == "string" or rt == "string":
                         raise CodeGenError(f"operator '{e.op}' is not defined for 'string' operands")
-                    if not (numeric(lt) and numeric(rt)):
+                    elif not (numeric(lt) and numeric(rt)):
                         raise CodeGenError(f"no operator exists for '{lt}' {e.op} '{rt}'")
                 elif e.op in ("<",">","<=",">="):
                     if lt is None or rt is None:
@@ -6135,6 +6137,10 @@ class CodeGen:
             custom=self._resolve_operator(e.op, lt, rt)
             if custom is not None:
                 return custom.ret_type
+            # Built-in string concatenation. Keep custom operator overloads
+            # higher priority so an explicit Jaguar operator+ can still win.
+            if e.op == "+" and lt == "string" and rt == "string":
+                return "string"
             if e.op in _BOOL_RESULT_OPS:
                 return "bool"
             return lt or rt
@@ -6749,9 +6755,13 @@ class CodeGen:
                 inner = f"({inner})"
             return f"{e.op}{inner}"
         if isinstance(e, BinOp):
-            custom=self._resolve_operator(e.op, self.infer_type(e.left,local_types), self.infer_type(e.right,local_types))
+            left_type = self.infer_type(e.left,local_types)
+            right_type = self.infer_type(e.right,local_types)
+            custom=self._resolve_operator(e.op, left_type, right_type)
             if custom is not None:
                 return f"{custom.mangled_name}({self.gen_expr(e.left,local_types)}, {self.gen_expr(e.right,local_types)})"
+            if e.op == "+" and left_type == "string" and right_type == "string":
+                return f"string_concat({self.gen_expr(e.left,local_types)}, {self.gen_expr(e.right,local_types)})"
             prec = _BINOP_PREC[e.op]
             left = self._gen_operand(e.left, prec, local_types, is_right=False)
             right = self._gen_operand(e.right, prec, local_types, is_right=True)

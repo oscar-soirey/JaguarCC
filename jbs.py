@@ -98,21 +98,48 @@ class JBSCommand:
 
 
 @dataclass
+class JBSCondition:
+    command: JBSCommand
+    negate: bool = False
+
+
+@dataclass
+class JBSIfBlock:
+    branches: list[tuple[JBSCondition, list["JBSStatement"]]]
+    else_body: list["JBSStatement"] | None = None
+
+
+@dataclass
+class JBSStatement:
+    kind: str  # command | if
+    command: JBSCommand | None = None
+    if_block: JBSIfBlock | None = None
+
+
+@dataclass
 class JBSConfig:
     version: str
     output_dir: str | None
     c89: bool
     keep_c: bool
+    mode: str
     include_dirs: list[str]
     defines: list[str]
+    jbs_defines: dict[str, str]
     targets: list[BuildTarget]
     commands: list[JBSCommand]
+    statements: list[JBSStatement]
 
 
 JBS_FORMAT_RE = re.compile(r"^\s*jbs\s+([0-9]+(?:\.[0-9]+)+)\s*$", re.MULTILINE)
 LEGACY_FORMAT_RE = re.compile(r"^\s*version\s+1\.0\s*$", re.MULTILINE)
 VERSION_RE = re.compile(r"^\s*version\s+([0-9]+)\.([0-9]+)\.([0-9]+)\s*$", re.MULTILINE)
-COMMAND_RE = re.compile(r'^\s*(shell|python|crimson)\s+(?:"((?:\\\\.|[^"])*)"|(.*?))\s*$', re.MULTILINE)
+COMMAND_RE = re.compile(r'^\s*(shell|python|crimson)\s+(?:"((?:\\.|[^"])*)"|(.*?))\s*$')
+IF_RE = re.compile(r'^\s*if\s*\((.*?)\)\s*(\{)?\s*$')
+ELSE_IF_RE = re.compile(r'^\s*else\s+if\s*\((.*?)\)\s*(\{)?\s*$')
+ELSE_RE = re.compile(r'^\s*else\s*(\{)?\s*$')
+OPEN_BRACE_RE = re.compile(r'^\s*\{\s*$')
+CLOSE_BRACE_RE = re.compile(r'^\s*\}\s*$')
 TARGET_RE = re.compile(
     r"\b(compile_static|compile_shared|compile)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{"
 )
@@ -135,7 +162,7 @@ def _source_position(text: str, offset: int, length: int = 1):
     return line, column, column + max(1, length)
 
 
-def parse_jbs(text: str) -> JBSConfig:
+def parse_jbs(text: str, *, allow_no_targets: bool = False) -> JBSConfig:
     clean = strip_jbs_comments(text)
 
     jbs_match = JBS_FORMAT_RE.search(clean)
@@ -175,12 +202,24 @@ def parse_jbs(text: str) -> JBSConfig:
 
     c89 = bool(re.search(r"^\s*c89\s*$", clean, re.MULTILINE))
     keep_c = bool(re.search(r"^\s*keep_c\s*$", clean, re.MULTILINE))
+    mode_matches = list(re.finditer(r"^\s*mode\s+(debug|release|relwithdebinfo|minsizerel)\s*$", clean, re.MULTILINE | re.IGNORECASE))
+    if len(mode_matches) > 1:
+        raise JBSError("'mode' directive defined multiple times")
+    mode = mode_matches[0].group(1).lower() if mode_matches else "debug"
 
     defines: list[str] = []
     for match in re.finditer(r"^[ \t]*define[ \t]+([A-Za-z_][A-Za-z0-9_]*)(?:[ \t]+([^\r\n]*))?[ \t]*$", clean, re.MULTILINE):
         name = match.group(1)
         value = (match.group(2) or "").strip()
         defines.append(f"#define {name}" + (f" {value}" if value else ""))
+
+    jbs_defines: dict[str, str] = {}
+    for match in re.finditer(r"^[ \t]*define_jbs[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]+([^\r\n{}]+?)[ \t]*$", clean, re.MULTILINE):
+        name = match.group(1)
+        value = match.group(2).strip()
+        if name in jbs_defines:
+            raise JBSError(f"'define_jbs' variable defined multiple times: {name}")
+        jbs_defines[name] = value
 
     include_dirs: list[str] = []
     include_matches = list(re.finditer(r"^\s*include\s+([^\s{}]+)\s*$", clean, re.MULTILINE))
@@ -192,8 +231,16 @@ def parse_jbs(text: str) -> JBSConfig:
         line, col, end = _source_position(text, duplicate.start(1), len(duplicate.group(1)))
         raise JBSError("'include' directive defined multiple times for the same path", line=line, column=col, end_column=end)
 
-    commands: list[JBSCommand] = []
-    for match in COMMAND_RE.finditer(clean):
+    def parse_command_value(raw: str, line_no: int, line_text: str, *, column_hint: int = 0) -> JBSCommand:
+        match = COMMAND_RE.fullmatch(raw)
+        if not match:
+            raise JBSError(
+                f"invalid JBS command: '{raw.strip()}'",
+                line=line_no,
+                column=max(0, column_hint),
+                end_column=max(1, column_hint + len(raw.strip())),
+            )
+
         kind = match.group(1)
         value = match.group(2) if match.group(2) is not None else (match.group(3) or "").strip()
         if match.group(2) is not None:
@@ -202,10 +249,179 @@ def parse_jbs(text: str) -> JBSConfig:
             except UnicodeDecodeError:
                 pass
         if not value:
-            line, col, end = _source_position(text, match.start(0), len(match.group(0).strip()))
-            raise JBSError(f"{kind} directive requires an argument", line=line, column=col, end_column=end)
-        line, col, end = _source_position(text, match.start(1), len(match.group(0).strip()))
-        commands.append(JBSCommand(kind, value, line, col, end))
+            raise JBSError(
+                f"{kind} directive requires an argument",
+                line=line_no,
+                column=max(0, column_hint),
+                end_column=max(1, column_hint + len(line_text.strip())),
+            )
+        leading = len(line_text) - len(line_text.lstrip())
+        return JBSCommand(
+            kind,
+            value,
+            line_no,
+            leading,
+            max(leading + 1, leading + len(line_text.strip())),
+        )
+
+    def parse_condition(raw: str, line_no: int, line_text: str, header_column: int) -> JBSCondition:
+        expr = raw.strip()
+        negate = False
+        if expr.startswith("!"):
+            negate = True
+            expr = expr[1:].strip()
+        if not expr:
+            raise JBSError(
+                "if condition cannot be empty",
+                line=line_no,
+                column=header_column,
+                end_column=max(header_column + 1, header_column + len(line_text.strip())),
+            )
+        command = parse_command_value(expr, line_no, expr, column_hint=header_column)
+        return JBSCondition(command, negate)
+
+    # JBS control flow is intentionally command-oriented. Conditions execute
+    # an existing JBS command and interpret its process exit code as a boolean:
+    # 0 = true, non-zero = false. `!` negates that result.
+    # Example:
+    #   if(!crimson find glfw) {
+    #       crimson install glfw
+    #       crimson find glfw
+    #   }
+    clean_lines = clean.splitlines(keepends=True)
+    original_lines = text.splitlines(keepends=True)
+    line_offsets = []
+    offset = 0
+    for raw in clean_lines:
+        line_offsets.append(offset)
+        offset += len(raw)
+
+    def significant_line(index: int):
+        while index < len(clean_lines):
+            stripped = clean_lines[index].strip()
+            if stripped:
+                return index, stripped
+            index += 1
+        return None, None
+
+    def parse_block_body(index: int):
+        statements: list[JBSStatement] = []
+        while index < len(clean_lines):
+            stripped = clean_lines[index].strip()
+            if not stripped:
+                index += 1
+                continue
+            if CLOSE_BRACE_RE.fullmatch(stripped):
+                return statements, index + 1
+            if ELSE_RE.fullmatch(stripped) or ELSE_IF_RE.fullmatch(stripped):
+                raise JBSError(
+                    "unexpected 'else' without a preceding 'if'",
+                    line=index + 1,
+                    column=max(0, clean_lines[index].find("else")),
+                    end_column=max(1, clean_lines[index].find("else") + len(stripped)),
+                )
+            if IF_RE.fullmatch(stripped):
+                block, index = parse_if(index)
+                statements.append(JBSStatement("if", if_block=block))
+                continue
+            if re.match(r'^\s*(shell|python|crimson)(?:\s|$)', clean_lines[index]):
+                command = parse_command_value(stripped, index + 1, clean_lines[index])
+                statements.append(JBSStatement("command", command=command))
+                index += 1
+                continue
+            raise JBSError(
+                f"invalid statement inside JBS control-flow block: '{stripped}'",
+                line=index + 1,
+                column=max(0, clean_lines[index].find(stripped)),
+                end_column=max(1, max(0, clean_lines[index].find(stripped)) + len(stripped)),
+            )
+        raise JBSError("control-flow block is not closed", line=max(1, len(clean_lines)))
+
+    def consume_open_brace(index: int, header_match) -> int:
+        has_inline_brace = bool(header_match.groups() and header_match.groups()[-1] == "{")
+        if has_inline_brace:
+            return index + 1
+        next_index, next_text = significant_line(index + 1)
+        if next_text is None or not OPEN_BRACE_RE.fullmatch(next_text):
+            raise JBSError(
+                "expected '{' after if/else condition",
+                line=index + 1,
+                column=0,
+                end_column=1,
+            )
+        return next_index + 1
+
+    def parse_if(index: int):
+        match = IF_RE.fullmatch(clean_lines[index].strip())
+        if not match:
+            raise JBSError("invalid if statement", line=index + 1, column=0, end_column=max(1, len(clean_lines[index].strip())))
+        header = clean_lines[index].strip()
+        header_col = max(0, clean_lines[index].find("if"))
+        condition = parse_condition(match.group(1), index + 1, header, header_col)
+        body_start = consume_open_brace(index, match)
+        body, next_index = parse_block_body(body_start)
+        branches = [(condition, body)]
+        else_body = None
+
+        probe, probe_text = significant_line(next_index)
+        while probe_text is not None:
+            em = ELSE_IF_RE.fullmatch(probe_text)
+            if em:
+                ecol = max(0, clean_lines[probe].find("else"))
+                cond = parse_condition(em.group(1), probe + 1, probe_text, ecol)
+                body_start = consume_open_brace(probe, em)
+                body, next_index = parse_block_body(body_start)
+                branches.append((cond, body))
+                probe, probe_text = significant_line(next_index)
+                continue
+
+            em = ELSE_RE.fullmatch(probe_text)
+            if em:
+                body_start = consume_open_brace(probe, em)
+                else_body, next_index = parse_block_body(body_start)
+            break
+
+        return JBSIfBlock(branches, else_body), next_index
+
+    def parse_top_level_statements():
+        statements: list[JBSStatement] = []
+        index = 0
+        while index < len(clean_lines):
+            stripped = clean_lines[index].strip()
+            if not stripped:
+                index += 1
+                continue
+            if IF_RE.fullmatch(stripped):
+                block, index = parse_if(index)
+                statements.append(JBSStatement("if", if_block=block))
+                continue
+            if ELSE_RE.fullmatch(stripped) or ELSE_IF_RE.fullmatch(stripped):
+                raise JBSError(
+                    "unexpected 'else' without a preceding 'if'",
+                    line=index + 1,
+                    column=max(0, clean_lines[index].find("else")),
+                    end_column=max(1, len(stripped)),
+                )
+            if re.match(r'^\s*(shell|python|crimson)(?:\s|$)', clean_lines[index]):
+                command = parse_command_value(stripped, index + 1, clean_lines[index])
+                statements.append(JBSStatement("command", command=command))
+            index += 1
+        return statements
+
+    statements = parse_top_level_statements()
+    commands: list[JBSCommand] = []
+
+    def flatten_statements(items):
+        for statement in items:
+            if statement.kind == "command" and statement.command is not None:
+                commands.append(statement.command)
+            elif statement.if_block is not None:
+                for _, body in statement.if_block.branches:
+                    flatten_statements(body)
+                if statement.if_block.else_body is not None:
+                    flatten_statements(statement.if_block.else_body)
+
+    flatten_statements(statements)
 
     targets: list[BuildTarget] = []
 
@@ -259,7 +475,7 @@ def parse_jbs(text: str) -> JBSConfig:
     target_blocks = parse_blocks(TARGET_RE, "target")
     link_blocks = parse_blocks(LINK_RE, "link")
 
-    if not target_blocks:
+    if not target_blocks and not allow_no_targets:
         line = 1
         nonempty = re.search(r"^\s*\S.*$", text, re.MULTILINE)
         if nonempty:
@@ -294,7 +510,7 @@ def parse_jbs(text: str) -> JBSConfig:
 
         targets.append(BuildTarget(name, files, kind, link_map.get(name, []), entry_locations, decl_loc))
 
-    return JBSConfig(version, output_dir, c89, keep_c, include_dirs, defines, targets, commands)
+    return JBSConfig(version, output_dir, c89, keep_c, mode, include_dirs, defines, jbs_defines, targets, commands, statements)
 
 
 def find_ja(base_dir: Path, requested: str, include_dirs: list[Path] | None = None, origin=None) -> Path:
@@ -379,36 +595,164 @@ def find_crimson() -> list[str]:
     )
 
 
-def run_jbs_commands(commands: list[JBSCommand], base_dir: Path, version: str) -> int:
-    """Execute shell/python/crimson directives in source order."""
+
+def load_crimson_package_jbs(config: JBSConfig, project_dir: Path, seen: set[Path] | None = None, packages: list[str] | None = None) -> tuple[list[Path], dict[str, str]]:
+    """Resolve `crimson find <name>` entries and import their root JBS metadata.
+
+    Package paths stay rooted at the package's own .jbs directory; they are
+    converted to absolute paths here so nested packages cannot accidentally
+    resolve relative to the consumer project. Package targets are intentionally
+    ignored: a package exposes include directories and `define_jbs` link aliases.
+    """
+    seen = seen or set()
+    include_paths: list[Path] = []
+    aliases: dict[str, str] = {}
+    crimson = find_crimson()
+    package_names = packages if packages is not None else []
+    if packages is None:
+        for command in config.commands:
+            if command.kind != "crimson":
+                continue
+            parts = shlex.split(command.value, posix=(os.name != "nt"))
+            if len(parts) == 2 and parts[0] == "find" and parts[1] not in package_names:
+                package_names.append(parts[1])
+
+    for package in package_names:
+        result = subprocess.run([*crimson, "find", package, "--path"], cwd=str(project_dir), capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            raise JBSError(result.stderr.strip() or f"Crimson could not find package '{package}'")
+        package_root = Path(result.stdout.strip().splitlines()[-1]).resolve()
+        if package_root in seen:
+            continue
+        seen.add(package_root)
+        jbs_candidates = [package_root / f"{package}.jbs", package_root / ".jbs"] + list(package_root.glob("*.jbs"))
+        jbs_candidates = list(dict.fromkeys(p.resolve() for p in jbs_candidates if p.is_file()))
+        if not jbs_candidates:
+            raise JBSError(f"Crimson package '{package}' has no .jbs file at its root")
+        package_jbs = jbs_candidates[0]
+        package_config = parse_jbs(package_jbs.read_text(encoding="utf-8"), allow_no_targets=True)
+        include_paths.extend((package_jbs.parent / d).resolve() for d in package_config.include_dirs)
+        for name, value in package_config.jbs_defines.items():
+            if name in aliases and aliases[name] != value:
+                raise JBSError(f"duplicate define_jbs variable from Crimson packages: {name}")
+            aliases[name] = str((package_jbs.parent / value).resolve())
+        # Nested package discovery is supported as well.
+        nested_includes, nested_aliases = load_crimson_package_jbs(package_config, package_jbs.parent, seen)
+        include_paths.extend(nested_includes)
+        for name, value in nested_aliases.items():
+            if name in aliases and aliases[name] != value:
+                raise JBSError(f"duplicate define_jbs variable from Crimson packages: {name}")
+            aliases[name] = value
+    return include_paths, aliases
+
+
+def _run_one_jbs_command(command: JBSCommand, base_dir: Path, env: dict[str, str], *, condition: bool = False):
+    """Execute one JBS command and return (exit_code, successful_find_package)."""
+    try:
+        if command.kind == "shell":
+            if condition:
+                result = subprocess.run(command.value, cwd=str(base_dir), env=env, shell=True, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            else:
+                result = subprocess.run(command.value, cwd=str(base_dir), env=env, shell=True, check=False)
+        elif command.kind == "python":
+            parts = shlex.split(command.value, posix=(os.name != "nt"))
+            if not parts:
+                raise JBSError("python directive requires a script", line=command.line, column=command.column, end_column=command.end_column)
+            if condition:
+                result = subprocess.run([sys.executable, *parts], cwd=str(base_dir), env=env, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            else:
+                result = subprocess.run([sys.executable, *parts], cwd=str(base_dir), env=env, check=False)
+        elif command.kind == "crimson":
+            parts = shlex.split(command.value, posix=(os.name != "nt"))
+            if not parts:
+                raise JBSError("crimson directive requires arguments", line=command.line, column=command.column, end_column=command.end_column)
+            if condition:
+                result = subprocess.run([*find_crimson(), *parts], cwd=str(base_dir), env=env, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            else:
+                result = subprocess.run([*find_crimson(), *parts], cwd=str(base_dir), env=env, check=False)
+        else:
+            raise JBSError(f"unknown JBS directive: {command.kind}")
+    except ValueError as e:
+        raise JBSError(str(e), line=command.line, column=command.column, end_column=command.end_column)
+
+    successful_find = None
+    if command.kind == "crimson":
+        try:
+            parts = shlex.split(command.value, posix=(os.name != "nt"))
+        except ValueError:
+            parts = []
+        if result.returncode == 0 and len(parts) == 2 and parts[0] == "find":
+            successful_find = parts[1]
+    return result.returncode, successful_find
+
+
+def run_jbs_statements(statements: list[JBSStatement], base_dir: Path, version: str) -> tuple[int, list[str]]:
+    """Execute JBS commands/control flow in source order.
+
+    A condition runs an existing JBS command and tests its process exit code.
+    Exit code 0 means true; any non-zero code means false. Prefix the condition
+    with `!` to negate it.
+    """
     env = os.environ.copy()
     env["JBS_VERSION"] = version
     env["JBS_PROJECT_DIR"] = str(base_dir)
+    found_packages: list[str] = []
 
-    for command in commands:
-        print(f"JBS: {command.kind} -> {command.value}")
-        try:
-            if command.kind == "shell":
-                result = subprocess.run(command.value, cwd=str(base_dir), env=env, shell=True, check=False)
-            elif command.kind == "python":
-                parts = shlex.split(command.value, posix=(os.name != "nt"))
-                if not parts:
-                    raise JBSError("python directive requires a script", line=command.line, column=command.column, end_column=command.end_column)
-                result = subprocess.run([sys.executable, *parts], cwd=str(base_dir), env=env, check=False)
-            elif command.kind == "crimson":
-                parts = shlex.split(command.value, posix=(os.name != "nt"))
-                if not parts:
-                    raise JBSError("crimson directive requires arguments", line=command.line, column=command.column, end_column=command.end_column)
-                result = subprocess.run([*find_crimson(), *parts], cwd=str(base_dir), env=env, check=False)
-            else:
-                raise JBSError(f"unknown JBS directive: {command.kind}")
-        except ValueError as e:
-            raise JBSError(str(e), line=command.line, column=command.column, end_column=command.end_column)
+    def remember_find(package: str | None):
+        if package and package not in found_packages:
+            found_packages.append(package)
 
-        if result.returncode != 0:
-            print(f"JBS Error: {command.kind} directive failed with exit code {result.returncode}", file=sys.stderr)
-            return result.returncode
-    return 0
+    def execute(items: list[JBSStatement]) -> int:
+        for statement in items:
+            if statement.kind == "command" and statement.command is not None:
+                command = statement.command
+                print(f"JBS: {command.kind} -> {command.value}")
+                code, package = _run_one_jbs_command(command, base_dir, env)
+                remember_find(package)
+                if code != 0:
+                    print(
+                        f"JBS Error: {command.kind} directive failed with exit code {code}",
+                        file=sys.stderr,
+                    )
+                    return code
+                continue
+
+            block = statement.if_block
+            if block is None:
+                continue
+
+            branch_taken = False
+            for condition, body in block.branches:
+                print(
+                    f"JBS: if {'!' if condition.negate else ''}{condition.command.kind} {condition.command.value}"
+                )
+                code, package = _run_one_jbs_command(condition.command, base_dir, env, condition=True)
+                remember_find(package)
+                condition_true = (code == 0)
+                if condition.negate:
+                    condition_true = not condition_true
+                if condition_true:
+                    branch_taken = True
+                    nested_result = execute(body)
+                    if nested_result != 0:
+                        return nested_result
+                    break
+
+            if not branch_taken and block.else_body is not None:
+                nested_result = execute(block.else_body)
+                if nested_result != 0:
+                    return nested_result
+
+        return 0
+
+    return execute(statements), found_packages
+
+
+def run_jbs_commands(commands: list[JBSCommand], base_dir: Path, version: str) -> int:
+    """Backward-compatible flat command runner."""
+    statements = [JBSStatement("command", command=c) for c in commands]
+    result, _ = run_jbs_statements(statements, base_dir, version)
+    return result
 
 
 def build_target(
@@ -421,6 +765,8 @@ def build_target(
     include_dirs: list[Path] | None = None,
     defines: list[str] | None = None,
     jbs_version: str = "0.0.0",
+    mode: str = "debug",
+    jbs_defines: dict[str, str] | None = None,
 ) -> int:
     base_dir = jbs_path.parent.resolve()
 
@@ -497,16 +843,28 @@ def build_target(
             raise JBSError(f"jcc did not generate the expected C file: {c_path}")
 
         # Second stage: C -> requested artifact.
+        # Build modes are real GCC configuration, not only JBS metadata.
+        mode_flags = {
+            "debug": ["-O0", "-g", "-DJAGUAR_DEBUG=1"],
+            "release": ["-O3", "-DNDEBUG", "-DJAGUAR_RELEASE=1"],
+            "relwithdebinfo": ["-O2", "-g", "-DJAGUAR_RELWITHDEBINFO=1"],
+            "minsizerel": ["-Os", "-DNDEBUG", "-DJAGUAR_MINSIZEREL=1"],
+        }.get(mode, [])
+        if jbs_defines:
+            for key, value in jbs_defines.items():
+                mode_flags.append(f"-D{key}={value}")
+
         if target.kind == "compile":
             gcc_cmd = [str(toolchain_exe("gcc")), str(c_path), "-o", str(output_path)]
             for lib in target.links or []:
-                gcc_cmd.append(resolve_link_arg(lib, output_base, base_dir))
+                gcc_cmd.append(resolve_link_arg(lib, output_base, base_dir, jbs_defines))
+            gcc_cmd[1:1] = mode_flags
 
         elif target.kind == "compile_static":
             obj_path = output_base / f"{target.name}.o"
             archive_path = output_base / f"lib{target.name}.a"
 
-            gcc_cmd = [str(toolchain_exe("gcc")), "-c", str(c_path), "-o", str(obj_path)]
+            gcc_cmd = [str(toolchain_exe("gcc")), *mode_flags, "-c", str(c_path), "-o", str(obj_path)]
             if c89:
                 gcc_cmd.insert(1, "-std=c89")
 
@@ -553,6 +911,7 @@ def build_target(
                 gcc_cmd = [
                     str(toolchain_exe("gcc")),
                     "-shared",
+                    *mode_flags,
                     str(c_path),
                     "-o",
                     str(dll_path),
@@ -560,10 +919,10 @@ def build_target(
                 ]
             else:
                 shared_path = output_base / f"lib{target.name}.so"
-                gcc_cmd = [str(toolchain_exe("gcc")), "-shared", "-fPIC", str(c_path), "-o", str(shared_path)]
+                gcc_cmd = [str(toolchain_exe("gcc")), "-shared", "-fPIC", *mode_flags, str(c_path), "-o", str(shared_path)]
 
             for lib in target.links or []:
-                gcc_cmd.append(resolve_link_arg(lib, output_base, base_dir))
+                gcc_cmd.append(resolve_link_arg(lib, output_base, base_dir, jbs_defines))
 
         else:
             raise JBSError(f"unknown target type: {target.kind}")
@@ -602,7 +961,7 @@ def build_target(
                 pass
 
 
-def resolve_link_arg(value: str, output_base: Path, base_dir: Path) -> str:
+def resolve_link_arg(value: str, output_base: Path, base_dir: Path, jbs_defines: dict[str, str] | None = None) -> str:
     """Transforme une entrée JBS link en argument GCC.
 
     Exemples:
@@ -614,6 +973,8 @@ def resolve_link_arg(value: str, output_base: Path, base_dir: Path) -> str:
       chemin/... -> chemin tel quel
     """
     value = value.strip()
+    if jbs_defines and value in jbs_defines:
+        value = jbs_defines[value]
     if not value:
         return value
 
@@ -673,6 +1034,7 @@ def main(argv: list[str]) -> int:
     jbs_file: str | None = None
     output: str | None = None
     target_name: str | None = None
+    cli_mode: str | None = None
 
     i = 0
     while i < len(args):
@@ -682,6 +1044,15 @@ def main(argv: list[str]) -> int:
                 print("JBS Error: -o expects an output name", file=sys.stderr)
                 return 1
             output = args[i + 1]
+            i += 2
+        elif arg == "--mode":
+            if i + 1 >= len(args):
+                print("JBS Error: --mode expects debug, release, relwithdebinfo or minsizerel", file=sys.stderr)
+                return 1
+            cli_mode = args[i + 1].lower()
+            if cli_mode not in {"debug", "release", "relwithdebinfo", "minsizerel"}:
+                print(f"JBS Error: unknown mode: {cli_mode}", file=sys.stderr)
+                return 1
             i += 2
         elif arg == "--target":
             if i + 1 >= len(args):
@@ -718,9 +1089,23 @@ def main(argv: list[str]) -> int:
         include_dirs = [(jbs_path.parent / d).resolve() for d in config.include_dirs]
         targets = config.targets
 
-        command_result = run_jbs_commands(config.commands, jbs_path.parent.resolve(), config.version)
+        command_result, found_packages = run_jbs_statements(
+            config.statements,
+            jbs_path.parent.resolve(),
+            config.version,
+        )
         if command_result != 0:
             return command_result
+
+        package_includes, package_aliases = load_crimson_package_jbs(
+            config,
+            jbs_path.parent.resolve(),
+            packages=found_packages,
+        )
+        include_dirs.extend(package_includes)
+        merged_jbs_defines = dict(package_aliases)
+        for name, value in config.jbs_defines.items():
+            merged_jbs_defines[name] = str((jbs_path.parent / value).resolve())
 
         if target_name is not None:
             matches = [t for t in targets if t.name == target_name]
@@ -748,6 +1133,8 @@ def main(argv: list[str]) -> int:
                 include_dirs=include_dirs,
                 defines=config.defines,
                 jbs_version=config.version,
+                mode=cli_mode or config.mode,
+                jbs_defines=merged_jbs_defines,
             )
             if result != 0:
                 return result

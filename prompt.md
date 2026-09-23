@@ -1,8 +1,6 @@
 ##### Features:
 
-\-convertir une api complete, pas juste un single file
-
-\-operateur + sur les strings
+\-nouvelle syntaxe pour gerer les build (.b)
 
 
 
@@ -13,8 +11,6 @@
 
 
 **Bugs connus:**
-
-\-si le fichier jbs s'appelle juste .jbs, il le trouve pas, je veux que ca puisse marcher
 
 
 
@@ -27,8 +23,6 @@
 ##### Stabilité:
 
 \-produire un IR intermediaire
-
-\-ecris la lib jcc en C (avec les vraies fonctions C), et utiliser Jaguar Bindgen pour l'api jcc
 
 \-diviser le compilateur en pleins de scripts dans un dossier script/ et garder le point d'entré à jcc.py
 
@@ -78,7 +72,7 @@
 
 ##### Petites corrections:
 
-\-icone jaguar dans l'installer au lieu de l'icone par defaut
+
 
 
 
@@ -90,7 +84,7 @@
 
 ##### Livre:
 
-\-parler de l'extension vscode
+\-parler de l'extension vscode (pour l'installer au lien suivant : https://marketplace.visualstudio.com/items?itemName=OscarSoirey.jaguar-language) ou alors on peut l'installer directement depuis vscode en cherchant Jaguar dans les plugins
 
 \-crimson et intégration à jbs
 
@@ -103,4 +97,12 @@ le langage corrige les defaut du C++ qui sont vraiment chiant dans un moteur: fa
 \-inclure le logo jaguar et le nom Oscar Soirey
 
 \-ajouter un section spéciale pour creer un jeu avec sdl2, de A à Z (jeu simple bien sur)
+
+
+
+\-changer la police de titre à
+
+\-changer la police de code à
+
+\-changer la police de corps à
 

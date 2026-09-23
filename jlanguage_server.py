@@ -48,6 +48,7 @@ def load_jcc():
             continue
         try:
             mod = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = mod
             spec.loader.exec_module(mod)
             mod.__jaguar_source_path__ = path
             return mod
@@ -73,6 +74,9 @@ KEYWORDS = [
     "continue", "true", "false", "nullptr", "this", "new", "signal", "as", "loop", "public", "protected", "private",
 ]
 DIRECTIVES = ["#define", "#undef", "#if", "#ifdef", "#ifndef", "#elif", "#elseif", "#else", "#endif", "#pragma", "#error", "#warning", "#line"]
+JBS_DIRECTIVES = ["jbs", "version", "out", "include", "libpath", "c89", "keep_c", "mode", "define", "define_jbs", "compile", "compile_static", "compile_shared", "link", "shell", "python", "crimson", "if", "else"]
+JBS_MODES = ["debug", "release", "relwithdebinfo", "minsizerel"]
+JBS_CONDITION_COMMANDS = ["crimson", "shell", "python"]
 
 STRING_METHODS = [
     ("length", "int length()", "Returns the number of characters."),
@@ -126,16 +130,6 @@ JCC_SIGNATURES = {
     "file_exists": ("bool", "string path"), "remove_file": ("bool", "string path"),
     "rename_file": ("bool", "string old_path, string new_path"), "env_get": ("string", "string name"),
 }
-
-THREAD_SIGNATURES = {
-    "start": ("void*", "fn() -> void function"),
-    "join": ("void", "void* handle"),
-    "detach": ("void", "void* handle"),
-    "sleep": ("void", "int milliseconds"),
-    "yield": ("void", ""),
-}
-
-OPERATOR_TOKENS = ["+", "-", "*", "/", "%", "==", "!=", "<", ">", "<=", ">="]
 
 TYPE_INFO = {
     "void": (0, "no storage; only valid as a return type"),
@@ -203,7 +197,6 @@ class SymbolIndex:
         self.unions = {}
         self.enums = {}
         self.functions = []
-        self.decorators = []
         self.namespaces = []
         self.errors = []
         self.used_jcc_parser = False
@@ -228,10 +221,7 @@ class SymbolIndex:
                 self.variables.setdefault(item.name, item.type)
             elif cls == "FunctionDecl":
                 ns = getattr(item, "namespace", None) or namespace
-                self.functions.append({"name": item.name, "type": item.ret_type, "args": ", ".join(f"{p.type} {p.name}" for p in item.params), "namespace": ns, "obj": item, "operator": item.name.startswith("operator") and item.name[8:] in OPERATOR_TOKENS, "decorated": bool(getattr(item, "decorators", []))})
-            elif cls == "DecoratorDecl":
-                ns = getattr(item, "namespace", None) or namespace
-                self.decorators.append({"name": item.name, "args": ", ".join(f"{p.type} {p.name}" for p in item.params), "namespace": ns, "obj": item})
+                self.functions.append({"name": item.name, "type": item.ret_type, "args": ", ".join(f"{p.type} {p.name}" for p in item.params), "namespace": ns, "obj": item})
             elif cls == "StructDecl":
                 self.structs[item.name] = {"name": item.name, "members": [{"name": f.name, "type": f.type, "kind": "field"} for f in item.fields]}
             elif cls == "UnionDecl":
@@ -244,8 +234,7 @@ class SymbolIndex:
                     members.append({"name": f.name, "type": f.type, "kind": "field", "access": getattr(f, "access", "private")})
                 for m in item.methods:
                     members.append({"name": m.name, "type": m.ret_type, "args": ", ".join(f"{p.type} {p.name}" for p in m.params), "kind": "method", "access": getattr(m, "access", "private")})
-                class_signals = [{"name": s.name, "kind": "signal"} for s in getattr(item, "signals", [])]
-                self.classes[item.name] = {"name": item.name, "base": item.base, "members": members, "signals": class_signals}
+                self.classes[item.name] = {"name": item.name, "base": item.base, "members": members}
             if getattr(item, "namespace", None) and getattr(item, "namespace", None) not in self.namespaces:
                 self.namespaces.append(item.namespace)
             # Namespace parsing in jcc flattens functions into FunctionDecl.namespace.
@@ -270,27 +259,6 @@ class SymbolIndex:
             if e["values"]: continue
             m = re.search(r"\benum\s+" + re.escape(name) + r"\s*\{([^}]*)\}", s, re.S)
             if m: e["values"] = re.findall(r"[A-Za-z_]\w*", m.group(1))
-
-        for m in re.finditer(r"(?:^|[;{}])\s*void\s+@([A-Za-z_]\w*)\s*\(([^)]*)\)\s*:[A-Za-z_]\w*\s*\{", s):
-            name, args = m.group(1), m.group(2).strip()
-            if not any(d["name"] == name and d["args"] == args for d in self.decorators):
-                self.decorators.append({"name": name, "args": args, "namespace": None})
-
-        for c in self.classes.values():
-            if c.get("signals"):
-                continue
-            class_match = re.search(r"\bclass\s+" + re.escape(c["name"]) + r"\s*\{", s)
-            if not class_match:
-                continue
-            start = class_match.end(); depth = 1; i = start
-            while i < len(s) and depth:
-                if s[i] == "{": depth += 1
-                elif s[i] == "}": depth -= 1
-                i += 1
-            body = s[start:max(start, i - 1)]
-            for sm in re.finditer(r"\bsignal\s*:\s*([A-Za-z_]\w*)\s*\{", body):
-                sig={"name":sm.group(1),"kind":"signal"}
-                c.setdefault("signals", []).append(sig)
 
         fn_re = re.compile(r"(?:^|[;{}])\s*(?:\$|%)?\s*(?:const\s+)?([A-Za-z_]\w*(?:\s*<[^;{}()]+>)?)\s+([A-Za-z_]\w*)\s*\(([^)]*)\)")
         for m in fn_re.finditer(s):
@@ -346,6 +314,18 @@ class JaguarServer:
         self.docs = {}
         self.root = None
         self.send_lock = threading.Lock()
+        self.jbs = None
+        for candidate in (os.path.join(HERE, "jbs.py"), os.path.join(HERE, "jbs_fixed.py"), os.path.join(HERE, "jbs(5).py")):
+            if os.path.isfile(candidate):
+                try:
+                    spec = importlib.util.spec_from_file_location("jaguar_jbs", candidate)
+                    mod = importlib.util.module_from_spec(spec)
+                    sys.modules[spec.name] = mod
+                    spec.loader.exec_module(mod)
+                    self.jbs = mod
+                    break
+                except Exception:
+                    pass
 
     def send(self, obj):
         data = json.dumps(obj, separators=(",", ":"), ensure_ascii=False).encode()
@@ -369,7 +349,7 @@ class JaguarServer:
                     "definitionProvider": True,
                     "renameProvider": True,
                     "workspaceSymbolProvider": True,
-                }, "serverInfo": {"name":"Jaguar Language Server", "version":"0.5.0"}})
+                }, "serverInfo": {"name":"Jaguar Language Server", "version":"0.4.0"}})
             elif method == "initialized": pass
             elif method == "shutdown": self.result(ident, None)
             elif method == "exit": return False
@@ -394,33 +374,37 @@ class JaguarServer:
     def context(self, uri, pos):
         text=self.docs.get(uri, ""); return text, pos_to_offset(text, pos.get("line",0), pos.get("character",0))
 
+    @staticmethod
+    def _is_jbs_uri(uri):
+        path = unquote(urlparse(uri).path)
+        return path.lower().endswith(".jbs") or os.path.basename(path).lower() == ".jbs"
+
     def completion(self, uri, pos):
-        text, off = self.context(uri, pos); before=text[:off]; idx=SymbolIndex(text)
+        text, off = self.context(uri, pos); before=text[:off]
+        if self._is_jbs_uri(uri):
+            line_start = before.rfind("\n") + 1
+            fragment = before[line_start:]
 
-        # Struct/value construction uses positional arguments in field order.
-        ctor = re.search(r"\b([A-Za-z_]\w*(?::[A-Za-z_]\w*)*)\s*\([^()]*$", before)
-        if ctor:
-            typename = ctor.group(1).split(":")[-1]
-            if typename in idx.structs:
-                members = idx.structs[typename].get("members", [])
-                sig = ", ".join(f"{m['type']} {m['name']}" for m in members)
-                return {"isIncomplete":False,"items":[{"label":typename,"kind":3,"detail":f"{typename}({sig})","documentation":"Positional struct construction; arguments follow field declaration order."}]}
+            # Conditions execute an existing JBS command and use its exit code
+            # as a boolean. Offer command completions inside `if(...)`.
+            if re.search(r"\bif\s*\(\s*!?\s*[A-Za-z_]*$", fragment):
+                word = re.search(r"[A-Za-z_][A-Za-z0-9_]*$", fragment)
+                prefix = word.group(0) if word else ""
+                return {"isIncomplete":False,"items":[{"label":c,"kind":14,"detail":"JBS condition command"} for c in JBS_CONDITION_COMMANDS if c.startswith(prefix)]}
 
-        # Class-level signal completion is intentionally restricted to the
-        # fields of the class containing the cursor.
-        if re.search(r"\bsignal\s*:[ \t]*(?:[A-Za-z_]\w*)?$", before):
-            cls = self._enclosing_class(idx, off)
-            if cls:
-                items=[{"label":m["name"],"kind":5,"detail":m.get("type", ""),"documentation":"Class-level signal member."}
-                       for m in cls.get("members", []) if m.get("kind") == "field"]
-                return {"isIncomplete":False,"items":items}
+            if re.match(r"^\s*else\s+if\s*\(\s*!?\s*[A-Za-z_]*$", fragment):
+                word = re.search(r"[A-Za-z_][A-Za-z0-9_]*$", fragment)
+                prefix = word.group(0) if word else ""
+                return {"isIncomplete":False,"items":[{"label":c,"kind":14,"detail":"JBS condition command"} for c in JBS_CONDITION_COMMANDS if c.startswith(prefix)]}
 
-        if re.search(r"@(?:[A-Za-z_]\w*)?$", before):
-            return {"isIncomplete":False,"items":[{"label":d["name"],"kind":14,"detail":f"decorator ({d.get('args','')})"} for d in idx.decorators]}
+            if re.match(r"^\s*mode\s+\w*$", fragment):
+                return {"isIncomplete":False,"items":[{"label":m,"kind":14,"detail":"JBS build mode"} for m in JBS_MODES]}
 
-        if re.search(r"\boperator\s*$", before):
-            return {"isIncomplete":False,"items":[{"label":op,"kind":24,"detail":f"operator{op}"} for op in OPERATOR_TOKENS]}
-
+            word = re.search(r"[A-Za-z_][A-Za-z0-9_]*$", fragment)
+            prefix = word.group(0) if word else ""
+            items=[{"label":d,"kind":14,"detail":"JBS directive"} for d in JBS_DIRECTIVES if d.startswith(prefix)]
+            return {"isIncomplete":False,"items":items}
+        idx=SymbolIndex(text)
         # Critical: completion is requested after the dot, before or after a partial member name.
         m=re.search(r"([A-Za-z_]\w*)\.(?:[A-Za-z_]\w*)?$", before)
         if m:
@@ -428,19 +412,14 @@ class JaguarServer:
             if typ:
                 return {"isIncomplete":False,"items":[self.item(x) for x in idx.members_for_type(typ)]}
         # Namespace completion: foo: or foo:bar:
-        m=re.search(r"([A-Za-z_]\w*(?::[A-Za-z_]\w*)*):(?:[A-Za-z_]\w*)?$", before)
+        m=re.search(r"([A-Za-z_]\w*(?::[A-Za-z_]\w*)*):[A-Za-z_]\w*$", before)
         if m:
             ns=m.group(1); fs=[f for f in idx.functions if f.get("namespace") == ns]
-            if ns == "thread":
-                items=[{"label":name,"kind":3,"detail":f'{sig[0]} {name}({sig[1]})'} for name, sig in THREAD_SIGNATURES.items()]
-                items.extend({"label":f["name"],"kind":3,"detail":f'{f["type"]} {f["name"]}({f["args"]})'} for f in fs)
-                return {"isIncomplete":False,"items":items}
             return {"isIncomplete":False,"items":[{"label":f["name"],"kind":3,"detail":f'{f["type"]} {f["name"]}({f["args"]})'} for f in fs]}
         items=[]
         for t in BUILTIN_TYPES: items.append({"label":t,"kind":25,"detail":"Jaguar type"})
         for k in KEYWORDS: items.append({"label":k,"kind":14,"detail":"keyword"})
         for f in idx.functions: items.append({"label":f["name"],"kind":3,"detail":f'{f["type"]} {f["name"]}({f["args"]})'})
-        for d in idx.decorators: items.append({"label":d["name"],"kind":14,"detail":f'decorator ({d.get("args", "")})'})
         for n,t in idx.variables.items(): items.append({"label":n,"kind":6,"detail":t})
         for n in list(idx.classes)+list(idx.structs)+list(idx.unions)+list(idx.enums): items.append({"label":n,"kind":7,"detail":"Jaguar type"})
         for enum_name, enum in idx.enums.items():
@@ -448,23 +427,9 @@ class JaguarServer:
                 items.append({"label":value,"kind":21,"detail":f"{enum_name} enum value"})
         return {"isIncomplete":False,"items":items}
 
-    def _enclosing_class(self, idx, off):
-        scan = idx.scan; best = None
-        for m in re.finditer(r"\bclass\s+([A-Za-z_]\w*)(?:\s*,\s*[A-Za-z_]\w*)?\s*\{", scan):
-            start = m.end(); depth = 1; i = start
-            while i < len(scan) and depth:
-                if scan[i] == "{": depth += 1
-                elif scan[i] == "}": depth -= 1
-                i += 1
-            if start <= off <= i and (best is None or start > best[0]):
-                best = (start, i, m.group(1))
-        return idx.classes.get(best[2]) if best else None
-
     @staticmethod
     def item(x):
-        kind = x.get("kind")
-        lsp_kind = 2 if kind == "method" else 15 if kind == "signal" else 5
-        return {"label":x["name"],"kind":lsp_kind,"detail":x.get("detail",x.get("type","")),"documentation":x.get("documentation",x.get("args", ""))}
+        return {"label":x["name"],"kind":2 if x.get("kind") == "method" else 5,"detail":x.get("detail",x.get("type","")),"documentation":x.get("documentation",x.get("args", ""))}
 
     def _semantic_documents(self, uri):
         docs = self._workspace_documents()
@@ -533,18 +498,11 @@ class JaguarServer:
             sig = JCC_SIGNATURES.get(word)
             if sig:
                 return {"kind": "function", "name": word, "type": sig[0], "args": sig[1], "namespace": "jcc", "jcc": True}
-        if namespace == "thread":
-            sig = THREAD_SIGNATURES.get(word)
-            if sig:
-                return {"kind": "function", "name": word, "type": sig[0], "args": sig[1], "namespace": "thread", "jcc": True}
         if word in idx.classes:
             c = idx.classes[word]
             return {"kind": "class", "name": word, "type": f"class {word}" + (f" : {c['base']}" if c.get('base') else ""), "detail": c}
         if word in idx.structs:
             return {"kind": "struct", "name": word, "type": f"struct {word}", "detail": idx.structs[word]}
-        for d in idx.decorators:
-            if d.get("name") == word:
-                return {"kind": "decorator", "name": word, "args": d.get("args", ""), "namespace": d.get("namespace")}
         funcs = self._all_workspace_functions(word, namespace, uri)
         if funcs:
             return {"kind": "function", "name": word, "overloads": funcs, "namespace": namespace}
@@ -611,10 +569,6 @@ class JaguarServer:
         elif kind in ("method","field"):
             sig=f"{info.get('type','')} {w}" + (f"({info.get('args','')})" if kind=="method" else "")
             value=f"### {kind.capitalize()}\n```jaguar\n{sig}\n```" + (f"\n\n**Access:** `{info['access']}`" if info.get('access') else "")
-        elif kind == "signal":
-            value=f"### Class-level signal\n```jaguar\nsignal: {w} {{ ... }}\n```\n\nDeclared directly in the class body for that class member."
-        elif kind == "decorator":
-            value=f"### Decorator `@{w}`\n\n```jaguar\nvoid @{w}({info.get('args','')}):func {{ ... }}\n```"
         else:
             vtype = info.get('type','auto')
             size, note = TYPE_INFO.get(vtype, (None, 'size depends on the Jaguar/runtime representation'))
@@ -697,8 +651,6 @@ class JaguarServer:
             idx=SymbolIndex(text)
             for f in idx.functions:
                 if query.lower() in f["name"].lower(): out.append({"name":f["name"],"kind":12,"location":{"uri":uri,"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":0}}}})
-            for d in idx.decorators:
-                if query.lower() in d["name"].lower(): out.append({"name":"@" + d["name"],"kind":12,"location":{"uri":uri,"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":0}}}})
         return out
 
     # ------------------------------------------------------------------
@@ -1169,6 +1121,17 @@ class JaguarServer:
         rules (for example an old const-context or collection-method rule).
         """
         source = self.docs.get(uri, "")
+        if self._is_jbs_uri(uri):
+            diagnostics = []
+            if self.jbs is not None and source.strip():
+                try:
+                    self.jbs.parse_jbs(source)
+                except Exception as exc:
+                    line = max(0, int(getattr(exc, "line", 1) or 1) - 1)
+                    col = max(0, int(getattr(exc, "column", 0) or 0))
+                    diagnostics.append({"range":{"start":{"line":line,"character":col},"end":{"line":line,"character":col+1}},"severity":1,"source":"JBS","message":str(exc)})
+            self.notify("textDocument/publishDiagnostics", {"uri":uri,"diagnostics":diagnostics})
+            return
         if not source.strip():
             self.notify("textDocument/publishDiagnostics", {"uri": uri, "diagnostics": []})
             return

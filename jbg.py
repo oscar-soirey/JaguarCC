@@ -13,6 +13,11 @@ turned into broken Jaguar declarations.
 Usage:
     python jbg.py --c api.h
     python jbg.py --c api.h -o api.jah
+    python jbg.py --c api/ -o generated/
+
+Directory mode recursively converts every `.h` file below the input
+directory and writes a `.jah` at the same relative path under the output
+directory. With no `-o`, directory mode uses `<input>_jah`.
 """
 from __future__ import annotations
 
@@ -1002,12 +1007,61 @@ def generate(
     return text, recovery_warnings + gen.errors
 
 
+def convert_file(src_path: Path, out_path: Path, *, predefined: set[str], strict: bool) -> tuple[bool, list[str]]:
+    """Convert one C header into one Jaguar header."""
+    try:
+        src = src_path.read_text(encoding="utf-8")
+        text, warnings = generate(src, predefined=predefined)
+    except Exception as exc:
+        return False, [f"{src_path}: {exc}"]
+
+    if warnings:
+        for warning in warnings:
+            print(f"jbg: warning: {src_path}: {warning}", file=sys.stderr)
+        if strict:
+            return False, [f"{src_path}: strict mode rejected warnings"]
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(text, encoding="utf-8")
+    print(f"jbg: generated {out_path}", file=sys.stderr)
+    return True, []
+
+
+def convert_directory(src_dir: Path, out_dir: Path, *, predefined: set[str], strict: bool) -> int:
+    """Convert every .h under src_dir, preserving its relative directory structure."""
+    headers = sorted(
+        (p for p in src_dir.rglob("*") if p.is_file() and p.suffix.lower() == ".h"),
+        key=lambda p: p.as_posix().lower(),
+    )
+    if not headers:
+        print(f"jbg: error: no .h files found in directory: {src_dir}", file=sys.stderr)
+        return 1
+
+    failures = []
+    converted = 0
+    for src_path in headers:
+        relative = src_path.relative_to(src_dir)
+        out_path = out_dir / relative.with_suffix(".jah")
+        ok, errors = convert_file(src_path, out_path, predefined=predefined, strict=strict)
+        if ok:
+            converted += 1
+        else:
+            failures.extend(errors)
+            for error in errors:
+                print(f"jbg: error: {error}", file=sys.stderr)
+
+    print(f"jbg: converted {converted}/{len(headers)} .h files", file=sys.stderr)
+    if failures:
+        return 2 if strict else 1
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Jaguar BindGen - C API/header to .jah")
     group = ap.add_mutually_exclusive_group(required=True)
-    group.add_argument("--c", metavar="FILE", help="convert a C header")
-    ap.add_argument("-o", "--output", metavar="FILE", help="output .jah file (default: same basename as input)")
-    ap.add_argument("--stdout", action="store_true", help="write the generated .jah to stdout instead of creating a file")
+    group.add_argument("--c", metavar="PATH", help="convert a C header file or recursively convert a directory of .h files")
+    ap.add_argument("-o", "--output", metavar="PATH", help="output .jah file, or output directory when --c is a directory")
+    ap.add_argument("--stdout", action="store_true", help="write a single generated .jah to stdout instead of creating a file")
     ap.add_argument("--strict", action="store_true", help="fail if any C declaration cannot be represented by current jcc syntax")
     ap.add_argument(
         "-D", "--define",
@@ -1018,35 +1072,57 @@ def main(argv=None) -> int:
     )
     args = ap.parse_args(argv)
 
-    src_path = Path(args.c)
-    try:
-        src = src_path.read_text(encoding="utf-8")
-        predefined = {
-            item.split("=", 1)[0].strip()
-            for item in args.define
-            if item.split("=", 1)[0].strip()
-        }
-        text, warnings = generate(src, predefined=predefined)
-    except Exception as exc:
-        print(f"jbg: error: {exc}", file=sys.stderr)
+    src_path = Path(args.c).resolve()
+    predefined = {
+        item.split("=", 1)[0].strip()
+        for item in args.define
+        if item.split("=", 1)[0].strip()
+    }
+
+    if not src_path.exists():
+        print(f"jbg: error: input path not found: {src_path}", file=sys.stderr)
         return 1
 
-    if warnings:
-        for warning in warnings:
-            print(f"jbg: warning: {warning}", file=sys.stderr)
-        if args.strict:
-            return 2
+    if src_path.is_dir():
+        if args.stdout:
+            print("jbg: error: --stdout is only valid when --c points to one header file", file=sys.stderr)
+            return 1
+        if args.output:
+            out_dir = Path(args.output).resolve()
+            if out_dir.exists() and out_dir.is_file():
+                print("jbg: error: directory input requires a directory output", file=sys.stderr)
+                return 1
+        else:
+            out_dir = src_path.parent / f"{src_path.name}_jah"
+        return convert_directory(src_path, out_dir, predefined=predefined, strict=args.strict)
+
+    if src_path.suffix.lower() != ".h":
+        print("jbg: error: input file must use the .h extension", file=sys.stderr)
+        return 1
+    if args.stdout and args.output:
+        print("jbg: error: --stdout cannot be combined with -o/--output", file=sys.stderr)
+        return 1
 
     if args.stdout:
-        sys.stdout.write(text)
-    else:
-        out_path = Path(args.output) if args.output else src_path.with_suffix(".jah")
-        if out_path.suffix.lower() != ".jah":
-            print("jbg: error: output file must use the .jah extension", file=sys.stderr)
+        try:
+            src = src_path.read_text(encoding="utf-8")
+            text, warnings = generate(src, predefined=predefined)
+        except Exception as exc:
+            print(f"jbg: error: {exc}", file=sys.stderr)
             return 1
-        out_path.write_text(text, encoding="utf-8")
-        print(f"jbg: generated {out_path}", file=sys.stderr)
-    return 0
+        for warning in warnings:
+            print(f"jbg: warning: {src_path}: {warning}", file=sys.stderr)
+        if warnings and args.strict:
+            return 2
+        sys.stdout.write(text)
+        return 0
+
+    out_path = Path(args.output).resolve() if args.output else src_path.with_suffix(".jah")
+    if out_path.suffix.lower() != ".jah":
+        print("jbg: error: output file must use the .jah extension", file=sys.stderr)
+        return 1
+    ok, _ = convert_file(src_path, out_path, predefined=predefined, strict=args.strict)
+    return 0 if ok else (2 if args.strict else 1)
 
 
 if __name__ == "__main__":

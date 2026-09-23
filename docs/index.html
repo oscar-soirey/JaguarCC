@@ -604,7 +604,12 @@ move(x = <span class="str">10</span>, y = <span class="str">20</span>, speed = <
         <div>
           <span class="idx">Editor</span>
           <h3>Jaguar in VS Code</h3>
-          <p>The Jaguar VS Code extension brings the language into the editor so working on <code class="inline">.ja</code> and <code class="inline">.jah</code> projects feels like a first-class development workflow rather than a collection of external commands.</p>
+          <p>The official Jaguar VS Code extension brings the language into the editor with syntax highlighting, completions, hover information, symbol navigation, rename support, real-time diagnostics, JBS support, file icons, and project build commands.</p>
+          <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:16px;">
+            <a class="btn btn-primary" href="https://marketplace.visualstudio.com/items?itemName=OscarSoirey.jaguar-language" target="_blank" rel="noopener">Get the VS Code extension</a>
+            <a class="btn btn-outline" href="https://code.visualstudio.com/api/language-extensions/overview" target="_blank" rel="noopener">Microsoft: language extensions</a>
+          </div>
+          <p style="margin-top:14px;">Microsoft also provides the <strong>Language Server Protocol (LSP)</strong> as the standard integration path for language tooling such as completion, diagnostics, hover, and navigation. It is a more useful foundation for Jaguar tooling than relying on editor-specific features alone.</p>
         </div>
         <div class="code-block"><span class="cm">// A Jaguar project in VS Code</span>
 <span class="kw">src/</span>
@@ -621,8 +626,8 @@ move(x = <span class="str">10</span>, y = <span class="str">20</span>, speed = <
         <div>
           <span class="idx">Build</span>
           <h3>Crimson + JBS</h3>
-          <p><strong>Crimson</strong> is Jaguar's build system layer, designed to fit the project model used by <strong>JBS</strong>. The current JBS workflow describes sources, headers, includes, definitions, targets and link steps, then feeds those project inputs through JCC and the native toolchain.</p>
-          <p>This keeps build orchestration outside the language itself while still making Jaguar projects reproducible and easy to structure.</p>
+          <p><strong>Crimson</strong> is Jaguar's package manager — think of it as the Jaguar equivalent of <code class="inline">pip</code>. It installs, updates, removes and searches Jaguar packages, with package manifests and version/dependency handling.</p>
+          <p><strong>JBS</strong> is the build system and project orchestrator. The two tools complement each other: JBS handles the project build, while Crimson handles packages and dependencies. JBS can also invoke Crimson directly through its <code class="inline">crimson</code> command.</p>
         </div>
         <div class="code-block"><span class="kw">version</span> 1.0
 <span class="kw">out</span> build
@@ -634,7 +639,8 @@ move(x = <span class="str">10</span>, y = <span class="str">20</span>, speed = <
     include/engine.jah
 }
 
-<span class="cm"># Crimson can sit above this project workflow</span></div>
+<span class="cm"># JBS can invoke Crimson for package operations</span>
+<span class="kw">crimson</span> install myapi</div>
       </div>
 
       <div class="feat-row">

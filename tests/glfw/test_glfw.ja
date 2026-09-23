@@ -15,7 +15,7 @@ void main(string param)
     GLFWwindow* win = glfwCreateWindow(
         800,
         600,
-        "Ma fenetre",
+        "New Window",
         nullptr,
         nullptr
     );

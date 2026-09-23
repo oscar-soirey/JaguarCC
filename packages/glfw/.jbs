@@ -1,0 +1,6 @@
+version 1.0
+
+include include/
+
+define_jbs glfw lib/libglfw3.a
+define_jbs glfwdll lib/libglfw3dll.a

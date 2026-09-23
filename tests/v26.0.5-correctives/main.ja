@@ -1,11 +1,24 @@
-void StartThreadOp()
-{
-  sys:print("hello from another thread!");
-}
+using glfw;
 
 void main()
 {
-  void* handle = thread:start(StartThreadOp);
-  thread:join(handle);
-  thread:detach(handle);
+  sys:print("ekip");
+  int ok = glfwInit();
+  sys:print("ekip");
+
+  GLFWwindow* win = glfwCreateWindow(
+    800,
+    600,
+    "New Window",
+    nullptr,
+    nullptr
+  );
+
+  while (glfwWindowShouldClose(win) == false)
+  {
+    glfwPollEvents();
+  }
+
+  glfwDestroyWindow(win);
+  glfwTerminate();
 }

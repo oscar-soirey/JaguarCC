@@ -426,27 +426,49 @@ class Crimson:
         destination: Path,
     ) -> None:
         """
-        Prefer a release asset if one is present and is .zip/.tar/.tar.gz.
-        Otherwise download GitHub's source tarball for the release tag.
+        Download the contents of the requested GitHub release.
+
+        Crimson uses a release asset when the release provides one. If there
+        is no package asset, it uses GitHub's generated source archive for
+        the release tag. This is the exact tagged release snapshot, not the
+        repository's current/default branch.
         """
         assets = release.get("assets", [])
         asset = None
 
         for candidate in assets:
             name = str(candidate.get("name", "")).lower()
-            if name.endswith(
-                (".zip", ".tar", ".tar.gz", ".tgz")
-            ):
+            if name.endswith((".zip", ".tar", ".tar.gz", ".tgz")):
                 asset = candidate
                 break
 
         if asset:
             url = asset.get("browser_download_url")
+            filename = str(asset.get("name") or "release.zip")
+            source_description = f"release asset '{filename}'"
         else:
+            # A GitHub Release always has generated source archives for its
+            # tag, even when the author did not upload a custom asset.
+            #
+            # IMPORTANT: tarball_url belongs to THIS release object and is
+            # generated from release['tag_name']. It is therefore a snapshot
+            # of the requested release/tag, NOT the repository's current
+            # default branch. Never fall back to /archive/refs/heads/main,
+            # /archive/refs/heads/master, or any repository URL here.
             url = release.get("tarball_url")
+            filename = "release.tar.gz"
+            source_description = (
+                f"GitHub release source archive for tag "
+                f"'{release.get('tag_name', '?')}'"
+            )
 
         if not url:
-            raise CrimsonError("The GitHub release has no downloadable source.")
+            raise CrimsonError(
+                "The requested GitHub release has no downloadable contents "
+                "(missing release asset and GitHub release source archive)."
+            )
+
+        print(f"Downloading {source_description}...")
 
         try:
             response = self.session.get(
@@ -459,8 +481,6 @@ class Crimson:
             raise CrimsonError(f"Could not download release: {exc}") from exc
 
         destination.mkdir(parents=True, exist_ok=True)
-
-        filename = str(asset.get("name")) if asset else "source.tar.gz"
         archive = destination / filename
 
         try:
@@ -872,6 +892,74 @@ class Crimson:
                 print(f"  {description}")
             print(f"  {repo.get('html_url', '')}")
 
+    def find(self, package_name: str, *, path_only: bool = False) -> None:
+        """Find a local package directory and optionally print its path.
+
+        Crimson looks for a directory named after the requested package in
+        the current working directory, in Crimson's packages directory, and
+        alongside the Crimson executable/script. The package directory must
+        contain a JBS project file at its root.
+        """
+        package_name = normalize_package_name(package_name)
+
+        candidates = [
+            Path.cwd() / package_name,
+            self.packages_dir / package_name,
+            self.root_dir / package_name,
+        ]
+
+        package_dir: Path | None = None
+        for candidate in candidates:
+            if not candidate.is_dir():
+                continue
+
+            preferred = candidate / f"{package_name}.jbs"
+            generic = candidate / ".jbs"
+
+            if preferred.is_file() or generic.is_file():
+                package_dir = candidate
+                break
+
+            jbs_files = sorted(candidate.glob("*.jbs"))
+            if len(jbs_files) == 1:
+                package_dir = candidate
+                break
+
+        if package_dir is None:
+            searched = ", ".join(str(path) for path in candidates)
+            raise CrimsonError(
+                f"Could not find local package '{package_name}' containing a root JBS file. "
+                f"Searched: {searched}"
+            )
+
+        jbs_files = []
+        preferred = package_dir / f"{package_name}.jbs"
+        generic = package_dir / ".jbs"
+
+        if preferred.is_file():
+            jbs_files.append(preferred)
+        if generic.is_file() and generic not in jbs_files:
+            jbs_files.append(generic)
+        if not jbs_files:
+            jbs_files = sorted(package_dir.glob("*.jbs"))
+
+        if not jbs_files:
+            raise CrimsonError(
+                f"Package '{package_name}' was found at {package_dir}, but no root JBS file exists."
+            )
+
+        jbs_file = jbs_files[0]
+
+        if path_only:
+            print(package_dir.resolve())
+            return
+
+        print(f"Package : {package_name}")
+        print(f"Path    : {package_dir.resolve()}")
+        print(f"JBS     : {jbs_file.resolve()}")
+        print()
+        print(jbs_file.read_text(encoding="utf-8"))
+
     def info(self, package_name: str) -> None:
         package_name = normalize_package_name(package_name)
         repo = self.select_repository(package_name, interactive=False)
@@ -966,6 +1054,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     info.add_argument("package")
 
+    find = subparsers.add_parser(
+        "find",
+        help="Find a local package and its root JBS file.",
+    )
+    find.add_argument("package")
+    find.add_argument(
+        "--path",
+        action="store_true",
+        help="Print only the package directory.",
+    )
+
     return parser
 
 
@@ -996,6 +1095,9 @@ def main() -> int:
 
         elif args.command == "info":
             crimson.info(args.package)
+
+        elif args.command == "find":
+            crimson.find(args.package, path_only=args.path)
 
         else:
             parser.error(f"Unknown command: {args.command}")
