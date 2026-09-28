@@ -338,6 +338,26 @@ def tokenize(src: str) -> List[Token]:
 
         # --- nombres (entiers et flottants) ---
         if c.isdigit():
+            # Hexadecimal integer literals (0x... / 0X...) are valid integer
+            # expressions in enum initializers and must remain unchanged in
+            # the generated C.
+            if c == "0" and i + 1 < n and src[i + 1] in "xX":
+                j = i + 2
+                hex_start = j
+                while j < n and src[j] in "0123456789abcdefABCDEF":
+                    j += 1
+                if j == hex_start:
+                    err = LexError(f"invalid hexadecimal integer literal (line {line})")
+                    err._jaguar_line = start_line
+                    err._jaguar_column = start_column
+                    err._jaguar_end_column = min(start_column + 2, start_column + len(src) - i)
+                    raise err
+                value = src[i:j]
+                tokens.append(Token("INT", value, start_line, start_column, start_column + len(value)))
+                column += len(value)
+                i = j
+                continue
+
             j = i
             while j < n and src[j].isdigit():
                 j += 1
@@ -3358,11 +3378,14 @@ class CodeGen:
             initializers = getattr(en, "initializers", None) or {}
             for i, v in enumerate(en.values):
                 suffix = "," if i < len(en.values)-1 else ""
+                # Enum value identifiers are part of the public C API. Keep
+                # them exactly as written in Jaguar instead of inventing an
+                # enum-name prefix (e.g. HRL_LOD_DISTANCE must stay that way).
                 if v in initializers:
                     expr = self.gen_expr(initializers[v], {})
-                    enum_lines.append(f"    {cname}_{v} = {expr}{suffix}")
+                    enum_lines.append(f"    {v} = {expr}{suffix}")
                 else:
-                    enum_lines.append(f"    {cname}_{v}{suffix}")
+                    enum_lines.append(f"    {v}{suffix}")
             enum_lines.append(f"}} {cname};")
         if enum_lines:
             parts.append("\n".join(enum_lines))
@@ -4100,16 +4123,26 @@ class CodeGen:
         # Value construction with arguments is deliberately implemented by a
         # normal C function instead of a C99 compound literal. This keeps the
         # same Jaguar semantics in `--c89` mode and gives us a single place to
-        # materialize the fields in declaration order. Array fields are not
-        # assignable in C and therefore cannot participate in positional
-        # struct construction.
+        # materialize the fields in declaration order.
+        #
+        # C arrays cannot be assigned with `=`. For an array field, make the
+        # constructor parameter a pointer to the array element type (preserving
+        # all inner dimensions for multidimensional arrays), then copy the
+        # complete array into the struct with memcpy().
         if s.fields:
             params = []
+            array_fields = []
             for i, f in enumerate(s.fields):
-                if self._fixed_array_parts(f.type) is not None:
-                    raise CodeGenError(
-                        f"struct '{s.name}' positional construction is not supported when field '{f.name}' is an array"
-                    )
+                arr = self._fixed_array_parts(f.type)
+                if arr is not None:
+                    base, dims = arr
+                    if len(dims) == 1:
+                        params.append(f"const {self._decl_c_type(base)} * _j_arg{i}")
+                    else:
+                        inner_dims = ''.join(f"[{d}]" for d in dims[1:])
+                        params.append(f"const {self._decl_c_type(base)} (*_j_arg{i}){inner_dims}")
+                    array_fields.append((i, f, dims))
+                    continue
                 fp = self._function_ptr_c_decl(f.type, f"_j_arg{i}")
                 if fp is not None:
                     params.append(fp)
@@ -4118,7 +4151,11 @@ class CodeGen:
             lines.append(f"static {s.name} _j_struct_{s.name}_make(" + ", ".join(params) + ") {")
             lines.append(f"    {s.name} value;")
             for i, f in enumerate(s.fields):
-                lines.append(f"    value.{f.name} = _j_arg{i};")
+                arr = self._fixed_array_parts(f.type)
+                if arr is not None:
+                    lines.append(f"    memcpy(value.{f.name}, _j_arg{i}, sizeof(value.{f.name}));")
+                else:
+                    lines.append(f"    value.{f.name} = _j_arg{i};")
             lines.append("    return value;")
             lines.append("}")
 

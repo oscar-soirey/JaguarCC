@@ -447,7 +447,65 @@ class TypeConverter:
         self.typedef_names: set[str] = set()
         self.struct_names: set[str] = set()
         self.enum_names: set[str] = set()
+        # Integer constants known while converting fixed C arrays.  These are
+        # populated by BindGen from object-like macros and enum enumerators.
+        self.constant_values: dict[str, int] = {}
         self.warnings: list[str] = []
+
+    def _array_dimension(self, node) -> Optional[int]:
+        """Resolve a C array dimension to an integer accepted by jcc.
+
+        HRL uses both literal sizes (`float v[3]`) and named constants such as
+        `HRL_SKELETAL_MAX_INFLUENCES`. jcc's fixed-array syntax intentionally
+        accepts numeric dimensions, so resolve those named constants here.
+        """
+        if node is None:
+            return None
+        if isinstance(node, c_ast.Constant):
+            if node.type != "int":
+                return None
+            try:
+                return int(node.value, 0)
+            except ValueError:
+                return None
+        if isinstance(node, c_ast.ID):
+            return self.constant_values.get(node.name)
+        if isinstance(node, c_ast.UnaryOp):
+            value = self._array_dimension(node.expr)
+            if value is None:
+                return None
+            if node.op == "+":
+                return value
+            if node.op == "-":
+                return -value
+            if node.op == "~":
+                return ~value
+            return None
+        if isinstance(node, c_ast.BinaryOp):
+            left = self._array_dimension(node.left)
+            right = self._array_dimension(node.right)
+            if left is None or right is None:
+                return None
+            ops = {
+                "+": lambda a, b: a + b,
+                "-": lambda a, b: a - b,
+                "*": lambda a, b: a * b,
+                "/": lambda a, b: a // b if b else None,
+                "%": lambda a, b: a % b if b else None,
+                "<<": lambda a, b: a << b,
+                ">>": lambda a, b: a >> b,
+                "&": lambda a, b: a & b,
+                "|": lambda a, b: a | b,
+                "^": lambda a, b: a ^ b,
+            }
+            fn = ops.get(node.op)
+            if fn is None:
+                return None
+            try:
+                return fn(left, right)
+            except (ArithmeticError, TypeError):
+                return None
+        return None
 
     def convert(self, node, *, parameter=False, allow_c_string=True) -> JType:
         if isinstance(node, c_ast.TypeDecl):
@@ -488,14 +546,22 @@ class TypeConverter:
                     return inner
                 return JType(inner.text + "*")
 
-            # Jaguar currently has no fixed-array declaration syntax. Never
-            # replace a struct/global array with a pointer because that would
-            # change the object layout.
-            return JType(
-                "",
-                False,
-                "C array types are not representable in a non-parameter declaration by current Jaguar syntax",
-            )
+            # Jaguar supports fixed arrays in type declarations (`f32[3]`).
+            # Preserve the C object layout exactly instead of degrading the
+            # containing struct to an opaque placeholder.
+            inner = self.convert(node.type, parameter=False, allow_c_string=False)
+            if not inner.valid:
+                return inner
+
+            dimension = self._array_dimension(node.dim)
+            if dimension is None or dimension <= 0:
+                return JType(
+                    "",
+                    False,
+                    "C fixed-array dimensions must resolve to a positive integer in current Jaguar syntax",
+                )
+
+            return JType(f"{inner.text}[{dimension}]")
 
         if isinstance(node, c_ast.FuncDecl):
             return self.function_type(node)
@@ -579,10 +645,71 @@ def _comment_lines(text: str):
     return text.splitlines() or [text]
 
 
+def _parse_simple_int_constant(value: str, known: dict[str, int]) -> Optional[int]:
+    """Resolve the small integer macro subset commonly used for array sizes."""
+    value = value.strip()
+    if not value:
+        return None
+
+    # Strip a balanced outer parenthesis pair, common in C macros such as
+    # `((uint32_t)4)` only when the interior itself is simple enough.
+    while value.startswith("(") and value.endswith(")"):
+        depth = 0
+        balanced = True
+        for i, ch in enumerate(value):
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0 and i != len(value) - 1:
+                    balanced = False
+                    break
+        if balanced and depth == 0:
+            value = value[1:-1].strip()
+        else:
+            break
+
+    if re.fullmatch(r"[+-]?(?:0[xX][0-9A-Fa-f]+|0[bB][01]+|0[oO][0-7]+|[0-9]+)", value):
+        try:
+            return int(value, 0)
+        except ValueError:
+            return None
+
+    if value in known:
+        return known[value]
+
+    m = re.fullmatch(r"(.+?)\s*(<<|>>|[+\-*/%&|^])\s*(.+)", value)
+    if not m:
+        return None
+    left = _parse_simple_int_constant(m.group(1), known)
+    right = _parse_simple_int_constant(m.group(3), known)
+    if left is None or right is None:
+        return None
+
+    op = m.group(2)
+    try:
+        if op == "+": return left + right
+        if op == "-": return left - right
+        if op == "*": return left * right
+        if op == "/": return left // right if right else None
+        if op == "%": return left % right if right else None
+        if op == "<<": return left << right
+        if op == ">>": return left >> right
+        if op == "&": return left & right
+        if op == "|": return left | right
+        if op == "^": return left ^ right
+    except (ArithmeticError, TypeError):
+        return None
+    return None
+
+
+
+
 class BindGen:
-    def __init__(self, ast: c_ast.FileAST):
+    def __init__(self, ast: c_ast.FileAST, macro_constants: Optional[dict[str, int]] = None):
         self.ast = ast
         self.tc = TypeConverter()
+        self.tc.constant_values.update(macro_constants or {})
         self.out: list[str] = []
         self.errors: list[str] = []
         self.seen: set[str] = set()
@@ -594,6 +721,7 @@ class BindGen:
         self.source_lines: list[str] = []
         self.used_comments: set[int] = set()
         self._collect_names()
+        self._collect_enum_constants()
 
     def add_comments_before(self, node):
         """Emit only comments that are immediately leading the AST node."""
@@ -641,6 +769,103 @@ class BindGen:
                     self.tc.struct_names.add(ext.type.name)
                 if isinstance(ext.type, c_ast.Enum) and ext.type.name:
                     self.tc.enum_names.add(ext.type.name)
+
+    def _eval_enum_constant(self, node, known: Optional[dict[str, int]] = None) -> Optional[int]:
+        """Safely evaluate the integer constant-expression subset used by C enums.
+
+        The result is intentionally reduced to a plain integer so generated
+        Jaguar enums never need C-only operators such as <<, >>, &, | or ^.
+        """
+        known = known if known is not None else self.tc.constant_values
+        if node is None:
+            return None
+
+        if isinstance(node, c_ast.Constant):
+            if node.type != "int":
+                return None
+            text = node.value.strip()
+            # C integer suffixes (U/L/UL/ULL, case-insensitive) are legal in
+            # enum initializers but are not part of Python's int(..., 0) syntax.
+            text = re.sub(r"(?i)(?:ull|llu|ul|lu|ll|l|u)$", "", text)
+            try:
+                return int(text, 0)
+            except ValueError:
+                return None
+
+        if isinstance(node, c_ast.ID):
+            return known.get(node.name)
+
+        if isinstance(node, c_ast.Cast):
+            # Enum values are integer constants; ignore the C type wrapper once
+            # the operand itself is known to be an integer constant.
+            return self._eval_enum_constant(node.expr, known)
+
+        if isinstance(node, c_ast.UnaryOp):
+            value = self._eval_enum_constant(node.expr, known)
+            if value is None:
+                return None
+            if node.op == "+":
+                return +value
+            if node.op == "-":
+                return -value
+            if node.op == "~":
+                return ~value
+            if node.op == "!":
+                return 0 if value else 1
+            return None
+
+        if isinstance(node, c_ast.BinaryOp):
+            left = self._eval_enum_constant(node.left, known)
+            right = self._eval_enum_constant(node.right, known)
+            if left is None or right is None:
+                return None
+            try:
+                return {
+                    "+": lambda: left + right,
+                    "-": lambda: left - right,
+                    "*": lambda: left * right,
+                    "/": lambda: left // right,
+                    "%": lambda: left % right,
+                    "<<": lambda: left << right,
+                    ">>": lambda: left >> right,
+                    "&": lambda: left & right,
+                    "|": lambda: left | right,
+                    "^": lambda: left ^ right,
+                }.get(node.op, lambda: None)()
+            except (ArithmeticError, ValueError, TypeError):
+                return None
+
+        # C conditional expressions are valid integer constant expressions too.
+        if isinstance(node, c_ast.TernaryOp):
+            cond = self._eval_enum_constant(node.cond, known)
+            if cond is None:
+                return None
+            return self._eval_enum_constant(node.iftrue if cond else node.iffalse, known)
+
+        return None
+
+    def _collect_enum_constants(self):
+        """Collect enum constants using the same evaluator used for emission."""
+        for ext in self.ast.ext:
+            enum = None
+            if isinstance(ext, c_ast.Typedef) and isinstance(ext.type, c_ast.TypeDecl) and isinstance(ext.type.type, c_ast.Enum):
+                enum = ext.type.type
+            elif isinstance(ext, c_ast.Decl) and isinstance(ext.type, c_ast.Enum):
+                enum = ext.type
+            if enum is None or not enum.values:
+                continue
+
+            current = -1
+            for item in enum.values.enumerators:
+                if item.value is None:
+                    current += 1
+                    self.tc.constant_values[item.name] = current
+                    continue
+
+                value = self._eval_enum_constant(item.value)
+                if value is not None:
+                    current = value
+                    self.tc.constant_values[item.name] = value
 
     @staticmethod
     def _comment(text: str) -> str:
@@ -761,14 +986,34 @@ class BindGen:
         if not name:
             self.warn(en, "anonymous enum without a typedef name is skipped")
             return
+
+        # Reduce C enum constant expressions to plain integer literals.  This
+        # keeps generated Jaguar compatible even when the C header uses
+        # bitwise-only syntax such as `1 << 4` or `A | B`.
         values = []
+        known = dict(self.tc.constant_values)
+        current = -1
+
         for e in en.values.enumerators if en.values else []:
+            value = e.name
             if e.value is not None:
-                # jcc's enum parser currently accepts names only, so do not
-                # silently discard explicit numeric/string assignments.
-                self.warn(e, f"enum value '{e.name}' has an explicit initializer; current Jaguar enum syntax does not support it")
-                continue
-            values.append(e.name)
+                resolved = self._eval_enum_constant(e.value, known)
+                if resolved is None:
+                    self.warn(
+                        e,
+                        f"enum value '{e.name}' uses an unsupported constant expression; emitted without an initializer",
+                    )
+                else:
+                    current = resolved
+                    known[e.name] = resolved
+                    self.tc.constant_values[e.name] = resolved
+                    value = f"{e.name} = {resolved}"
+            else:
+                current += 1
+                known[e.name] = current
+                self.tc.constant_values[e.name] = current
+            values.append(value)
+
         self.emit(f"enum {name} {{ {', '.join(values)} }}")
         self.emit("")
 
@@ -996,7 +1241,13 @@ def generate(
     except Exception as exc:
         # Keep the original diagnostic, but do not emit bogus Jaguar.
         raise ValueError(f"C parse error: {exc}") from exc
-    gen = BindGen(ast)
+    macro_constants: dict[str, int] = {}
+    for macro_name, macro_value in macros:
+        resolved = _parse_simple_int_constant(macro_value, macro_constants)
+        if resolved is not None:
+            macro_constants[macro_name] = resolved
+
+    gen = BindGen(ast, macro_constants=macro_constants)
     gen.comments = _extract_c_comments(src)
     gen.source_lines = src.splitlines()
     text = gen.run()

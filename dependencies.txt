@@ -4,4 +4,7 @@ python 3.14 {
 	python -m pip install requests packaging
 	python -m pip install tomli
 
+	llvm :
+		python -m pip install llvmlite==0.49.0
+
 }
